@@ -1,0 +1,4 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const element=(type,props)=>({type,props});
+const panel=vm.runInNewContext(fs.readFileSync('meeting-copilot/screenshot-batch-ui.js','utf8')+'\nScreenshotBatchPanel',{jsxRuntimeExports:{jsx:element,jsxs:element},reactExports:{useState:v=>[v,()=>{}],useEffect:()=>{}}});
+test('main batch display is one read-only shortcut indicator; operations only appear in management',()=>{const props={batch:{enabled:true,images:[{name:'test',dataUrl:'x'}],question:'',busy:false,message:''},controller:{}};const tree=panel(props);assert.equal(tree.type,'div');assert.equal(typeof tree.props.children,'string');assert(tree.props.children.includes('1/12'));const management=panel({...props,management:true});assert(Array.isArray(management.props.children));assert(management.props.children[0].props.children.some(n=>n.props.children==='发送暂存'));});

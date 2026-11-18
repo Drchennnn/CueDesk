@@ -1,0 +1,83 @@
+请将随附的 MeetingCopilot 眼神矫正独立模块安装配置到我的 Windows 环境，并完成宿主应用接入和实际验证。
+
+先定位本模块目录和目标 Electron 项目，读取 README.txt、验证结果.json、eye-contact.cjs、electron-main.cjs、preload.cjs 和 renderer.mjs。
+我需要保留现有的设备选择、眼神矫正、原画直通、预览、参数设置、空闲释放、有限故障恢复和诊断功能。
+
+一、确认宿主与环境
+
+检查 Windows 版本、显卡型号、NVIDIA 驱动和可用摄像头。
+根据本机硬件，核对眼神引擎与 NVIDIA AR SDK 的支持范围。
+查找目标 Electron 应用的主进程、preload 和 React 渲染入口，确认它现有的构建与打包方式。
+如果发现多个可能的目标应用，请列出实际找到的位置，让我选择宿主后继续。
+修改前为涉及文件建立可回退备份。
+
+二、准备运行资源
+
+检查已有的 Tinks/suisi 眼神引擎和 NVIDIA AR SDK 资源。
+优先检查当前用户目录下的 Tinks/resources/eye-contact，以及 %APPDATA%/suisi/Cache/NVIDIA AR SDK。
+
+引擎目录应包含 suisi-eye-contact.exe、softcam.dll 和该版本的配套依赖。
+SDK 目录应包含 nvARPose.dll、models 和与当前显卡匹配的完整资源。
+
+根据实际缺失项查询官方获取渠道，核对版本、硬件要求和授权条件，完成兼容资源安装。
+需要我登录账号、提供下载文件或确认 Windows UAC 时，说明需要操作的内容及具体原因。
+可继续完成的接入、配置和检查步骤自行推进。
+
+三、接入代码
+
+沿用宿主已有构建工具和模块结构接入本包。
+主进程使用 electron-main.cjs 的 registerEyeContact，传入 app、ipcMain、getWindow、configFile 和 dataDirectory。
+preload 将 createEyeContactBridge 的方法合并到宿主的桥接对象，前端组件默认通过 window.mc 访问。
+前端导入 renderer.mjs 中的 EyeContactToggle 和 EyeContactSettings，并按需引入 styles.css。
+组件外层使用 eye-contact-module 类名，设置页切换时传入实际 active 状态。
+将模块与外部资源在打包后可访问的位置对应起来，保持设置与日志目录可写。
+
+如果目标应用已经包含同一套眼神矫正逻辑，沿用现有注册位置更新对应模块，统一为一个控制器实例。
+核对 IPC 的窗口和主 frame 校验、事件解绑，以及宿主退出时的引擎清理。
+
+四、填写配置
+
+备份后更新实际使用的 runtime.json，将以下字段填写为找到的真实目录。
+- eyeEngineDirectory
+- eyeSdkDirectory
+
+Windows 路径使用正斜杠，JSON 保存为 UTF-8。
+相对路径以 runtime.json 所在目录为基准。
+配置设备时读取实际摄像头枚举结果，选择真实输入摄像头。
+
+初始画面参数使用以下设置。
+- outputMode 为 correct
+- releaseWhenIdle 为 true
+- idleGraceMs 为 3000
+- restartOnFailure 为 true
+- lookAway 为 false
+- eyeSize 为 3
+- temporal 为 4294967295
+
+通过模块现有流程注册虚拟摄像头，出现 Windows UAC 时交由我确认。
+引擎启动后显示实际使用的输入设备和虚拟摄像头名称。
+
+五、测试与排查
+
+先执行本包 npm test，再执行宿主现有的相关检查及构建。
+启动宿主，打开设置页，检查修改保存、重启读取和运行中设置待应用状态。
+
+实际开启摄像头引擎，点击“预览并检查首帧”，验证以下项目。
+- 引擎进入就绪状态
+- 实际输入设备与选择一致，记录发生的设备回退
+- 虚拟摄像头输出连续更新的画面
+- 原画直通和眼神矫正两种处理方式分别能运行
+- 诊断中的处理帧率、推理耗时和模式信息正常更新
+- 切换设置页和停止预览后，测试媒体流按预期结束
+- 视频消费者断开后，检查空闲释放与宽限行为
+- 退出宿主后检查 helper 进程和摄像头释放情况
+
+在我实际使用的视频软件中选择状态页显示的虚拟摄像头，验证能够取流。
+遇到故障时结合 eye-contact.log、诊断、依赖文件和进程状态排查，修复可恢复的问题后重新验证。
+
+六、交付
+
+完成后关闭测试预览和测试引擎。
+给出修改文件、实际配置路径、运行资源位置、日常启动步骤、视频软件里的摄像头名称，以及回退方法。
+分别列出模拟测试结果和真实设备验收结果。
+仍待处理的步骤说明具体缺失资源或需要我执行的操作。

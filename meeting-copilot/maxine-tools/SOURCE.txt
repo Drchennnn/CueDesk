@@ -1,0 +1,6 @@
+7-Zip 26.06 x64 command-line extractor
+Official download page https://www.7-zip.org/download.html
+Official installer https://github.com/ip7z/7zip/releases/download/26.06/7z2606-x64.exe
+Installer SHA-256 9b697f65ecc2d9b0152f5ee96d72dde522a7827690349d9307935dacf40f42ec
+The packaged 7z.exe, 7z.dll and License.txt were extracted from this installer.
+License and source availability are described in License.txt.

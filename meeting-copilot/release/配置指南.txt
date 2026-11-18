@@ -1,0 +1,277 @@
+MeetingCopilot 整合版配置指南
+2026-11-18
+
+官网与地址速查
+
+下面给出可在本版相应配置区域填写的示例。实际配置文件初始保持空白。
+接口和模型按 2026-11-17 查阅的官方文档整理，使用自己的服务账号与 API Key。
+按速查表手动填写时选择“自定义”，模型 ID 以服务商控制台为准。
+
+本地面试资料库
+在设置 → 面试资料 → 面试资料目录，填写自己的本地文件夹。
+例如 D:/MeetingMaterials，Windows 资源管理器中可先创建该目录再放入资料。
+目录内可按本指南第五节组织简历、项目、通用问答和岗位档案。
+本地文件夹路径直接填在“面试资料目录”中。
+持久化后的配置文件为 data/interview-library.json，其中 root 保存这个目录。
+
+实时转录／语音识别
+服务平台为阿里云百炼。
+官网与控制台 https://bailian.console.aliyun.com/
+API Key 申请与配置 https://help.aliyun.com/zh/model-studio/get-api-key
+在软件设置中选择云端实时语音识别，填写以下地址与模型。
+WebSocket 地址 wss://dashscope.aliyuncs.com/api-ws/v1/inference
+模型示例 fun-asr-realtime，或 paraformer-realtime-v2。
+这组示例使用北京地域的 API Key。
+百炼也提供业务空间专属地址。
+wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference
+将 {WorkspaceId} 换成自己的业务空间 ID 后填写。
+官方 WebSocket 文档 https://help.aliyun.com/zh/model-studio/websocket-for-paraformer-real-time-service
+官方模型与地域说明 https://help.aliyun.com/zh/model-studio/real-time-speech-recognition-user-guide
+
+文本回答／DeepSeek
+官网与控制台 https://platform.deepseek.com/
+API Key 管理 https://platform.deepseek.com/api_keys
+文本模型 Base URL 填写 https://api.deepseek.com
+模型示例 deepseek-flash，或 deepseek-v4-pro。
+API Key 填入 DeepSeek 平台生成的密钥。
+官方调用文档 https://api-docs.deepseek.com/
+
+文本回答／通义千问
+官网与密钥入口与上面的阿里云百炼相同。
+文本模型 Base URL 填写 https://dashscope.aliyuncs.com/compatible-mode/v1
+模型示例 qwen-plus。
+也可填写业务空间专属 Base URL。
+https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+官方调用文档 https://help.aliyun.com/zh/model-studio/text-generation
+
+截图／图片多模态
+官网与密钥入口使用阿里云百炼。
+在软件的视觉/截图接口中填写以下配置。
+Base URL 填写 https://dashscope.aliyuncs.com/compatible-mode/v1
+模型示例 qwen3-vl-plus。
+业务空间专属 Base URL 同样支持。
+https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+官方图片调用文档 https://help.aliyun.com/zh/model-studio/qwen-vl-compatible-with-openai
+Base URL 填到 /v1 即可，当前客户端会补齐 /chat/completions。
+每个接口可选择自己的服务商，更多服务可使用兼容的图片 Chat Completions API。
+
+可选向量检索
+config/vector-rag.json 的 baseAddress 示例为 https://dashscope.aliyuncs.com/api/v1
+embeddingModel 示例为 text-embedding-v4，dimensions 可填 1024。
+rerankModel 可填 qwen3-rerank，rewriteModel 可填 qwen-plus，也可以分别留空关闭。
+这里使用百炼 SDK 的 API 根路径 /api/v1。
+向量与文本/截图配置中的 Base URL 按各自字段填写。
+官方向量文档 https://help.aliyun.com/zh/model-studio/text-embedding-synchronous-api/
+官方重排文档 https://help.aliyun.com/zh/model-studio/text-rerank-api
+
+百炼的 API Key、模型与地域需对应，其他地域按控制台复制实际地址。
+地域与接入信息 https://help.aliyun.com/zh/model-studio/regions
+
+一、启动
+
+1. 完整解压 ZIP，将整个文件夹放在可写的位置。
+2. 双击“启动.cmd”，通过右上角齿轮进入设置。
+3. 初始所有资料路径、API 地址、模型和密钥为空，先配置需要使用的功能。
+4. 本版的设置和会话保存在同目录 data 文件夹。退出可通过托盘菜单完成。
+5. 同时运行其他版本可能占用截图快捷键，使用前退出其他 MeetingCopilot 窗口。
+
+app/MeetingCopilot.exe 也可以直接启动，数据仍保存到便携目录。
+普通使用已包含 Electron 运行依赖。Python 供可选本地语音和向量检索使用。
+
+二、文本模型
+
+在设置的模型/API 分类中填写文本模型的 Base URL、模型 ID 和 API Key。
+Base URL 使用供应商提供的 OpenAI Chat Completions 兼容地址。
+模型 ID 使用账户实际可调用的完整名称，保存后进行连接测试。
+供应商下拉菜单保留原应用预设，选择后可继续修改地址和模型。
+
+语音转录后的问答、自由提问、翻译和会话备忘使用文本模型配置。
+可以先通过“自由提问”发送一句普通问题验证回答链路。
+设置顶部提供保存按钮，部分独立区域会显示自动保存状态，以界面提示为准。
+
+三、截图与多模型
+
+在视觉/截图模型区域填写主接口的 Base URL、模型 ID、API Key。
+需要支持图片输入的 Chat Completions 兼容模型。代理按需填写。
+通过“＋”添加备用接口，各接口可分别设置启用状态、超时与代理。
+启用截图后，使用界面截图按钮或全屏、框选快捷键提交图片。
+
+面试场景按配置顺序使用接口，失败后继续尝试备用接口。
+笔试场景可以勾选“笔试截图同时回答”，分别显示各模型结果。
+停止按钮可取消进行中的请求。
+标题栏“截图开/截图关”控制截图回答。
+
+默认快捷键
+Ctrl+B                 呼出/隐藏窗口
+Ctrl+Shift+S           全屏截图
+Ctrl+Shift+A           框选截图
+Ctrl+Alt+M             开启/关闭多图暂存
+Ctrl+Alt+S             一次提交暂存图片
+Ctrl+Alt+方向键        移动窗口
+Ctrl+Alt+PageUp/PageDown 放大/缩小窗口
+
+设置中可以录制组合键或 Mouse4 / Mouse5，避免不同操作使用相同组合。
+多图最多暂存 12 张、合计约 48 MiB，退出时清空暂存队列。
+截图会保存到 Windows“图片”目录下的 MeetingCopilot 文件夹。
+界面的“截图目录”按钮可以打开实际位置。
+
+四、语音识别
+
+在语音分类中选择后端。云端实时模式填写服务支持的 WebSocket 地址、模型及密钥。
+分段云端模式使用对应音频转录接口配置。模型与后端需匹配供应商协议。
+保存并测试成功后，在主界面点击开始。需要本人声音时选择输入设备并启用麦克风。
+
+本地 Fun-ASR 或 MOSS
+1. 自行安装对应 Python 环境、模型及显卡依赖。
+2. 依赖清单位于 app/resources/requirements-funasr.txt 和 requirements-moss.txt。
+3. 在 config/runtime.json 中填写 funasrPython 或 mossPython 为该环境的 python.exe 路径。
+4. 选择相应本地实时后端和模型。应用会调用自带的 Python 服务脚本。
+5. 重启软件后生效。模型下载和本地环境安装按相应后端的要求完成。
+
+config/runtime.json 的路径可以使用相对于便携文件夹的路径。
+JSON 中的 Windows 路径推荐使用正斜杠，例如 D:/Apps/asr/python.exe。
+文件最初留空，填写后保存为 UTF-8。
+
+五、个人资料与面试资料库
+
+将简历、JD 和项目材料放入本地资料文件夹，支持 Markdown、文本和可提取文字的 PDF。
+Word 资料可以另存为文本、Markdown 或 PDF 后放入目录。
+在设置的“面试资料”分类中配置该根目录，开启后选择岗位。
+资料库启用时，会用资料库的选材与回答规则构建面试上下文。
+可以用“本地检索预览”检查命中资料，在答案“依据与来源”中查看引用并打开原文。
+
+建议目录结构
+资料库/
+  简历.md
+  候选人画像.md
+  项目资料/
+    项目名称/项目说明.md
+  通用技术知识/
+    技术笔记.md
+  通用问答/
+    常见问题.md
+  岗位档案/
+    公司-岗位/JD.md
+
+岗位档案下的一级目录会出现在岗位列表。其他目录中的材料作为公共资料使用。
+各类材料按文档路径和元数据分类。真实经历、参考答案和待实现方案应按内容分别标明。
+修改 Markdown 后下一次检索会刷新。PDF 使用文本提取，扫描图片 PDF 需另行 OCR。
+候选人画像可用以下文件头声明类型，实际内容由使用者填写。
+
+---
+knowledge_kind: candidate_profile
+---
+
+持久化资料库配置位于 data/interview-library.json。
+persona_profile.document_id 可指定画像文档，intro_script.document_id 和 heading 可指定自我介绍段落。
+文档 ID 可在资料库检索预览的来源信息中找到。高级手工配置前退出软件。
+资料根目录与岗位默认留空，画像和自我介绍默认未选择。
+
+六、提示词和阅读布局
+
+设置中可以编辑备用面试文本 Prompt，或定位笔试 Prompt。
+实际生效文件位于 data/multimodal/prompts，修改后下次请求读取。
+interview.md 用于普通面试文本，original-vision.md 用于面试截图，written.md 用于笔试。
+启用面试资料库时同时使用资料库内部的选材、引用与回答策略。
+
+笔试模式通过标题栏“小窗”进入紧凑显示。
+A−/A+ 调整字号，↗ 返回完整界面，拖动标题栏或边缘调整窗口。
+窗口与多图快捷键、透明度在完整界面的“快捷键与窗口”分类中管理。
+字体和模型名显示保存在 data/written-window.json，可在退出软件后修改 fontFamily 和 showNames。
+字体可选 Microsoft YaHei、SimSun、SimHei、DengXian、Consolas、Arial。
+阅读布局、滚动、代码缩进和复制沿用整合版功能。
+
+七、面试导出
+
+在会话的导出入口选择原始记录或整理模式，并选择保存路径。
+原始导出可直接保存，涉及 AI 整理的模式需要先配置文本模型。
+会话保存在 data/sessions.json，由当前便携版本独立管理。
+
+八、可选向量检索
+
+本地关键词检索在开启资料库后即可使用。
+向量模式需要额外安装 Python 依赖，并配置支持稠密与稀疏向量的百炼 Embedding 模型。
+重排和问题改写按需启用。API 调用按所用服务计费。
+
+1. 安装 Python 3.11 或更新版本，使 python 命令可用。
+2. 双击“安装向量依赖.cmd”，在 rag/.venv 中安装本包锁定的依赖。
+3. 准备仅包含技术参考问答的 sourceRoot 目录，可以包含子目录。
+   每篇 Markdown 在文件开头写入以下元数据，然后写自己的标题、问题和答案。
+
+---
+knowledge_kind: technical_reference
+question_level: 4
+---
+
+4. 在 config/vector-rag.json 中填写以下字段。
+   libraryRoot       整体面试资料根目录。
+   sourceRoot        技术参考问答目录。
+   sourceMap         来源映射 JSON，可留空，由脚本按实际文件生成。
+   replacedDirectory 需要退出关键词检索的旧技术材料目录，相对于 libraryRoot，可留空。
+   python            可留空，默认使用刚安装的 rag/.venv/Scripts/python.exe。
+   baseAddress       百炼 SDK API 根地址，按账号地域填写。
+   embeddingModel    支持 dense&sparse 输出的模型 ID。
+   dimensions        按模型支持范围填写，模板为 1024。
+   rerankModel       可选的重排模型 ID，留空关闭。
+   rewriteModel      可选的问题改写模型 ID，留空关闭。
+   port              本机服务端口，模板为 8798。
+5. 在 config/runtime.json 的 dashscopeApiKey 中填写对应密钥，或使用 DASHSCOPE_API_KEY 环境变量。
+   runtime.json 中自行填写的密钥是本地明文。文本和视觉设置界面中的密钥由应用加密保存。
+6. 完全退出本便携版，双击“配置向量检索.cmd”。首次构建会请求 Embedding API。
+7. 成功后重新启动，在资料库中预览检索。服务会按需自动启动。
+8. 更新技术参考文件后，再次退出并运行配置脚本，重建匹配当前内容的向量索引。
+
+索引、快照和日志保存在 data/vector-rag。
+更换电脑或移动整个便携目录后，重新运行配置脚本，以更新生成的绝对路径。
+关闭向量模式可退出软件，在 data/interview-library.json 中将 vector_rag.enabled 改为 false。
+模型、地址、密钥默认均为空。包内包含向量适配器和服务代码，第三方环境由上述步骤安装。
+
+九、摄像头与眼神矫正
+
+设置中的“摄像头与眼神矫正”保留设备选择、画面参数、预览和诊断。
+顶部开关每次启动默认关闭，打开设置后可以刷新设备并申请摄像头权限。
+
+眼神矫正使用随包的自有 EyeContactEngine.exe，直接加载 NVIDIA Maxine AR SDK。
+默认轻量包包含引擎、虚拟摄像头组件、SDK 管理器和官方 7-Zip 解包工具。
+首次开启“眼神矫正”时自动检测显卡，下载对应的 SDK 包、校验并解包，界面显示处理状态。
+首次下载约 1.3GB，请为下载文件与解包资源预留磁盘空间。
+下载完成后资源保存在当前便携版 data/maxine-sdk，后续开启会复用已安装的资源。
+下载或解包失败时，按界面提示检查网络与错误信息，再次开启重试。
+使用电脑需具备匹配的 NVIDIA 显卡、驱动及 VC++ x64 运行库。
+
+默认引擎目录为 app/resources/eye-contact/engine。
+SDK 下载管理器位于 app/resources/tools/maxine-sdk.cjs，内置显卡架构对应的资源清单。
+解包工具与许可位于 app/resources/tools/maxine。
+整合版使用自带 Electron 运行管理器，日常操作直接使用设置界面。
+
+需要使用预先准备好的 SDK 时，可在 config/runtime.json 中填写以下路径。
+eyeEngineDirectory    包含 EyeContactEngine.exe 和 softcam.dll 的目录。
+eyeSdkDirectory       包含 nvARPose.dll 和 models 子目录的 SDK 目录。
+
+以上路径初始为空，默认使用本应用引擎及自动管理的 SDK 缓存。
+也可显式配置 MC_EYE_ENGINE_DIR 和 MC_EYE_SDK_DIR 环境变量。
+离线发布包通过构建参数 --include-sdk 附带 app/resources/eye-contact/sdk，启动时可直接使用。
+引擎以 SDK 目录为工作目录，并用 --sdk-dir . 加载模型，支持资源目录位于中文路径。
+启动软件后选择真实输入设备，打开引擎，再点击预览检查首帧。
+首次可在PowerShell运行 app/resources/eye-contact/register-softcam-user.ps1 -Dll "本应用engine/softcam.dll的完整路径"，完成当前用户注册。
+脚本记录原有用户注册，输出恢复用receipt.json位置。恢复时运行该脚本并传入 -Restore "receipt.json完整路径"。
+也可按Windows管理员授权提示完成全系统注册。
+已有注册组件与随包 softcam.dll 的 SHA-256 一致时，可以沿用已有注册及摄像头名称。
+会议软件中选择状态页显示的虚拟摄像头名称。
+空闲状态收到连续两次有效消费者连接状态后开始输出；断开后按设置的宽限时间释放真实摄像头。
+
+十、数据与排查
+
+API、资料和历史初始为空，使用后会写入当前便携目录的 data。
+config/defaults 是首次运行模板，已有设置应在界面或 data 中修改。
+更改 config/runtime.json 后重启软件。
+若启动失败，先检查 JSON 逗号、引号和路径格式，以及目录写入权限。
+若快捷键无效，检查是否被另一个应用占用，并在设置中重新绑定。
+若没有回答，分别检查文本模型、截图模型和语音识别三组配置。
+向量服务错误可查看 data/vector-rag/service.log。
+眼神矫正错误可在摄像头设置中复制诊断，日志位于 data/eye-contact.log。
+SDK 下载与解包状态会随眼神矫正状态显示，资源保存在 data/maxine-sdk。
+其他错误可通过应用内帮助/诊断入口查看。
+
+分发空白版本请使用原始 ZIP。保留整个 data 文件夹可备份本版会话和索引。
+API 加密密钥在另一台电脑上需要重新填写。

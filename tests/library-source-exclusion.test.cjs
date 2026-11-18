@@ -1,0 +1,25 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+const {Store,hash}=require('../meeting-copilot/v2/store.cjs');
+test('dependency history is archived, new dependencies excluded, genuine missing sources still warn and edited role notes refresh',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'mc-exclusion-'));
+ t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const root=path.join(dir,'docs'),index=path.join(dir,'index');fs.mkdirSync(root);
+ const write=(name,body)=>{const file=path.join(root,name);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,body);};
+ write('岗位档案/招商局/新手知识速成.md','# 课程\n\n## MQTT\n旧版说明');
+ write('项目资料/真实缺失.md','# 项目\n\n历史正文');
+ const store=new Store({root,dir:index});await store.refresh();
+ const note=store.manifest.documents.find(d=>d.file_path.includes('新手'));
+ const paths=['岗位档案/旧岗位/node_modules/react/README.md','岗位档案/旧岗位/requirements.txt','通用技术知识/assets/README.md'];
+ for(const [i,file_path] of paths.entries())store.manifest.documents.push({document_id:'old-'+i,file_path,content_hash:hash('old'),status:'missing'});
+ write('岗位档案/新岗位/node_modules/react/README.md','# 依赖');
+ write('岗位档案/新岗位/requirements.txt','numpy');
+ write('岗位档案/招商局/新手知识速成.md','# 课程\n\n## MQTT\n最新机器人消息协议说明');
+ fs.unlinkSync(path.join(root,'项目资料/真实缺失.md'));
+ await store.refresh();
+ assert.equal(store.manifest.documents.find(d=>d.document_id===note.document_id).version,2);
+ assert(store.index[note.document_id].some(c=>c.content.includes('最新机器人')));
+ assert(store.manifest.documents.filter(d=>d.document_id.startsWith('old-')).every(d=>d.status==='archived'&&d.retrieval_excluded));
+ assert(!store.manifest.documents.some(d=>d.file_path.includes('新岗位/')));
+ assert.equal(store.diagnostics.length,1);assert(store.diagnostics[0].includes('真实缺失'));
+});
