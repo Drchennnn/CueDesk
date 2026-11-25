@@ -758,7 +758,7 @@ export function HomeView({
                                   </button>
                                 </>
                               ) : (
-                                <button type="button" className="mc-btn mc-btn-sm" onClick={() => setPrepTemplate(tpl)}>
+                                <button type="button" className="mc-btn mc-btn-sm" aria-label={`开始 ${tpl.name}`} onClick={() => setPrepTemplate(tpl)}>
                                   <IconPlay size={11} /> 开始
                                 </button>
                               )}

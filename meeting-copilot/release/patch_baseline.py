@@ -293,6 +293,73 @@ def patch_main(raw: bytes) -> bytes:
     electron.ipcMain.handle("kb:list-intro", (event) => {
       assertLibrarySender(event);
       return kbWorkspace.listIntroHeadings();
+    });
+    const { createMemoryStore } = require(path.join(process.resourcesPath, "tools", "memory-store.cjs"));
+    const memoryStore = createMemoryStore({
+      getRoot: () => interviewLibrary.root,
+      snapshotDir: path.join(electron.app.getPath("userData"), "memory-snapshots")
+    });
+    electron.ipcMain.handle("memory:get", (event) => {
+      assertLibrarySender(event);
+      return memoryStore.getState();
+    });
+    electron.ipcMain.handle("memory:diff", (event, version) => {
+      assertLibrarySender(event);
+      return memoryStore.getSnapshotDiff(version);
+    });
+    electron.ipcMain.handle("memory:save-bucket", async (event, payload) => {
+      assertLibrarySender(event);
+      const state = memoryStore.saveBucket(payload);
+      await interviewLibrary.getPublic().catch(() => {});
+      return state;
+    });
+    electron.ipcMain.handle("memory:append-item", async (event, payload) => {
+      assertLibrarySender(event);
+      const state = memoryStore.appendItem(payload);
+      await interviewLibrary.getPublic().catch(() => {});
+      return state;
+    });
+    electron.ipcMain.handle("memory:resolve-pending", async (event, payload) => {
+      assertLibrarySender(event);
+      const state = memoryStore.resolvePendingFact(payload);
+      await interviewLibrary.getPublic().catch(() => {});
+      return state;
+    });
+    electron.ipcMain.handle("memory:rollback", async (event, version) => {
+      assertLibrarySender(event);
+      const state = memoryStore.rollbackSnapshot(version);
+      await interviewLibrary.getPublic().catch(() => {});
+      return state;
+    });
+    electron.ipcMain.handle("memory:open-dir", async (event) => {
+      assertLibrarySender(event);
+      const st = memoryStore.getState();
+      const err = await electron.shell.openPath(st.memoryDir);
+      if (err) throw new Error(err);
+      return { ok: true, path: st.memoryDir };
+    });
+    electron.ipcMain.handle("memory:archive-session", async (event, payload) => {
+      assertLibrarySender(event);
+      const audioTakes = audioRecorder?.list(payload.session?.id)?.takes || [];
+      const res = memoryStore.archiveSessionToRole({ ...payload, audioTakes });
+      try {
+        kbWorkspace.updateRoleStatus({
+          directory: payload.roleDirectory || payload.session?.role,
+          status: payload.nextStatus || "waiting",
+          roundLabel: res.roundFolder
+        });
+      } catch {}
+      await interviewLibrary.getPublic().catch(() => {});
+      return res;
+    });
+    electron.ipcMain.handle("memory:open-path", async (event, targetPath) => {
+      assertLibrarySender(event);
+      const root = path.resolve(interviewLibrary.root || "");
+      const target = path.resolve(String(targetPath || ""));
+      if (!root || !target.toLowerCase().startsWith(root.toLowerCase())) throw new Error("路径超出资料库目录");
+      const err = await electron.shell.openPath(target);
+      if (err) throw new Error(err);
+      return { ok: true };
     });''',
         "interview-library pick-root + read-doc IPC",
     )
@@ -637,6 +704,15 @@ def patch_preload(raw: bytes) -> bytes:
   kbReadPersona: () => electron.ipcRenderer.invoke("kb:read-persona"),
   kbSavePersona: (payload) => electron.ipcRenderer.invoke("kb:save-persona", payload),
   kbListIntro: () => electron.ipcRenderer.invoke("kb:list-intro"),
+  memoryGet: () => electron.ipcRenderer.invoke("memory:get"),
+  memoryDiff: (version) => electron.ipcRenderer.invoke("memory:diff", version),
+  memorySaveBucket: (payload) => electron.ipcRenderer.invoke("memory:save-bucket", payload),
+  memoryAppendItem: (payload) => electron.ipcRenderer.invoke("memory:append-item", payload),
+  memoryResolvePending: (payload) => electron.ipcRenderer.invoke("memory:resolve-pending", payload),
+  memoryRollback: (version) => electron.ipcRenderer.invoke("memory:rollback", version),
+  memoryOpenDir: () => electron.ipcRenderer.invoke("memory:open-dir"),
+  memoryArchiveSession: (payload) => electron.ipcRenderer.invoke("memory:archive-session", payload),
+  memoryOpenPath: (targetPath) => electron.ipcRenderer.invoke("memory:open-path", targetPath),
   startRecording: (opts) => electron.ipcRenderer.invoke("recording:start", opts),
   stopRecording: () => electron.ipcRenderer.invoke("recording:stop"),
   getRecordingStatus: () => electron.ipcRenderer.invoke("recording:status"),

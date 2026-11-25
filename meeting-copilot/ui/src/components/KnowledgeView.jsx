@@ -79,6 +79,15 @@ function computeLineDiff(beforeText, afterText) {
   return rows;
 }
 
+function renderInlineMd(text) {
+  const parts = String(text || '').split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  return parts.map((p, idx) => {
+    if (p.startsWith('**') && p.endsWith('**')) return <strong key={idx}>{p.slice(2, -2)}</strong>;
+    if (p.startsWith('`') && p.endsWith('`')) return <code key={idx} className="mc-inline-code">{p.slice(1, -1)}</code>;
+    return <React.Fragment key={idx}>{p}</React.Fragment>;
+  });
+}
+
 function SimpleMarkdownPreview({ content }) {
   const blocks = useMemo(() => {
     const text = String(content || '').replace(/^\uFEFF/, '').replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
@@ -115,12 +124,12 @@ function SimpleMarkdownPreview({ content }) {
             return <div key={`${i}-${j}`} style={{ fontSize: size, fontWeight: 700, marginTop: 10, marginBottom: 4 }}>{h[2]}</div>;
           }
           if (trimmed.startsWith('> ')) {
-            return <blockquote key={`${i}-${j}`} className="mc-md-quote">{trimmed.slice(2)}</blockquote>;
+            return <blockquote key={`${i}-${j}`} className="mc-md-quote">{renderInlineMd(trimmed.slice(2))}</blockquote>;
           }
           if (/^[-*]\s+/.test(trimmed)) {
-            return <div key={`${i}-${j}`} style={{ paddingLeft: 14, position: 'relative' }}><span style={{ position: 'absolute', left: 3 }}>•</span>{trimmed.replace(/^[-*]\s+/, '')}</div>;
+            return <div key={`${i}-${j}`} style={{ paddingLeft: 14, position: 'relative' }}><span style={{ position: 'absolute', left: 3 }}>•</span>{renderInlineMd(trimmed.replace(/^[-*]\s+/, ''))}</div>;
           }
-          return <p key={`${i}-${j}`} style={{ margin: '2px 0' }}>{line}</p>;
+          return <p key={`${i}-${j}`} style={{ margin: '2px 0' }}>{renderInlineMd(line)}</p>;
         });
       })}
     </div>

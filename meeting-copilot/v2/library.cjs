@@ -209,7 +209,8 @@ function createInterviewLibrary({file,parsePdf}){
  if(dialogue.continuation&&dialogue.turn.followup_only)profile='简短追问：约60—120字，只补一个下一步或本轮需要的新信息。上一条AI草稿仅用于知道已经展示了什么，避免再从头解释同一条链；不能把草稿当成已实施或本人已说过。';
  const roleContext=intro?[]:allowed.filter(d=>d.role_id===role?.role_id&&/(?:^|\/)JD\.md$/i.test(d.file_path)).slice(0,1).map(d=>({title:d.title,usage:'仅用于岗位关注点和回答深度，不证明本人能力或经历',text:(s.index[d.document_id]||[]).map(c=>c.content).join('\n').slice(0,1200)}));
  const memoryEnabled=input.memoryEnabled!==false&&config.memory_recall_enabled!==false;
- const memoryBudget=Number(config.memory_max_chars)>100?Math.min(2000,Number(config.memory_max_chars)):900;
+ const rawBudget=Number(input.memoryMaxChars ?? config.memory_max_chars);
+ const memoryBudget=rawBudget>=100?Math.min(2000,rawBudget):900;
  const interviewMemory=!intro&&memoryEnabled?buildMemoryContext(allowed,s.index,role,memoryBudget):null;
  const tools=['Redis','Kafka','MySQL','Spring Boot','Go','React','Vue','Java','JavaScript','TypeScript','Docker','Kubernetes','AWS','Python','Flask','SQLite','FastAPI','Qdrant','XGBoost'];
  const own=evidence.filter(e=>e.may_support_personal_action&&!/待确认|不说|没有.{0,8}证据/.test(e.excerpt));

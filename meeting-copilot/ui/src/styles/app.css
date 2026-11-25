@@ -1979,3 +1979,12 @@ html.mc-hide-real-cursor * {
 .mc-kb-diff-line.is-del { background: rgba(239, 68, 68, 0.14); color: var(--text); }
 .mc-kb-diff-ln { color: var(--text-faint); user-select: none; }
 .mc-kb-diff-sign { font-weight: 700; user-select: none; }
+
+.mc-inline-code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+}

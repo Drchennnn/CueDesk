@@ -210,6 +210,7 @@ function App() {
       answerLang: session.answerLang || settingsRef.current?.llm?.answerLang || 'chinese',
       libraryOverride: buildLibraryOverrideFor(session),
       memoryEnabled: workbenchPrefsRef.current?.memoryRecallEnabled !== false,
+      memoryMaxChars: workbenchPrefsRef.current?.memoryMaxChars ?? 900,
       codingPrefs: workbenchPrefsRef.current?.codingPrefs,
       dialogueThinking: Boolean(workbenchPrefsRef.current?.dialogueThinking)
     });
