@@ -225,13 +225,11 @@ test('codingPrefs, clickThroughHitTest, and audioController system vs mic routin
   let startedCount = 0;
   let stoppedCount = 0;
   class FakeLoopback {
-    constructor(cb) { this.cb = cb; }
-    async start() { this.cb(new ArrayBuffer(8), 100); }
+    async start(cb) { cb(new ArrayBuffer(8), 100); }
     async stop() {}
   }
   class FakeMic {
-    constructor(cb, _lvl, devId) { this.cb = cb; this.devId = devId; }
-    async start() { this.cb(new ArrayBuffer(4), 200); }
+    async start(_devId, cb) { cb(new ArrayBuffer(4), 200); }
     async stop() {}
   }
   const ctrl = audioController.createAudioController({
@@ -254,4 +252,56 @@ test('codingPrefs, clickThroughHitTest, and audioController system vs mic routin
 
   await ctrl.stop();
   assert.equal(stoppedCount, 2);
+});
+
+test('case settings-partial: omits untouched apiKey, preserves unrelated vision draft, and never triggers ASR restart on font/LLM edits', async () => {
+  const { buildSettingsDiffPatch } = await import(pathToFileURL(path.join(CORE_DIR, 'settingsPatch.js')).href);
+  const baseline = {
+    baseUrl: 'https://api.deepseek.com/v1',
+    model: 'deepseek-chat',
+    answerLang: 'chinese',
+    llmProviderId: 'deepseek',
+    visionBaseUrl: '',
+    visionModel: '',
+    visionProxy: '',
+    multimodal: { enabled: false, mode: 'interview', endpoints: [{ id: 'p1', baseUrl: '', model: '' }] },
+    asrBackend: 'cloud-realtime',
+    language: 'auto',
+    cloudBaseUrl: '',
+    cloudModel: '',
+    rtBaseUrl: 'wss://dashscope.aliyuncs.com',
+    rtModel: 'paraformer-realtime-v2',
+    rtLocalModel: 'fun-asr-nano',
+    asrProviderId: 'aliyun',
+    themDeviceId: '',
+    micDeviceId: '',
+    hotkey: 'Control+B',
+    hotkeyShot: 'Control+Shift+S',
+    hotkeyRegion: 'Control+Shift+A',
+    theme: 'light',
+    fontScale: 'medium',
+    uiLang: 'zh',
+    autoLaunch: false,
+    interviewPrompt: 'default'
+  };
+
+  // User edits fontScale only -> patch contains ONLY ui.fontScale, NO asr, NO llm, NO multimodal
+  const fontOnly = buildSettingsDiffPatch(baseline, { ...baseline, fontScale: 'large' });
+  assert.deepEqual(fontOnly, { ui: { fontScale: 'large' } });
+  assert.equal(fontOnly.asr, undefined);
+
+  // User has unsaved multimodal draft + edits text model without touching existing API key
+  const withDraft = {
+    ...baseline,
+    model: 'deepseek-reasoner',
+    multimodal: { enabled: true, mode: 'written', endpoints: [{ id: 'p1', baseUrl: 'https://v.example/v1', model: 'vl' }] }
+  };
+  const llmOnlyPatch = buildSettingsDiffPatch(baseline, withDraft, {
+    keys: { llm: undefined },
+    includeSections: ['llm']
+  });
+  assert.deepEqual(llmOnlyPatch, { llm: { model: 'deepseek-reasoner' } });
+  assert.equal('apiKey' in llmOnlyPatch.llm, false);
+  assert.equal(llmOnlyPatch.multimodal, undefined);
+  assert.equal(llmOnlyPatch.asr, undefined);
 });

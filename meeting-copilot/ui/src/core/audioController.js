@@ -1,15 +1,20 @@
 /**
- * Unified audio capture router supporting explicit audioSource selection:
- * - audioSource === 'system': system loopback feeds channel "them"; optional secondary mic feeds channel "me".
- * - audioSource === 'mic': microphone directly feeds channel "them" (for in-person / external-speaker interviews).
+ * Unified audio capture router matching MeetingCopilot's LoopbackCapture / MicCapture runtime contract:
+ * - LoopbackCapture: new LoopbackCapture(); await cap.start((buf, ts) => ...)
+ * - MicCapture: new MicCapture(); await mic.start(deviceId, (buf, ts) => ..., opts?)
+ *
+ * Modes:
+ * - audioSource === 'system': LoopbackCapture (or MicCapture with themDeviceId on macOS/input platforms)
+ *   feeds channel "them"; optional secondary MicCapture feeds channel "me".
+ * - audioSource === 'mic': MicCapture directly feeds channel "them" (for in-person / speakerphone interviews).
  */
 export function createAudioController({
   LoopbackCapture,
   MicCapture,
+  platform = 'win32',
   sendPcm,
   notifyStarted,
   notifyStopped,
-  onLevel = () => {},
   onError = () => {}
 }) {
   let primary = null;
@@ -18,27 +23,37 @@ export function createAudioController({
   let currentSource = 'system';
   let currentMicEnabled = false;
   let currentMicDeviceId = '';
+  let currentThemDeviceId = '';
 
-  async function start({ audioSource = 'system', micEnabled = false, micDeviceId = '' } = {}) {
+  async function start({
+    audioSource = 'system',
+    micEnabled = false,
+    micDeviceId = '',
+    themDeviceId = ''
+  } = {}) {
     await stop();
     currentSource = audioSource === 'mic' ? 'mic' : 'system';
     currentMicEnabled = Boolean(micEnabled);
     currentMicDeviceId = String(micDeviceId || '');
+    currentThemDeviceId = String(themDeviceId || '');
 
     const onThemPcm = (buf, ts) => sendPcm(buf, ts, 'them');
     const onMePcm = (buf, ts) => sendPcm(buf, ts, 'me');
 
     try {
       if (currentSource === 'mic') {
-        primary = new MicCapture(onThemPcm, onLevel, currentMicDeviceId || undefined);
-        await primary.start();
+        primary = new MicCapture();
+        await primary.start(currentMicDeviceId || undefined, onThemPcm);
+      } else if (platform === 'darwin') {
+        primary = new MicCapture();
+        await primary.start(currentThemDeviceId || undefined, onThemPcm, { audioProcessing: false });
       } else {
-        primary = new LoopbackCapture(onThemPcm, onLevel);
-        await primary.start();
+        primary = new LoopbackCapture();
+        await primary.start(onThemPcm);
         if (currentMicEnabled) {
           try {
-            secondaryMic = new MicCapture(onMePcm, () => {}, currentMicDeviceId || undefined);
-            await secondaryMic.start();
+            secondaryMic = new MicCapture();
+            await secondaryMic.start(currentMicDeviceId || undefined, onMePcm);
           } catch (micErr) {
             secondaryMic = null;
             onError(`辅助麦克风启动失败（已继续系统音频采集）：${micErr?.message || micErr}`);
@@ -71,8 +86,8 @@ export function createAudioController({
     currentMicDeviceId = String(micDeviceId || '');
     if (!active || currentSource !== 'system') return { ok: true, secondaryMicActive: false };
     if (currentMicEnabled && !secondaryMic) {
-      const mic = new MicCapture((buf, ts) => sendPcm(buf, ts, 'me'), () => {}, currentMicDeviceId || undefined);
-      await mic.start();
+      const mic = new MicCapture();
+      await mic.start(currentMicDeviceId || undefined, (buf, ts) => sendPcm(buf, ts, 'me'));
       secondaryMic = mic;
     } else if (!currentMicEnabled && secondaryMic) {
       try { await secondaryMic.stop(); } catch {}

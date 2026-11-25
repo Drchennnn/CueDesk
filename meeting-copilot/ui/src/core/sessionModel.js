@@ -27,6 +27,9 @@ export function normalizeAttempt(raw, fallbackId) {
     error: String(raw?.error || ''),
     statusText: '',
     evidence: Array.isArray(raw?.evidence) ? raw.evidence : [],
+    evidenceRefs: Array.isArray(raw?.evidenceRefs) ? raw.evidenceRefs : (Array.isArray(raw?.evidence_refs) ? raw.evidence_refs : []),
+    claimEvidence: Array.isArray(raw?.claimEvidence) ? raw.claimEvidence : (Array.isArray(raw?.claim_evidence) ? raw.claim_evidence : []),
+    invalidRefs: Array.isArray(raw?.invalidRefs) ? raw.invalidRefs : (Array.isArray(raw?.invalid_refs) ? raw.invalid_refs : []),
     citations: Array.isArray(raw?.citations) ? raw.citations : [],
     unknownFacts: Array.isArray(raw?.unknownFacts) ? raw.unknownFacts : (Array.isArray(raw?.unknown_facts) ? raw.unknown_facts : []),
     privateNotes: Array.isArray(raw?.privateNotes) ? raw.privateNotes : (Array.isArray(raw?.private_notes) ? raw.private_notes : []),
@@ -144,9 +147,9 @@ export function migrateSession(raw) {
     role: String(raw.role || ''),
     libraryEnabled: typeof raw.libraryEnabled === 'boolean' ? raw.libraryEnabled : null,
     transcriptionMode: ['auto', 'manual', 'transcript-only'].includes(raw.transcriptionMode) ? raw.transcriptionMode : 'auto',
-    resume: String(raw.resume || ''),
+    resume: String(raw.resume ?? raw.resumeText ?? ''),
     resumeName: String(raw.resumeName || ''),
-    jd: String(raw.jd || ''),
+    jd: String(raw.jd ?? raw.jdText ?? ''),
     jdName: String(raw.jdName || ''),
     memo: String(raw.memo || ''),
     // Preserve legacy single-KB fields cleanly
@@ -402,6 +405,9 @@ export function applyLlmEvent(session, ev) {
   } else if (ev.kind === 'oral') {
     if (ev.oral_answer !== undefined) nextAttempt.text = String(ev.oral_answer || '');
     if (Array.isArray(ev.evidence)) nextAttempt.evidence = ev.evidence;
+    if (Array.isArray(ev.evidence_refs)) nextAttempt.evidenceRefs = ev.evidence_refs;
+    if (Array.isArray(ev.claim_evidence)) nextAttempt.claimEvidence = ev.claim_evidence;
+    if (Array.isArray(ev.invalid_refs)) nextAttempt.invalidRefs = ev.invalid_refs;
     if (Array.isArray(ev.citations)) nextAttempt.citations = ev.citations;
     if (Array.isArray(ev.unknown_facts)) nextAttempt.unknownFacts = ev.unknown_facts;
     if (Array.isArray(ev.private_notes)) nextAttempt.privateNotes = ev.private_notes;
