@@ -9,7 +9,7 @@ import {
   sanitizeApiKeyInput,
   storedKeyTest
 } from '@mc/runtime';
-import { IconCheck, IconCopy, IconEye, IconX } from './Icons.jsx';
+import { IconCheck, IconCopy, IconEyeContact, IconX } from './Icons.jsx';
 
 export function Switch({ checked, onChange, disabled = false, success = false, title, 'aria-label': ariaLabel }) {
   return (
@@ -610,7 +610,8 @@ export function eyeContactStatusText(eye) {
 export function EyeContactToggle({ compact = false }) {
   const [eye, setEye] = useState({ enabled: false, phase: 'off' });
   const [busy, setBusy] = useState(false);
-  const [infoOpen, setInfoOpen] = useState(false);
+  const [infoRect, setInfoRect] = useState(null);
+  const btnRef = useRef(null);
   const alive = useRef(true);
 
   useEffect(() => {
@@ -622,45 +623,54 @@ export function EyeContactToggle({ compact = false }) {
     return () => { alive.current = false; off?.(); };
   }, []);
 
+  const openInfoAtBtn = () => {
+    const r = btnRef.current?.getBoundingClientRect();
+    setInfoRect(r || { right: window.innerWidth - 16, bottom: 46 });
+  };
+
   const toggle = async () => {
     if (busy) return;
     setBusy(true);
     try {
       const next = await window.mc.setEyeContactEnabled(!eye.enabled);
-      if (alive.current) { setEye(next); if (next.error) setInfoOpen(true); }
+      if (alive.current) { setEye(next); if (next.error) openInfoAtBtn(); }
     } catch (err) {
-      if (alive.current) { setEye({ enabled: false, phase: 'error', error: err.message }); setInfoOpen(true); }
+      if (alive.current) { setEye({ enabled: false, phase: 'error', error: err.message }); openInfoAtBtn(); }
     } finally {
       if (alive.current) setBusy(false);
     }
   };
 
   const msg = eyeContactStatusText(eye);
+  const popLeft = infoRect ? Math.max(8, Math.min(infoRect.right - 270, window.innerWidth - 278)) : window.innerWidth - 286;
+  const popTop = infoRect ? Math.min(infoRect.bottom + 6, window.innerHeight - 160) : 50;
 
   return (
     <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }} data-interactive="true">
       <button
+        ref={btnRef}
         type="button"
         className={`mc-icon-btn${eye.enabled ? ' is-live' : ''}`}
         disabled={busy}
-        title={`${msg}\n可在「高级设置 → 摄像头与眼神矫正」配置设备与预览`}
+        title={`${msg}\n右键查看状态 · 可在「高级设置 → 摄像头与眼神矫正」配置设备`}
         aria-label="眼神矫正"
         aria-pressed={!!eye.enabled}
         style={eye.error ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}
         onClick={() => void toggle()}
-        onContextMenu={(e) => { e.preventDefault(); setInfoOpen(v => !v); }}
+        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setInfoRect(prev => prev ? null : (btnRef.current?.getBoundingClientRect() || { right: window.innerWidth - 16, bottom: 46 })); }}
       >
-        <IconEye size={15} />
+        <IconEyeContact size={15} />
       </button>
-      {infoOpen && (
+      {infoRect && (
         <div
           className="mc-dropdown-menu"
-          style={{ position: 'fixed', top: 50, right: 16, width: 270, padding: 12, gap: 6 }}
+          style={{ position: 'fixed', top: popTop, left: popLeft, width: 270, padding: 12, gap: 6 }}
           data-interactive="true"
+          onClick={e => e.stopPropagation()}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <strong style={{ fontSize: 12.5 }}>眼神矫正 · NVIDIA Maxine</strong>
-            <button type="button" className="mc-icon-btn" onClick={() => setInfoOpen(false)}><IconX size={13} /></button>
+            <button type="button" className="mc-icon-btn" onClick={() => setInfoRect(null)}><IconX size={13} /></button>
           </div>
           <div className={eye.error ? 'mc-alert mc-alert-err' : 'mc-field-hint'}>{msg}</div>
           {eye.enabled && (

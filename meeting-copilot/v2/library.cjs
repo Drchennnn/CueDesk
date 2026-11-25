@@ -35,7 +35,7 @@ function createInterviewLibrary({file,parsePdf}){
  if(targetRole&&!r)throw Error('所选岗位无法唯一定位：'+targetRole+'；请在设置选择现有岗位');
  if(overrideRole===undefined&&r&&(config.role_id!==r.role_id||config.role!==r.directory)){config={...config,role_id:r.role_id,role:r.directory};atomic(file,config);}return r;}
  async function ready(overrideRole){const primary=current();await primary.refresh();const role=roleFor(primary,overrideRole);const s=await vectorSource.view(primary,config.vector_rag);return {s,role};}
- async function getPublic(){try{const {s,role}=await ready();const active=s.manifest.documents.filter(d=>d.status==='active'&&!d.retrieval_excluded&&(!d.role_id||d.role_id===role?.role_id));return {...config,material_status:materialStatus(config,active),roles:s.manifest.roles.map(r=>r.directory),files:active.map(d=>d.file_path),retired_sources:s.manifest.documents.filter(d=>d.status==='retired').map(d=>d.file_path),warning:s.diagnostics.join('\n'),last,indexDirectory:s.dir,documents:s.manifest.documents.map(({document_id,title,document_type,status,version})=>({document_id,title,document_type,status,version}))};}catch(e){return {...config,material_status:materialStatus(config,[],e.message),roles:store?.manifest.roles.map(r=>r.directory)||[],files:[],warning:e.message,last};}}
+ async function getPublic(){try{const {s,role}=await ready();const active=s.manifest.documents.filter(d=>d.status==='active'&&!d.retrieval_excluded&&(!d.role_id||d.role_id===role?.role_id));return {...config,material_status:materialStatus(config,active),roles:s.manifest.roles.map(r=>r.directory),files:active.map(d=>d.file_path),retired_sources:s.manifest.documents.filter(d=>d.status==='retired').map(d=>d.file_path),warning:s.diagnostics.join('\n'),last,indexDirectory:s.dir,documents:s.manifest.documents.map(({document_id,title,file_path,file_type,document_type,status,version,role_id,project_id,tags})=>({document_id,title,file_path,file_type,document_type,status,version,role_id,project_id,tags}))};}catch(e){return {...config,material_status:materialStatus(config,[],e.message),roles:store?.manifest.roles.map(r=>r.directory)||[],files:[],warning:e.message,last};}}
  async function save(patch){const prior=config;config={...config,enabled:patch.enabled===true,root:String(patch.root||''),role:String(patch.role||'')};if(patch.persona_profile!==undefined)config.persona_profile=patch.persona_profile?{enabled:patch.persona_profile.enabled===true,document_id:String(patch.persona_profile.document_id||'')}:null;if(patch.intro_script!==undefined)config.intro_script=patch.intro_script?{enabled:patch.intro_script.enabled===true,document_id:String(patch.intro_script.document_id||''),heading:String(patch.intro_script.heading||'约2分钟')}:null;if(config.role!==prior.role||config.root!==prior.root)config.role_id=null;try{if(config.enabled)await ready();atomic(file,config);return getPublic();}catch(e){config=prior;throw e;}}
  async function build(input,fallback=[]){if(input.mode==='translate'||input.scene==='written')return fallback;
  const started=performance.now();
@@ -201,6 +201,22 @@ function createInterviewLibrary({file,parsePdf}){
  Object.defineProperty(messages,'evidence',{value:evidence});Object.defineProperty(messages,'diagnostics',{value:diagnostics});Object.defineProperty(messages,'blockedUnknown',{value:blockedUnknown});Object.defineProperty(messages,'dialogueState',{value:dialogue});Object.defineProperty(messages,'answerPolicy',{value:answerPolicy});Object.defineProperty(messages,'directAnswer',{value:dialogue.clarify?'你具体指哪个项目或哪一部分？':null});return messages;
  }
  async function locate(ref){const {s}=await ready();const located=s.locate(ref.document_id,ref.chunk_id,ref.content_hash);if(ref.image_id){const image=located.chunk.image_refs?.find(i=>i.image_id===ref.image_id);if(!image)throw Error('图片不属于当前来源片段');const f=require('./store.cjs').inside(s.root,path.resolve(path.dirname(located.file),image.relative_path));if(!/\.(png|jpe?g|webp|gif)$/i.test(f)||hash(fs.readFileSync(f))!==image.content_hash)throw Error('图片内容已变化或类型不支持');return {...located,file:f};}return located;}
- return {getPublic,save,build,locate,get enabled(){return config.enabled;}};
+ async function readDocument(ref){
+  const {s}=await ready();
+  const key=typeof ref==='string'?ref:(ref?.document_id||ref?.file_path||'');
+  const doc=s.manifest.documents.find(d=>d.status==='active'&&(d.document_id===key||d.file_path===key));
+  if(!doc)throw Error('未找到可用文档：'+key);
+  const full=require('./store.cjs').inside(s.root,path.join(s.root,doc.file_path));
+  let content='';
+  if(doc.file_type==='pdf'){
+   const chunks=s.index[doc.document_id]||[];
+   content=chunks.map(c=>(c.heading?`## ${c.heading}\n`:'')+c.content).join('\n\n');
+  }else{
+   const raw=fs.readFileSync(full,'utf8').replace(/^\uFEFF/,'');
+   content=raw.length>240000?raw.slice(0,240000)+'\n\n[文件内容过长，已截断显示前 240,000 字符]':raw;
+  }
+  return {document_id:doc.document_id,title:doc.title,file_path:doc.file_path,file_type:doc.file_type,document_type:doc.document_type,version:doc.version,file:full,content};
+ }
+ return {getPublic,save,build,locate,readDocument,get enabled(){return config.enabled;}};
 }
 module.exports={createInterviewLibrary,intent,terms,SYSTEM};

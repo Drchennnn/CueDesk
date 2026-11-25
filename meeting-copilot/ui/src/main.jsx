@@ -208,7 +208,8 @@ function App() {
       scene: session.scene || 'interview',
       answerLang: session.answerLang || settingsRef.current?.llm?.answerLang || 'chinese',
       libraryOverride: buildLibraryOverrideFor(session),
-      codingPrefs: workbenchPrefsRef.current?.codingPrefs
+      codingPrefs: workbenchPrefsRef.current?.codingPrefs,
+      dialogueThinking: Boolean(workbenchPrefsRef.current?.dialogueThinking)
     });
   }, [buildLibraryOverrideFor]);
 
@@ -650,12 +651,12 @@ function App() {
     }
   }, [patchSessionById]);
 
-  const handleTranslateAnswer = useCallback(async (questionId, attemptId, text) => {
+  const handleTranslateAnswer = useCallback(async (questionId, attemptId, text, targetLang = 'zh-CN') => {
     const sid = activeSessionIdRef.current;
     if (!sid || !text) return;
     try {
-      const zh = await window.mc.translate(text);
-      patchSessionById(sid, s => setAttemptTranslation(s, questionId, attemptId, { translation: zh, error: '' }));
+      const translated = await window.mc.translate(text, targetLang);
+      patchSessionById(sid, s => setAttemptTranslation(s, questionId, attemptId, { translation: translated, error: '' }));
     } catch (e) {
       patchSessionById(sid, s => setAttemptTranslation(s, questionId, attemptId, { error: e.message || '翻译失败' }));
     }
@@ -760,7 +761,9 @@ function App() {
         onSaveProgressSync={handleSaveProgressSync}
         onEndSessionSave={handleEndSessionSave}
         onEndSessionDiscard={handleEndSessionDiscard}
+        onSettingsUpdated={setSettings}
         onOpenSettings={() => navigateWithFlush('settings', 'models')}
+        onOpenKnowledgeSettings={() => navigateWithFlush('knowledge')}
       />
     );
   }

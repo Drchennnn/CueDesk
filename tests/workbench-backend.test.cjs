@@ -176,27 +176,42 @@ test('workbench-window switches home/workbench modes, smart click-through, hover
   wb.setMode('workbench');
   assert.deepEqual(win.getMinimumSize(), [...WORKBENCH_MIN]);
   assert.equal(win.isAlwaysOnTop(), true);
-  assert.equal(win.getSkipTaskbar(), true);
+  // SuiSi parity: skipTaskbar stays false in normal workbench (only true in security/written-compact mode)
+  assert.equal(win.getSkipTaskbar(), false);
 
   // Smart click-through transitions
   wb.setClickThrough(true);
   assert.deepEqual(win.getIgnoreMouse(), { ignore: true, forward: true });
+  assert.equal(win.isFocusable(), false);
   wb.setMouseInteractive(true);
   assert.deepEqual(win.getIgnoreMouse(), { ignore: false, forward: false });
   wb.setMouseInteractive(false);
   assert.deepEqual(win.getIgnoreMouse(), { ignore: true, forward: true });
-  // Global hotkey Ctrl+Shift+9 turns click-through off
+  // Turning off alwaysOnTop automatically disables clickThrough so window cannot get trapped behind other apps
+  wb.setAlwaysOnTop(false);
+  assert.equal(wb.getWindowState().clickThrough, false);
+  assert.deepEqual(win.getIgnoreMouse(), { ignore: false, forward: false });
+  wb.setAlwaysOnTop(true);
+
+  // Global hotkey Ctrl+Shift+9 turns click-through on and off
+  shortcuts.trigger('Control+Shift+9');
+  assert.equal(wb.getWindowState().clickThrough, true);
   shortcuts.trigger('Control+Shift+9');
   assert.equal(wb.getWindowState().clickThrough, false);
   assert.deepEqual(win.getIgnoreMouse(), { ignore: false, forward: false });
 
-  // Prevent focus + temp focus restores on blur
+  // Prevent focus + temp focus restores on blur; Home mode ALWAYS remains focusable!
   wb.setPreventFocus(true);
   assert.equal(win.isFocusable(), false);
+  assert.equal(win.isAlwaysOnTop(), true);
   wb.requestTempFocus(true);
   assert.equal(win.isFocusable(), true);
   assert.equal(win.calls.focus, 1);
   win.emit('blur');
+  assert.equal(win.isFocusable(), false);
+  wb.setMode('home');
+  assert.equal(win.isFocusable(), true, 'Home mode must ALWAYS stay focusable even when preventFocus pref is true');
+  wb.setMode('workbench');
   assert.equal(win.isFocusable(), false);
   wb.setPreventFocus(false);
   assert.equal(win.isFocusable(), true);
@@ -235,17 +250,74 @@ test('workbench-window switches home/workbench modes, smart click-through, hover
   assert.equal(wb.resolveCaptureRect('missing-display').fallback, true);
   assert.equal(wb.resolveCaptureRect('missing-display').rect, null);
 
-  // Hover polling fires on outside transition and stops when switching back to home
+  // Hover polling fires on outside transition, engages native passthrough, and respects setHoverBlocked
   prefs.applyPatch({ hoverReveal: true });
   wb.syncHoverPolling();
   cursor.current = { x: 9999, y: 9999 };
   await new Promise(r => setTimeout(r, 70));
   assert.ok(hoverEvents.includes(false));
+  assert.deepEqual(win.getIgnoreMouse(), { ignore: true, forward: true }, 'hoverReveal hidden state must pass clicks through');
+  wb.setHoverBlocked(true);
+  assert.deepEqual(win.getIgnoreMouse(), { ignore: false, forward: false }, 'hoverBlocked restores interactivity immediately');
+  wb.setHoverBlocked(false);
+
+  // Cursor-in-content DIP coordinate helper + JS drag
+  win.getContentBounds = () => ({ x: 100, y: 100, width: 920, height: 464 });
+  win.webContents = { getZoomFactor: () => 1.25 };
+  cursor.current = { x: 225, y: 150 };
+  const pt = wb.getCursorInContent();
+  assert.deepEqual(pt, { x: 100, y: 40, inside: true });
+  const beforeDrag = win.getBounds();
+  assert.equal(wb.beginDrag(300, 200), true);
+  assert.equal(wb.dragTo(350, 230), true);
+  assert.equal(win.getBounds().x, beforeDrag.x + 50);
+  assert.equal(win.getBounds().y, beforeDrag.y + 30);
+  wb.endDrag();
+
+  // Workbench editable hotkeys + Mouse4/5 bindings + conflict rollback
+  wb.setWorkbenchHotkeys({ bindings: { questionPrev: 'Control+Alt+1', toggleHoverReveal: 'Mouse4' } });
+  assert.equal(wb.getWindowState().workbenchHotkeys.questionPrev, 'Control+Alt+1');
+  assert.deepEqual(wb.getMouseBindings(), [{ action: 'toggleHoverReveal', key: 'Mouse4' }]);
+  assert.throws(() => wb.setWorkbenchHotkeys({ bindings: { questionNext: 'Control+Alt+1' } }), /重复/);
+  wb.resetWorkbenchHotkeys();
+  assert.equal(wb.getWindowState().workbenchHotkeys.questionPrev, '');
+  assert.equal(wb.getWindowState().workbenchHotkeys.toggleClickThrough, 'Control+Shift+9');
 
   wb.setMode('home');
   assert.deepEqual(win.getMinimumSize(), [...HOME_MIN]);
   assert.equal(win.isAlwaysOnTop(), false);
   wb.dispose();
+});
+
+test('v2 library readDocument reads files inside root and rejects invalid ids', async t => {
+  const dir = tmpDir(t);
+  const libRoot = path.join(dir, 'kb');
+  fs.mkdirSync(path.join(libRoot, '项目资料'), { recursive: true });
+  fs.writeFileSync(path.join(libRoot, '项目资料', '架构笔记.md'), '# 架构设计\n使用 Redis 与本地缓存二级分层。');
+  const lib = createInterviewLibrary({ file: path.join(dir, 'interview-library.json') });
+  const pub = await lib.save({ enabled: true, root: libRoot, role: '' });
+  assert.ok(pub.documents.length >= 1);
+  const doc = pub.documents[0];
+  assert.ok(doc.file_path);
+  const loaded = await lib.readDocument({ document_id: doc.document_id });
+  assert.match(loaded.content, /二级分层/);
+  await assert.rejects(() => lib.readDocument({ document_id: 'missing-doc' }), /未找到可用文档/);
+});
+
+test('written-window does not hijack alwaysOnTop or focusable when disabled', t => {
+  const { createWrittenWindow } = require('../meeting-copilot/written-window.cjs');
+  const dir = tmpDir(t);
+  const scr = { getDisplayMatching: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }) };
+  const host = createWrittenWindow({ file: path.join(dir, 'written.json'), screen: scr });
+  const win = fakeWindow();
+  win.setAlwaysOnTop(false);
+  win.setSkipTaskbar(false);
+  host.attach(win);
+  win.emit('show');
+  win.emit('blur');
+  assert.equal(win.isAlwaysOnTop(), false, 'disabled written-window must not force alwaysOnTop on Home');
+  assert.equal(win.getSkipTaskbar(), false, 'disabled written-window must not force skipTaskbar on Home');
+  win.emit('closed');
 });
 
 test('quiet-capture passes --capture-rect when display rect is supplied', async t => {

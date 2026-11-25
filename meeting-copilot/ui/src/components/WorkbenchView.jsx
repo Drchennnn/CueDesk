@@ -7,40 +7,50 @@ import {
 } from '../core/sessionModel.js';
 import {
   CODING_EXPLAIN_MODES,
+  CODING_FORMATS,
   CODING_LANGUAGES,
   formatCodingSummary,
   normalizeCodingPrefs
 } from '../core/codingPrefs.js';
-import { isInteractiveTarget } from '../core/clickThroughHitTest.js';
+import { isInteractiveTarget, startClickThroughPolling } from '../core/clickThroughHitTest.js';
 import { resolveAsrCapabilities } from '../core/turnPolicy.js';
-import { GearPopover, ShortcutCheatSheetModal } from './GearPopover.jsx';
+import { AnchoredPopover } from './AnchoredPopover.jsx';
+import { GearPopover, WorkbenchShortcutsModal } from './GearPopover.jsx';
 import { ThirdPane } from './ThirdPane.jsx';
+import { VirtualCursor } from './VirtualCursor.jsx';
 import {
   IconArrowLeft,
+  IconArrowUp,
+  IconAt,
+  IconBookOpen,
   IconCheck,
+  IconChevronDown,
   IconCode,
   IconCopy,
   IconDownload,
   IconEye,
   IconEyeOff,
   IconFolder,
+  IconGrid4,
   IconMaximize,
   IconMic,
   IconMicOff,
   IconMinus,
+  IconMousePointer,
   IconPanelLeft,
   IconPanelRight,
   IconPin,
   IconRefresh,
   IconRestore,
   IconScan,
-  IconSend,
   IconSettings,
+  IconSignal,
   IconSpeaker,
   IconSpeakerOff,
   IconSquare,
   IconTrash,
-  IconX
+  IconX,
+  IconZap
 } from './Icons.jsx';
 import {
   EyeContactToggle,
@@ -60,7 +70,7 @@ function formatTimer(seconds) {
 function ExitConfirmModal({ saving, error, onSaveExit, onDiscardExit, onCancel }) {
   return (
     <div className="mc-modal-backdrop" onClick={onCancel} data-interactive="true">
-      <div className="mc-modal mc-modal-sm" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="结束本次面试会话">
+      <div className="mc-modal mc-modal-sm mc-modal-anim" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="结束本次面试会话">
         <div className="mc-modal-header">
           <h3 className="mc-modal-title">保存到最近记录？</h3>
           <button type="button" className="mc-icon-btn" onClick={onCancel} disabled={saving}><IconX size={14} /></button>
@@ -128,22 +138,26 @@ export function WorkbenchView({
   onSaveProgressSync,
   onEndSessionSave,
   onEndSessionDiscard,
-  onOpenSettings
+  onSettingsUpdated,
+  onOpenSettings,
+  onOpenKnowledgeSettings
 }) {
   const [draftText, setDraftText] = useState('');
   const [leftTab, setLeftTab] = useState('questions'); // 'questions' | 'transcript'
   const [elapsedSec, setElapsedSec] = useState(0);
-  const [gearAnchor, setGearAnchor] = useState(null);
+  const [gearOpen, setGearOpen] = useState(false);
   const [shortcutModalOpen, setShortcutModalOpen] = useState(false);
   const [exitModalOpen, setExitModalOpen] = useState(false);
   const [exitSaving, setExitSaving] = useState(false);
   const [exitError, setExitError] = useState('');
-  const [saveToast, setSaveToast] = useState(null); // { ok, text }
+  const [saveToast, setSaveToast] = useState(null);
   const [clearArmed, setClearArmed] = useState(false);
   const [modePopoverOpen, setModePopoverOpen] = useState(false);
   const [codingPopoverOpen, setCodingPopoverOpen] = useState(false);
   const [shotMenuOpen, setShotMenuOpen] = useState(false);
   const [audioPillOpen, setAudioPillOpen] = useState(false);
+  const [kbMenuOpen, setKbMenuOpen] = useState(false);
+  const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
   const [inputFocused, setInputFocused] = useState(false);
   const [copiedAnswer, setCopiedAnswer] = useState(false);
   const [dragQuestionId, setDragQuestionId] = useState(null);
@@ -151,9 +165,18 @@ export function WorkbenchView({
 
   // Split layout state
   const [leftRatio, setLeftRatio] = useState(workbenchPrefs?.leftPaneRatio ?? 0.5);
-  const [sideWidth, setSideWidth] = useState(workbenchPrefs?.sidePaneWidth ?? 300);
+  const [sideWidth, setSideWidth] = useState(workbenchPrefs?.sidePaneWidth ?? 320);
   const [draggingDivider, setDraggingDivider] = useState(null); // 'main' | 'side' | null
   const [leftPaneWidth, setLeftPaneWidth] = useState(360);
+
+  // Trigger refs for dynamically anchored popovers (ZERO hardcoded coordinates!)
+  const gearBtnRef = useRef(null);
+  const audioBtnRef = useRef(null);
+  const shotBtnRef = useRef(null);
+  const kbBtnRef = useRef(null);
+  const modeBtnRef = useRef(null);
+  const codingBtnRef = useRef(null);
+  const modelBtnRef = useRef(null);
 
   const contentRef = useRef(null);
   const leftPaneRef = useRef(null);
@@ -162,6 +185,7 @@ export function WorkbenchView({
   const prevQuestionIdRef = useRef(null);
   const audioPillTimerRef = useRef(null);
   const mouseInteractiveRef = useRef(false);
+  const windowDraggingRef = useRef(false);
 
   const selectedQuestion = getSelectedQuestion(session);
   const activeAttempt = getActiveAttempt(selectedQuestion);
@@ -174,11 +198,18 @@ export function WorkbenchView({
   const leftCollapsed = Boolean(workbenchPrefs?.leftPaneCollapsed);
   const sideOpen = Boolean(workbenchPrefs?.sidePaneOpen);
   const sideTab = workbenchPrefs?.sidePaneTab || 'evidence';
+  const sideTabs = workbenchPrefs?.sidePaneTabs?.length ? workbenchPrefs.sidePaneTabs : [sideTab];
   const hoverReveal = Boolean(workbenchPrefs?.hoverReveal);
   const autoCollapseChrome = Boolean(workbenchPrefs?.autoCollapseChrome);
+  const dialogueThinking = Boolean(workbenchPrefs?.dialogueThinking);
+  const translationTargetLang = workbenchPrefs?.translationTargetLang || 'zh-CN';
   const preventFocus = Boolean(windowState?.preventFocus);
   const clickThrough = Boolean(windowState?.clickThrough);
   const alwaysOnTop = windowState?.alwaysOnTop !== false;
+  const virtualCursorActive = Boolean(windowState?.securityMode?.enabled && windowState?.securityMode?.hideCursor !== false);
+  const clickThroughKeyLabel = (windowState?.workbenchHotkeys?.toggleClickThrough || windowState?.hotkeys?.toggleClickThrough || 'Control+Shift+9')
+    .replace(/Control/gi, 'Ctrl')
+    .replace(/\+/g, ' + ');
 
   // Sync ratio/sideWidth from prefs when not dragging
   useEffect(() => {
@@ -228,21 +259,34 @@ export function WorkbenchView({
     prevQuestionIdRef.current = nextId;
   }, [selectedQuestion?.id]);
 
-  // Smart Local Click-Through hit-testing
+  // Smart Local Click-Through: SuiSi 80ms main-process cursor poller + mousemove fast-path
   useEffect(() => {
     if (!clickThrough) {
-      mouseInteractiveRef.current = false;
+      if (mouseInteractiveRef.current) {
+        mouseInteractiveRef.current = false;
+        window.mc?.setMouseInteractive?.(false);
+      }
       return;
     }
-    const onMove = (e) => {
-      const interactive = isInteractiveTarget(e.target, e.clientX, e.clientY);
-      if (interactive !== mouseInteractiveRef.current) {
-        mouseInteractiveRef.current = interactive;
-        window.mc?.setMouseInteractive?.(interactive);
+    const pushInteractive = (next) => {
+      const val = Boolean(next);
+      if (val !== mouseInteractiveRef.current) {
+        mouseInteractiveRef.current = val;
+        window.mc?.setMouseInteractive?.(val);
       }
+    };
+    const stopPolling = startClickThroughPolling(
+      window.mc?.getCursorInContent,
+      pushInteractive,
+      80
+    );
+    const onMove = (e) => {
+      const target = e.target instanceof Element ? e.target : document.elementFromPoint(e.clientX, e.clientY);
+      pushInteractive(isInteractiveTarget(target, e.clientX, e.clientY));
     };
     window.addEventListener('mousemove', onMove, { passive: true });
     return () => {
+      stopPolling();
       window.removeEventListener('mousemove', onMove);
       if (mouseInteractiveRef.current) {
         mouseInteractiveRef.current = false;
@@ -251,38 +295,113 @@ export function WorkbenchView({
     };
   }, [clickThrough]);
 
-  // Close popovers on outside click / Esc
-  useEffect(() => {
-    const onWinClick = () => {
-      setGearAnchor(null);
-      setModePopoverOpen(false);
-      setCodingPopoverOpen(false);
-      setShotMenuOpen(false);
-      setClearArmed(false);
-    };
-    const onKey = (e) => {
-      if (e.key === 'Escape') {
-        setGearAnchor(null);
-        setModePopoverOpen(false);
-        setCodingPopoverOpen(false);
-        setShotMenuOpen(false);
-        setClearArmed(false);
-      }
-    };
-    window.addEventListener('click', onWinClick);
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('click', onWinClick);
-      window.removeEventListener('keydown', onKey);
-    };
+  // Clean up JS drag if component unmounts mid-drag
+  useEffect(() => () => {
+    if (windowDraggingRef.current) {
+      windowDraggingRef.current = false;
+      window.mc?.dragEnd?.();
+    }
   }, []);
 
-  // Layered opacity CSS custom properties
+  // Hover-reveal & auto-collapse blocking whenever popovers/modals/input/drag are active
   const isAnimationSuppressed = Boolean(
-    gearAnchor || shortcutModalOpen || exitModalOpen || codingPopoverOpen ||
-    modePopoverOpen || shotMenuOpen || audioPillOpen || inputFocused ||
-    windowState?.tempFocus || exitError
+    gearOpen || shortcutModalOpen || exitModalOpen || codingPopoverOpen ||
+    modePopoverOpen || shotMenuOpen || audioPillOpen || kbMenuOpen || modelPopoverOpen ||
+    inputFocused || draggingDivider || windowState?.tempFocus || exitError
   );
+  useEffect(() => {
+    void window.mc?.setHoverBlocked?.(isAnimationSuppressed)?.catch?.(() => {});
+  }, [isAnimationSuppressed]);
+  useEffect(() => () => {
+    void window.mc?.setHoverBlocked?.(false)?.catch?.(() => {});
+  }, []);
+
+  const effectiveLibEnabled = typeof session?.libraryEnabled === 'boolean' ? session.libraryEnabled : Boolean(library?.enabled);
+
+  // Workbench hotkey action listener (navigation, scroll, audio, manual send, KB, quick close)
+  const hotkeyCtxRef = useRef({});
+  hotkeyCtxRef.current = {
+    session,
+    selectedQuestion,
+    effectiveLibEnabled,
+    onSelectQuestion,
+    onToggleCapture,
+    onCommitManualDraft,
+    onClearTranscript,
+    onChangeSessionMeta,
+    onEndSessionDiscard
+  };
+  useEffect(() => {
+    const off = window.mc?.onWorkbenchHotkeyAction?.(({ action }) => {
+      const ctx = hotkeyCtxRef.current;
+      const qs = ctx.session?.questions || [];
+      if (action === 'questionPrev' && qs.length > 0) {
+        const idx = qs.findIndex(q => q.id === ctx.selectedQuestion?.id);
+        const nextIdx = idx <= 0 ? 0 : idx - 1;
+        ctx.onSelectQuestion(qs[nextIdx].id);
+      } else if (action === 'questionNext' && qs.length > 0) {
+        const idx = qs.findIndex(q => q.id === ctx.selectedQuestion?.id);
+        const nextIdx = idx < 0 ? 0 : Math.min(qs.length - 1, idx + 1);
+        ctx.onSelectQuestion(qs[nextIdx].id);
+      } else if (action === 'scrollUp') {
+        answerScrollRef.current?.scrollBy({ top: -180, behavior: 'smooth' });
+      } else if (action === 'scrollDown') {
+        answerScrollRef.current?.scrollBy({ top: 180, behavior: 'smooth' });
+      } else if (action === 'toggleAudioCapture') {
+        ctx.onToggleCapture();
+      } else if (action === 'manualSend') {
+        ctx.onCommitManualDraft();
+      } else if (action === 'clearTranscript') {
+        ctx.onClearTranscript();
+      } else if (action === 'toggleKnowledge') {
+        ctx.onChangeSessionMeta({ libraryEnabled: !ctx.effectiveLibEnabled });
+      } else if (action === 'closeWithoutSave') {
+        void ctx.onEndSessionDiscard();
+      }
+    });
+    return () => off?.();
+  }, []);
+
+  const closeOtherPopovers = useCallback((except) => {
+    if (except !== 'gear') setGearOpen(false);
+    if (except !== 'coding') setCodingPopoverOpen(false);
+    if (except !== 'mode') setModePopoverOpen(false);
+    if (except !== 'shot') setShotMenuOpen(false);
+    if (except !== 'audio') setAudioPillOpen(false);
+    if (except !== 'kb') setKbMenuOpen(false);
+    if (except !== 'model') setModelPopoverOpen(false);
+  }, []);
+
+  // SuiSi JS window dragging on topbar (zero `-webkit-app-region: drag`, pointer-captured + main-process DIP coords)
+  const handleTopbarPointerDown = (e) => {
+    if (e.button !== 0 || clickThrough) return;
+    if (e.target.closest?.('button, input, select, textarea, a, [role="button"], [role="switch"]')) return;
+    e.preventDefault();
+    const headerEl = e.currentTarget;
+    const pid = e.pointerId;
+    try { headerEl.setPointerCapture?.(pid); } catch {}
+    windowDraggingRef.current = true;
+    window.mc?.dragStart?.();
+    const onMove = () => {
+      if (windowDraggingRef.current) window.mc?.dragMove?.();
+    };
+    const onUp = () => {
+      if (!windowDraggingRef.current) return;
+      windowDraggingRef.current = false;
+      try { headerEl.releasePointerCapture?.(pid); } catch {}
+      window.mc?.dragEnd?.();
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('pointerup', onUp, true);
+      window.removeEventListener('pointercancel', onUp, true);
+      window.removeEventListener('blur', onUp);
+    };
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('pointerup', onUp, true);
+    window.addEventListener('pointercancel', onUp, true);
+    window.addEventListener('blur', onUp);
+  };
+
+  // Layered opacity CSS custom properties
   const effectiveHoverInside = hoverInside || isAnimationSuppressed;
   const shouldHoverFade = hoverReveal && !effectiveHoverInside;
   const shouldCollapseChrome = autoCollapseChrome && !effectiveHoverInside;
@@ -363,6 +482,26 @@ export function WorkbenchView({
     window.addEventListener('mouseup', onUp);
   };
 
+  // Multi-tab Third Pane helpers
+  const openThirdPaneTab = useCallback((targetTab, replaceLauncher = false) => {
+    let nextTabs = [...sideTabs];
+    if (replaceLauncher) {
+      nextTabs = nextTabs.filter(t => t !== 'launcher');
+    }
+    if (!nextTabs.includes(targetTab)) nextTabs.push(targetTab);
+    void onUpdatePrefs({ sidePaneOpen: true, sidePaneTab: targetTab, sidePaneTabs: nextTabs });
+  }, [sideTabs, onUpdatePrefs]);
+
+  const closeThirdPaneTab = useCallback((targetTab) => {
+    const nextTabs = sideTabs.filter(t => t !== targetTab);
+    if (!nextTabs.length) {
+      void onUpdatePrefs({ sidePaneOpen: false });
+      return;
+    }
+    const nextActive = sideTab === targetTab ? nextTabs[nextTabs.length - 1] : sideTab;
+    void onUpdatePrefs({ sidePaneTab: nextActive, sidePaneTabs: nextTabs });
+  }, [sideTabs, sideTab, onUpdatePrefs]);
+
   const handlePrimaryAction = () => {
     if (primaryBtn.action === 'send') {
       const q = draftText.trim();
@@ -428,12 +567,12 @@ export function WorkbenchView({
     } catch {}
   };
 
-  const openThirdPane = (targetTab) => {
-    void onUpdatePrefs({ sidePaneOpen: true, sidePaneTab: targetTab });
-  };
-
   const leftTierClass = leftPaneWidth < 150 ? 'is-narrow' : leftPaneWidth < 230 ? 'is-compact' : '';
-  const effectiveLibEnabled = typeof session?.libraryEnabled === 'boolean' ? session.libraryEnabled : Boolean(library?.enabled);
+  const modeMeta = session.transcriptionMode === 'manual'
+    ? { label: '手动', color: 'var(--success)', desc: '累计对方发言后手动发送' }
+    : session.transcriptionMode === 'transcript-only'
+      ? { label: '转写', color: 'var(--warning)', desc: '仅记录转写，不自动调用大模型' }
+      : { label: '自动', color: 'var(--text-muted)', desc: '自动识别完整提问并生成回答' };
 
   const renderAnswerBody = (question, attempt) => {
     if (!attempt) return <div className="mc-field-hint">正在等待回答…</div>;
@@ -477,8 +616,12 @@ export function WorkbenchView({
         className={`mc-wb-shell${effectiveHoverInside ? ' is-hover-in' : ''}${shouldCollapseChrome ? ' is-chrome-collapsed' : ''}${windowState?.maximized ? ' is-maximized' : ''}`}
         style={shellStyle}
       >
-        {/* 44px TOP CHROME */}
-        <header className="mc-wb-topbar" data-interactive="true">
+        {/* 44px TOP CHROME (JS pointer drag, zero -webkit-app-region: drag) */}
+        <header
+          className="mc-wb-topbar"
+          data-interactive="true"
+          onPointerDown={handleTopbarPointerDown}
+        >
           <div className="mc-wb-topbar-left">
             <button type="button" className="mc-icon-btn" title="返回首页（保持当前面试与采集运行）" aria-label="返回首页" onClick={onBackHome}>
               <IconArrowLeft size={15} />
@@ -504,6 +647,7 @@ export function WorkbenchView({
                 onMouseLeave={() => { audioPillTimerRef.current = setTimeout(() => setAudioPillOpen(false), 180); }}
               >
                 <button
+                  ref={audioBtnRef}
                   type="button"
                   className={`mc-icon-btn${capturing ? ' is-live' : ''}`}
                   title={capturing
@@ -516,64 +660,26 @@ export function WorkbenchView({
                     ? (capturing ? <IconMic size={15} /> : <IconMicOff size={15} />)
                     : (capturing ? <IconSpeaker size={15} /> : <IconSpeakerOff size={15} />)}
                 </button>
-                {audioPillOpen && (
-                  <div
-                    data-interactive="true"
-                    style={{
-                      position: 'fixed', top: 48, right: 160, zIndex: 9950,
-                      display: 'inline-flex', alignItems: 'center', gap: 4, padding: 4,
-                      borderRadius: 99, border: '1px solid var(--border)', background: 'var(--popover-bg)', boxShadow: 'var(--shadow-md)'
-                    }}
-                    onMouseEnter={() => clearTimeout(audioPillTimerRef.current)}
-                    onMouseLeave={() => { audioPillTimerRef.current = setTimeout(() => setAudioPillOpen(false), 150); }}
-                  >
-                    <button
-                      type="button"
-                      className={`mc-btn mc-btn-sm ${session.audioSource === 'system' ? 'mc-btn-primary' : 'mc-btn-ghost'}`}
-                      style={{ height: 24, borderRadius: 99 }}
-                      onClick={() => { onSwitchAudioSource('system'); setAudioPillOpen(false); }}
-                    >
-                      <IconSpeaker size={12} /> 系统音频
-                    </button>
-                    <button
-                      type="button"
-                      className={`mc-btn mc-btn-sm ${session.audioSource === 'mic' ? 'mc-btn-primary' : 'mc-btn-ghost'}`}
-                      style={{ height: 24, borderRadius: 99 }}
-                      onClick={() => { onSwitchAudioSource('mic'); setAudioPillOpen(false); }}
-                    >
-                      <IconMic size={12} /> 麦克风
-                    </button>
-                  </div>
-                )}
               </div>
 
               {/* Screenshot capture + quick mode menu */}
-              <div style={{ position: 'relative', display: 'inline-flex' }}>
-                <button
-                  type="button"
-                  className="mc-icon-btn"
-                  title="截取屏幕识题（右键展开框选/笔试小窗）"
-                  aria-label="截取屏幕识题"
-                  onClick={() => onCaptureScreen('full')}
-                  onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setShotMenuOpen(v => !v); }}
-                >
-                  <IconScan size={15} />
-                </button>
-                {shotMenuOpen && (
-                  <div className="mc-dropdown-menu" style={{ top: 46, right: 150 }} data-interactive="true" onClick={e => e.stopPropagation()}>
-                    <button type="button" className="mc-dropdown-item" onClick={() => { setShotMenuOpen(false); onCaptureScreen('full'); }}>全屏截图识题</button>
-                    <button type="button" className="mc-dropdown-item" onClick={() => { setShotMenuOpen(false); onCaptureScreen('region'); }}>框选区域识题</button>
-                    <div className="mc-dropdown-sep" />
-                    <button type="button" className="mc-dropdown-item" onClick={() => { setShotMenuOpen(false); onEnterWrittenCompact(); }}>切换到笔试小窗</button>
-                  </div>
-                )}
-              </div>
+              <button
+                ref={shotBtnRef}
+                type="button"
+                className={`mc-icon-btn${shotMenuOpen ? ' is-active' : ''}`}
+                title="截取屏幕识题（右键展开框选/笔试小窗）"
+                aria-label="截取屏幕识题"
+                onClick={() => onCaptureScreen('full')}
+                onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setShotMenuOpen(v => !v); }}
+              >
+                <IconScan size={15} />
+              </button>
 
               {/* Hover Reveal (Eye icon) */}
               <button
                 type="button"
                 className={`mc-icon-btn${hoverReveal ? ' is-active' : ''}`}
-                title={hoverReveal ? `悬停显隐已开启（移出渐隐至 ${workbenchPrefs?.hoverOpacity ?? 8}%）` : '开启悬停显隐（鼠标移出窗口时淡化隐身）'}
+                title={hoverReveal ? `悬停显隐已开启（移出渐隐至 ${workbenchPrefs?.hoverOpacity ?? 8}% 并自动穿透）` : '开启悬停显隐（鼠标移出窗口时淡化隐身）'}
                 aria-label="悬停显隐"
                 aria-pressed={hoverReveal}
                 onClick={() => void onUpdatePrefs({ hoverReveal: !hoverReveal })}
@@ -581,7 +687,7 @@ export function WorkbenchView({
                 {hoverReveal ? <IconEyeOff size={15} /> : <IconEye size={15} />}
               </button>
 
-              {/* Eye Contact Toggle */}
+              {/* Eye Contact Toggle (distinct viewfinder-eye icon) */}
               <EyeContactToggle compact />
 
               {/* Pin Always-On-Top */}
@@ -610,15 +716,19 @@ export function WorkbenchView({
 
               {/* Gear Settings Popover Trigger */}
               <button
+                ref={gearBtnRef}
                 type="button"
-                className={`mc-icon-btn${gearAnchor ? ' is-active' : ''}`}
+                className={`mc-icon-btn${gearOpen ? ' is-active' : ''}`}
                 title="会中窗口与透明度设置"
                 aria-label="会中设置"
-                aria-expanded={!!gearAnchor}
+                aria-expanded={gearOpen}
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (gearAnchor) setGearAnchor(null);
-                  else setGearAnchor(e.currentTarget.getBoundingClientRect());
+                  setGearOpen(v => {
+                    const next = !v;
+                    if (next) closeOtherPopovers('gear');
+                    return next;
+                  });
                 }}
               >
                 <IconSettings size={15} />
@@ -628,7 +738,7 @@ export function WorkbenchView({
               <button
                 type="button"
                 className={`mc-icon-btn${sideOpen ? ' is-active' : ''}`}
-                title={sideOpen ? '收起右侧辅助栏（依据/转写/翻译）' : '展开右侧辅助栏（依据/转写/翻译）'}
+                title={sideOpen ? '收起右侧辅助栏（知识库/翻译/依据/转写）' : '展开右侧辅助栏（知识库/翻译/依据/转写）'}
                 aria-label="切换辅助栏"
                 onClick={() => void onUpdatePrefs({ sidePaneOpen: !sideOpen })}
               >
@@ -657,10 +767,10 @@ export function WorkbenchView({
           className={`mc-wb-content${!draggingDivider ? ' is-animating' : ''}`}
           style={{ gridTemplateColumns }}
         >
-          {/* LEFT PANE: Questions + Manual/Live Input */}
+          {/* LEFT PANE: Questions + Sleek Single-Row Composer */}
           {!leftCollapsed && (
             <section ref={leftPaneRef} className={`mc-wb-pane ${leftTierClass}`} aria-label="问题列表栏">
-              <div className="mc-wb-pane-header">
+              <div className="mc-wb-pane-header" data-interactive="true">
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                   <button
                     type="button"
@@ -668,7 +778,7 @@ export function WorkbenchView({
                     style={{ height: 22, padding: '0 7px', fontSize: 11.5 }}
                     onClick={() => setLeftTab('questions')}
                   >
-                    问题 ({session?.questions?.length || 0})
+                    问题 {session?.questions?.length || 0}
                   </button>
                   <button
                     type="button"
@@ -676,7 +786,7 @@ export function WorkbenchView({
                     style={{ height: 22, padding: '0 7px', fontSize: 11.5 }}
                     onClick={() => setLeftTab('transcript')}
                   >
-                    转写 ({session?.segments?.length || 0})
+                    转写 {session?.segments?.length || 0}
                   </button>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-muted)' }}>
@@ -782,7 +892,7 @@ export function WorkbenchView({
                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginBottom: 2 }}>
                           <strong>{seg.speaker === 'me' ? '我' : '对方'}</strong>
                           {seg.speaker !== 'me' && (
-                            <button type="button" className="mc-btn mc-btn-sm" style={{ height: 19, padding: '0 5px', fontSize: 10.5 }} onClick={() => onAskText(seg.text, [seg.id])}>
+                            <button type="button" className="mc-btn mc-btn-sm" data-interactive="true" style={{ height: 19, padding: '0 5px', fontSize: 10.5 }} onClick={() => onAskText(seg.text, [seg.id])}>
                               ⚡答
                             </button>
                           )}
@@ -794,26 +904,25 @@ export function WorkbenchView({
                 </div>
               )}
 
-              {/* LEFT BOTTOM INPUT BAR */}
+              {/* SLEEK SINGLE-ROW LEFT BOTTOM COMPOSER (SuiSi style) */}
               <div className="mc-wb-input-wrap" data-interactive="true">
-                <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
+                <div className="mc-composer-bar">
                   <textarea
-                    className="mc-textarea"
+                    className="mc-composer-input"
                     rows={1}
-                    style={{ minHeight: 34, maxHeight: 84, padding: '7px 10px', resize: 'none', fontSize: 12.5 }}
                     value={draftText}
-                    placeholder={preventFocus || clickThrough ? '点击开始安全输入' : '输入问题，Enter 发送 / Shift+Enter 换行'}
+                    placeholder={preventFocus || clickThrough ? '点击开始安全输入' : '输入问题…'}
                     onMouseDown={() => {
-                      if (preventFocus) void window.mc.requestTempFocus(true);
+                      if (preventFocus || clickThrough) void window.mc.requestTempFocus(true);
                     }}
                     onFocus={() => setInputFocused(true)}
                     onBlur={() => {
                       setInputFocused(false);
-                      if (preventFocus) void window.mc.requestTempFocus(false);
+                      if (preventFocus || clickThrough) void window.mc.requestTempFocus(false);
                     }}
                     onChange={e => setDraftText(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Escape' && preventFocus) {
+                      if (e.key === 'Escape' && (preventFocus || clickThrough)) {
                         e.currentTarget.blur();
                         void window.mc.requestTempFocus(false);
                         return;
@@ -824,79 +933,55 @@ export function WorkbenchView({
                       }
                     }}
                   />
-                  <button
-                    type="button"
-                    className={`mc-btn ${primaryBtn.action === 'stop' ? 'mc-btn-danger' : 'mc-btn-primary'}`}
-                    style={{ width: 34, height: 34, padding: 0, borderRadius: 99, flexShrink: 0 }}
-                    disabled={primaryBtn.disabled}
-                    title={primaryBtn.label}
-                    aria-label={primaryBtn.label}
-                    onClick={handlePrimaryAction}
-                  >
-                    {primaryBtn.action === 'stop' ? <IconSquare size={12} /> :
-                      primaryBtn.action === 'regenerate' ? <IconRefresh size={14} /> :
-                        <IconSend size={14} />}
-                  </button>
-                </div>
-
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <div className="mc-composer-actions">
                     <button
                       type="button"
-                      className={`mc-btn mc-btn-sm ${clearArmed ? 'mc-btn-danger' : 'mc-btn-ghost'}`}
-                      style={{ height: 22, padding: '0 6px', fontSize: 11 }}
+                      className={`mc-composer-send${primaryBtn.action === 'stop' ? ' is-stop' : ''}`}
+                      disabled={primaryBtn.disabled}
+                      title={primaryBtn.label}
+                      aria-label={primaryBtn.label}
+                      onClick={handlePrimaryAction}
+                    >
+                      {primaryBtn.action === 'stop' ? <IconSquare size={10} /> :
+                        primaryBtn.action === 'regenerate' ? <IconRefresh size={13} /> :
+                          <IconArrowUp size={14} />}
+                    </button>
+
+                    <button
+                      type="button"
+                      className={`mc-icon-btn${clearArmed ? ' is-danger' : ''}`}
+                      style={{ width: 24, height: 24, color: clearArmed ? 'var(--danger)' : undefined }}
                       onClick={(e) => {
                         e.stopPropagation();
                         if (clearArmed) { onClearSessionContent(); setClearArmed(false); }
                         else setClearArmed(true);
                       }}
                       onBlur={() => setClearArmed(false)}
-                      title="清空本场会话历史（需连续点击两次确认）"
+                      title={clearArmed ? '再次点击确认清空本场全部问答与转写' : '清空本场会话（连点两次确认）'}
+                      aria-label="清空会话"
                     >
-                      <IconTrash size={12} /> {clearArmed ? '再点一次清空' : ''}
+                      <IconTrash size={13} />
                     </button>
 
-                    {/* Transcription mode selector */}
-                    <div style={{ position: 'relative' }}>
-                      <button
-                        type="button"
-                        className="mc-btn mc-btn-sm mc-btn-ghost"
-                        style={{ height: 22, padding: '0 7px', fontSize: 11 }}
-                        onClick={(e) => { e.stopPropagation(); setModePopoverOpen(v => !v); }}
-                      >
-                        {session.transcriptionMode === 'manual' ? '手动发送' :
-                          session.transcriptionMode === 'transcript-only' ? '仅转写' : '自动提问'}
-                      </button>
-                      {modePopoverOpen && (
-                        <div className="mc-dropdown-menu" style={{ bottom: 44, left: 10, width: 220 }} data-interactive="true" onClick={e => e.stopPropagation()}>
-                          {[
-                            ['auto', '自动提问', '识别到面试官完整提问自动生成回答'],
-                            ['manual', '手动累计发送', '先累计对方转写，点击发送后再建题'],
-                            ['transcript-only', '仅转写', '只记录转写不自动调用大模型']
-                          ].map(([id, title, desc]) => (
-                            <button
-                              key={id}
-                              type="button"
-                              className="mc-dropdown-item"
-                              style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 2, background: session.transcriptionMode === id ? 'var(--bg-hover)' : undefined }}
-                              onClick={() => {
-                                onChangeSessionMeta({ transcriptionMode: id });
-                                setModePopoverOpen(false);
-                              }}
-                            >
-                              <strong style={{ fontSize: 12 }}>{title}{session.transcriptionMode === id ? ' ✓' : ''}</strong>
-                              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{desc}</span>
-                            </button>
-                          ))}
-                          <div className="mc-dropdown-sep" />
-                          <div style={{ padding: '4px 8px', fontSize: 10.5, color: 'var(--text-faint)' }}>
-                            {asrCaps.supportsRevision ? '当前 ASR 支持同题修订协议' : '当前 ASR 返回临时/最终转写，不自动修订旧题'}
-                          </div>
-                        </div>
-                      )}
-                    </div>
+                    <button
+                      ref={modeBtnRef}
+                      type="button"
+                      className={`mc-btn mc-btn-sm mc-btn-ghost${modePopoverOpen ? ' is-active' : ''}`}
+                      style={{ height: 24, padding: '0 6px', fontSize: 11, color: modeMeta.color, gap: 3 }}
+                      title={`当前转写策略：${modeMeta.label}（${modeMeta.desc}）`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setModePopoverOpen(v => {
+                          const next = !v;
+                          if (next) closeOtherPopovers('mode');
+                          return next;
+                        });
+                      }}
+                    >
+                      <IconZap size={12} />
+                      {leftPaneWidth >= 210 && <span>{modeMeta.label}</span>}
+                    </button>
                   </div>
-                  <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>{primaryBtn.label}</span>
                 </div>
               </div>
             </section>
@@ -912,15 +997,30 @@ export function WorkbenchView({
             />
           )}
 
-          {/* RIGHT MAIN ANSWER PANE (or Single-Column Flow when leftCollapsed) */}
-          <section className="mc-wb-pane" aria-label="回答阅读区">
+          {/* RIGHT MAIN ANSWER PANE */}
+          <section className="mc-wb-pane" style={{ position: 'relative' }} aria-label="回答阅读区">
             <div className="mc-wb-pane-header" data-interactive="true">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, overflowX: 'auto' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, overflowX: 'auto', scrollbarWidth: 'none' }}>
+                {/* @ Dialogue Thinking Toggle (SuiSi style) */}
+                <button
+                  type="button"
+                  className={`mc-icon-btn${dialogueThinking ? ' is-active' : ''}`}
+                  style={{ width: 26, height: 26 }}
+                  title={dialogueThinking
+                    ? '对话思考已开启：结合上下文更深入拆解权衡点与追问方向'
+                    : '开启对话思考（@）：结合上下文深入分析与结构化作答'}
+                  aria-label="对话思考"
+                  aria-pressed={dialogueThinking}
+                  onClick={() => void onUpdatePrefs({ dialogueThinking: !dialogueThinking })}
+                >
+                  <IconAt size={14} />
+                </button>
+
                 {session.audioSource === 'system' && (
                   <button
                     type="button"
-                    className={`mc-btn mc-btn-sm ${secondaryMicActive ? 'mc-btn-primary' : ''}`}
-                    style={{ height: 24, padding: '0 8px', fontSize: 11.5 }}
+                    className={`mc-btn mc-btn-sm ${secondaryMicActive ? 'mc-btn-primary' : 'mc-btn-ghost'}`}
+                    style={{ height: 24, padding: '0 7px', fontSize: 11.5 }}
                     title="开启后将本人麦克风发言一并记入对话上下文"
                     onClick={onToggleSecondaryMic}
                   >
@@ -928,35 +1028,42 @@ export function WorkbenchView({
                   </button>
                 )}
 
+                {/* Knowledge V2 Dropdown Menu Trigger (SuiSi 📁 ▾ style) */}
                 <button
+                  ref={kbBtnRef}
                   type="button"
-                  className={`mc-btn mc-btn-sm ${effectiveLibEnabled ? 'mc-btn-primary' : ''}`}
-                  style={{ height: 24, padding: '0 8px', fontSize: 11.5 }}
-                  title="仅针对本场面试开关本地资料库 V2 检索，不改写全局配置"
-                  onClick={() => onChangeSessionMeta({ libraryEnabled: !effectiveLibEnabled })}
+                  className={`mc-btn mc-btn-sm ${effectiveLibEnabled ? 'is-kb-on' : 'mc-btn-ghost'}`}
+                  style={{
+                    height: 24,
+                    padding: '0 7px',
+                    fontSize: 11.5,
+                    gap: 4,
+                    color: effectiveLibEnabled ? 'var(--text)' : 'var(--text-muted)',
+                    background: effectiveLibEnabled ? 'var(--bg-subtle)' : 'transparent',
+                    borderColor: effectiveLibEnabled ? 'var(--border)' : 'transparent'
+                  }}
+                  title="管理本场面试的本地知识库 V2 检索与岗位目录"
+                  aria-expanded={kbMenuOpen}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setKbMenuOpen(v => {
+                      const next = !v;
+                      if (next) closeOtherPopovers('kb');
+                      return next;
+                    });
+                  }}
                 >
-                  <IconFolder size={12} /> 资料库{effectiveLibEnabled ? '' : '关'}
+                  <IconFolder size={12} />
+                  <span>{effectiveLibEnabled ? (session.role || `资料库 (${library?.files?.length || 0})`) : '资料库关'}</span>
+                  <IconChevronDown size={11} />
                 </button>
-
-                {effectiveLibEnabled && (library?.roles?.length || 0) > 0 && (
-                  <select
-                    className="mc-filter-select"
-                    style={{ height: 24, fontSize: 11.5, maxWidth: 120 }}
-                    value={session.role || ''}
-                    aria-label="本场岗位目录"
-                    onChange={e => onChangeSessionMeta({ role: e.target.value })}
-                  >
-                    <option value="">默认岗位</option>
-                    {library.roles.map(r => <option key={r} value={r}>{r}</option>)}
-                  </select>
-                )}
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
                 <button
                   type="button"
-                  className="mc-btn mc-btn-sm"
-                  style={{ height: 24, padding: '0 8px', fontSize: 11.5 }}
+                  className="mc-btn mc-btn-sm mc-btn-ghost"
+                  style={{ height: 24, padding: '0 7px', fontSize: 11.5 }}
                   title="切换本场回答语言"
                   onClick={() => onChangeSessionMeta({ answerLang: session.answerLang === 'english' ? 'chinese' : 'english' })}
                 >
@@ -965,9 +1072,27 @@ export function WorkbenchView({
               </div>
             </div>
 
+            {/* CLICK-THROUGH UNLOCK FLOATING PILL (positioned cleanly inside answer pane top-right, zero overlap!) */}
+            {clickThrough && (
+              <div className="mc-floating-click-pill" data-interactive="true">
+                <IconMousePointer size={12} style={{ color: 'var(--info)' }} />
+                <span>鼠标穿透已开启</span>
+                <span className="mc-kbd">{clickThroughKeyLabel}</span>
+                <button
+                  type="button"
+                  className="mc-icon-btn"
+                  style={{ width: 20, height: 20 }}
+                  title="关闭鼠标穿透"
+                  aria-label="关闭鼠标穿透"
+                  onClick={() => void onSetClickThrough(false)}
+                >
+                  <IconX size={12} />
+                </button>
+              </div>
+            )}
+
             <div className="mc-wb-answer-scroll" ref={answerScrollRef} data-scrollable="true">
               {leftCollapsed ? (
-                /* Single-column chronological Q&A stream */
                 (session?.questions || []).length > 0 ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                     {session.questions.map((q) => {
@@ -1015,7 +1140,6 @@ export function WorkbenchView({
 
                   {renderAnswerBody(selectedQuestion, activeAttempt)}
 
-                  {/* V2 Unknown Facts & Evidence Bar */}
                   {activeAttempt?.unknownFacts?.length > 0 && (
                     <div className="mc-alert mc-alert-warn" style={{ marginTop: 12, fontSize: 12 }}>
                       <strong>待本人补充确认：</strong>
@@ -1028,7 +1152,7 @@ export function WorkbenchView({
                       <button
                         type="button"
                         className="mc-btn mc-btn-sm"
-                        onClick={() => openThirdPane('evidence')}
+                        onClick={() => openThirdPaneTab('evidence')}
                       >
                         引用 {(activeAttempt.evidenceRefs || activeAttempt.citations || []).length} / 检索 {activeAttempt.evidence?.length || 0} · 查看依据与原文 →
                       </button>
@@ -1037,90 +1161,61 @@ export function WorkbenchView({
                 </div>
               ) : (
                 <div className="mc-field-hint" style={{ marginTop: 36, textAlign: 'center' }}>
-                  {health.llm.ready ? '等待第一个提问… 识别到问题后回答将实时流式显示在这里。' : '文本大模型尚未配置 API Key，点击右下角模型名可前往设置。'}
+                  {health.llm.ready ? '等待生成… 识别到问题后回答将实时流式显示在这里。' : '文本大模型尚未配置 API Key，点击右下角模型状态可前往配置。'}
                 </div>
               )}
             </div>
 
-            {/* RIGHT BOTTOM TOOLBAR (Coding Prefs + Text Model) */}
+            {/* RIGHT BOTTOM TOOLBAR (Subtle SuiSi ⊞ Coding Prefs + Model/Health Popover) */}
             <footer className="mc-wb-answer-foot" data-interactive="true">
-              <div style={{ position: 'relative' }}>
-                <button
-                  type="button"
-                  className={`mc-btn mc-btn-sm ${codingPrefs.mode === 'coding' ? 'mc-btn-primary' : 'mc-btn-ghost'}`}
-                  style={{ height: 24, padding: '0 8px', fontSize: 11.5 }}
-                  onClick={(e) => { e.stopPropagation(); setCodingPopoverOpen(v => !v); }}
-                >
-                  <IconCode size={13} /> {formatCodingSummary(codingPrefs)}
-                </button>
-                {codingPopoverOpen && (
-                  <div
-                    className="mc-dropdown-menu"
-                    style={{ bottom: 42, left: 12, width: 256, padding: 10, gap: 8 }}
-                    data-interactive="true"
-                    onClick={e => e.stopPropagation()}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <strong style={{ fontSize: 12 }}>作答偏好（截图/手写算法）</strong>
-                      <div style={{ display: 'flex', gap: 4 }}>
-                        <button type="button" className={`mc-btn mc-btn-sm ${codingPrefs.mode === 'normal' ? 'mc-btn-primary' : ''}`} style={{ height: 22 }} onClick={() => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, mode: 'normal' } })}>常规</button>
-                        <button type="button" className={`mc-btn mc-btn-sm ${codingPrefs.mode === 'coding' ? 'mc-btn-primary' : ''}`} style={{ height: 22 }} onClick={() => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, mode: 'coding' } })}>Coding</button>
-                      </div>
-                    </div>
-                    {codingPrefs.mode === 'coding' && (
-                      <>
-                        <div className="mc-field">
-                          <label className="mc-field-label" style={{ fontSize: 11.5 }}>首选编程语言</label>
-                          <select
-                            className="mc-select"
-                            style={{ padding: '4px 8px', fontSize: 12 }}
-                            value={codingPrefs.language}
-                            onChange={e => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, language: e.target.value } })}
-                          >
-                            {CODING_LANGUAGES.map(l => <option key={l.id} value={l.id}>{l.label}</option>)}
-                          </select>
-                        </div>
-                        <div className="mc-field">
-                          <label className="mc-field-label" style={{ fontSize: 11.5 }}>讲解风格</label>
-                          <select
-                            className="mc-select"
-                            style={{ padding: '4px 8px', fontSize: 12 }}
-                            value={codingPrefs.explainMode}
-                            onChange={e => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, explainMode: e.target.value } })}
-                          >
-                            {CODING_EXPLAIN_MODES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
-                          </select>
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12 }}>
-                          <span>附带时间/空间复杂度</span>
-                          <Switch checked={codingPrefs.includeComplexity} onChange={v => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, includeComplexity: v } })} />
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12 }}>
-                          <span>提示边界条件</span>
-                          <Switch checked={codingPrefs.includeEdgeCases} onChange={v => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, includeEdgeCases: v } })} />
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
-              </div>
+              <button
+                ref={codingBtnRef}
+                type="button"
+                className={`mc-btn mc-btn-sm ${codingPrefs.mode === 'coding' ? 'is-active-soft' : 'mc-btn-ghost'}`}
+                style={{ height: 24, padding: '0 7px', fontSize: 11.5, gap: 5 }}
+                title={`作答偏好 · ${formatCodingSummary(codingPrefs)}`}
+                aria-expanded={codingPopoverOpen}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setCodingPopoverOpen(v => {
+                    const next = !v;
+                    if (next) closeOtherPopovers('coding');
+                    return next;
+                  });
+                }}
+              >
+                <IconGrid4 size={12} />
+                <span>{formatCodingSummary(codingPrefs)}</span>
+                <IconChevronDown size={11} style={{ opacity: 0.7 }} />
+              </button>
 
               <button
+                ref={modelBtnRef}
                 type="button"
                 className="mc-btn mc-btn-sm mc-btn-ghost"
-                style={{ height: 24, fontSize: 11.5 }}
-                onClick={onOpenSettings}
-                title="点击前往高级设置修改模型"
+                style={{ height: 24, padding: '0 7px', fontSize: 11.5, gap: 5 }}
+                aria-expanded={modelPopoverOpen}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setModelPopoverOpen(v => {
+                    const next = !v;
+                    if (next) closeOtherPopovers('model');
+                    return next;
+                  });
+                }}
+                title="查看当前模型与本地服务状态"
               >
                 <span className={`mc-dot ${health.llm.ready ? 'mc-dot-ok' : 'mc-dot-warn'}`} />
                 <span style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {settings?.llm?.model || '未配置文本模型'}
                 </span>
+                <IconSignal size={12} style={{ color: health.llm.ready ? 'var(--success)' : 'var(--text-faint)' }} />
+                <IconChevronDown size={11} style={{ opacity: 0.7 }} />
               </button>
             </footer>
           </section>
 
-          {/* THIRD PANE DIVIDER + THIRD PANE */}
+          {/* THIRD PANE DIVIDER + MULTI-TAB THIRD PANE */}
           {sideOpen && (
             <>
               <div
@@ -1131,72 +1226,363 @@ export function WorkbenchView({
               />
               <ThirdPane
                 tab={sideTab}
+                tabs={sideTabs}
                 onSelectTab={(t) => void onUpdatePrefs({ sidePaneTab: t })}
+                onOpenTab={openThirdPaneTab}
+                onCloseTab={closeThirdPaneTab}
                 onClose={() => void onUpdatePrefs({ sidePaneOpen: false })}
                 session={session}
+                library={library}
                 selectedQuestion={selectedQuestion}
                 partials={partials}
                 answersReady={health.llm.ready}
+                preventFocus={preventFocus}
+                targetLang={translationTargetLang}
+                onChangeTargetLang={(lang) => void onUpdatePrefs({ translationTargetLang: lang })}
                 onAskText={onAskText}
                 onTranslateSegment={onTranslateSegment}
                 onTranslateAnswer={onTranslateAnswer}
                 onClearTranscript={onClearTranscript}
+                onOpenKnowledgeSettings={onOpenKnowledgeSettings}
               />
             </>
           )}
         </div>
       </div>
 
-      {/* FLOATING STATUS PILLS (Top-Right, always clickable even during click-through) */}
-      {(clickThrough || preventFocus) && (
-        <div className="mc-floating-pills">
-          {clickThrough && (
-            <div className="mc-floating-pill" data-interactive="true">
-              <span>鼠标穿透已开启</span>
-              <span className="mc-kbd">Ctrl + Shift + 9</span>
-              <button type="button" className="mc-icon-btn" style={{ width: 20, height: 20 }} title="关闭鼠标穿透" onClick={() => void onSetClickThrough(false)}>
-                <IconX size={12} />
-              </button>
-            </div>
-          )}
-          {preventFocus && (
-            <div className="mc-floating-pill" data-interactive="true">
-              <span>焦点屏蔽已开启</span>
-              <span className="mc-kbd">Ctrl + Shift + 8</span>
-              {!windowState?.securityMode?.enabled && (
-                <button type="button" className="mc-icon-btn" style={{ width: 20, height: 20 }} title="关闭不抢焦点" onClick={() => void onSetPreventFocus(false)}>
-                  <IconX size={12} />
-                </button>
-              )}
-            </div>
-          )}
+      {/* =================================================================
+          DYNAMICALLY ANCHORED POPOVERS (all getBoundingClientRect + 150ms anim)
+         ================================================================= */}
+
+      {/* 1. Audio Source Pill Popover */}
+      <AnchoredPopover
+        open={audioPillOpen}
+        anchorRef={audioBtnRef}
+        placement="bottom"
+        align="center"
+        offset={6}
+        width={176}
+        estimatedHeight={40}
+        className="mc-popover-pill"
+        ariaLabel="切换音频采集源"
+        onMouseEnter={() => clearTimeout(audioPillTimerRef.current)}
+        onMouseLeave={() => { audioPillTimerRef.current = setTimeout(() => setAudioPillOpen(false), 150); }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <button
+            type="button"
+            className={`mc-btn mc-btn-sm ${session.audioSource === 'system' ? 'mc-btn-primary' : 'mc-btn-ghost'}`}
+            style={{ height: 24, borderRadius: 99, flex: 1 }}
+            onClick={() => { onSwitchAudioSource('system'); setAudioPillOpen(false); }}
+          >
+            <IconSpeaker size={12} /> 系统音频
+          </button>
+          <button
+            type="button"
+            className={`mc-btn mc-btn-sm ${session.audioSource === 'mic' ? 'mc-btn-primary' : 'mc-btn-ghost'}`}
+            style={{ height: 24, borderRadius: 99, flex: 1 }}
+            onClick={() => { onSwitchAudioSource('mic'); setAudioPillOpen(false); }}
+          >
+            <IconMic size={12} /> 麦克风
+          </button>
         </div>
-      )}
+      </AnchoredPopover>
 
-      {/* GEAR POPOVER (top-level fixed sibling, immune to workbench hover opacity!) */}
-      {gearAnchor && (
-        <GearPopover
-          anchorRect={gearAnchor}
-          workbenchPrefs={workbenchPrefs}
-          windowState={windowState}
-          onUpdatePrefs={onUpdatePrefs}
-          onSetPreventFocus={onSetPreventFocus}
-          onSetAllowCapture={onSetAllowCapture}
-          onSetClickThrough={onSetClickThrough}
-          onOpenShortcuts={() => setShortcutModalOpen(true)}
-          onClose={() => setGearAnchor(null)}
-        />
-      )}
+      {/* 2. Screenshot Quick Mode Dropdown */}
+      <AnchoredPopover
+        open={shotMenuOpen}
+        anchorRef={shotBtnRef}
+        placement="bottom"
+        align="end"
+        offset={6}
+        width={164}
+        estimatedHeight={120}
+        className="mc-dropdown-menu"
+        ariaLabel="截图模式菜单"
+        onClose={() => setShotMenuOpen(false)}
+      >
+        <button type="button" className="mc-dropdown-item" onClick={() => { setShotMenuOpen(false); onCaptureScreen('full'); }}>全屏截图识题</button>
+        <button type="button" className="mc-dropdown-item" onClick={() => { setShotMenuOpen(false); onCaptureScreen('region'); }}>框选区域识题</button>
+        <div className="mc-dropdown-sep" />
+        <button type="button" className="mc-dropdown-item" onClick={() => { setShotMenuOpen(false); onEnterWrittenCompact(); }}>切换到笔试小窗</button>
+      </AnchoredPopover>
 
+      {/* 3. Knowledge V2 Session Menu Popover */}
+      <AnchoredPopover
+        open={kbMenuOpen}
+        anchorRef={kbBtnRef}
+        placement="bottom"
+        align="start"
+        offset={6}
+        width={252}
+        estimatedHeight={220}
+        className="mc-dropdown-menu"
+        style={{ padding: 10, gap: 8 }}
+        ariaLabel="本场知识库设置"
+        onClose={() => setKbMenuOpen(false)}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <div>
+            <div style={{ fontSize: 12.5, fontWeight: 600 }}>本地知识库 V2 检索</div>
+            <div className="mc-field-hint" style={{ fontSize: 11 }}>仅影响本场，不改写全局配置</div>
+          </div>
+          <Switch
+            checked={effectiveLibEnabled}
+            aria-label="本场启用知识库"
+            onChange={(v) => onChangeSessionMeta({ libraryEnabled: v })}
+          />
+        </div>
+        {effectiveLibEnabled && (
+          <div className="mc-field" style={{ gap: 4 }}>
+            <label className="mc-field-label" style={{ fontSize: 11.5 }}>本场岗位目录</label>
+            <select
+              className="mc-select"
+              style={{ padding: '4px 8px', fontSize: 12 }}
+              value={session.role || ''}
+              onChange={e => onChangeSessionMeta({ role: e.target.value })}
+            >
+              <option value="">通用（默认岗位）</option>
+              {(library?.roles || []).map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </div>
+        )}
+        <div className="mc-field-hint" style={{ fontSize: 11 }}>
+          {library?.root
+            ? `已索引 ${library.files?.length || 0} 份有效本地资料`
+            : '尚未配置本地资料库目录'}
+        </div>
+        <div className="mc-dropdown-sep" style={{ margin: '2px 0' }} />
+        <button
+          type="button"
+          className="mc-dropdown-item"
+          style={{ padding: '6px 8px' }}
+          onClick={() => {
+            setKbMenuOpen(false);
+            openThirdPaneTab('knowledge');
+          }}
+        >
+          <IconBookOpen size={13} /> 在右侧栏浏览并阅读文档 →
+        </button>
+      </AnchoredPopover>
+
+      {/* 4. Transcription Mode Popover */}
+      <AnchoredPopover
+        open={modePopoverOpen}
+        anchorRef={modeBtnRef}
+        placement="top"
+        align="end"
+        offset={8}
+        width={224}
+        estimatedHeight={190}
+        className="mc-dropdown-menu"
+        ariaLabel="转写提问策略"
+        onClose={() => setModePopoverOpen(false)}
+      >
+        {[
+          ['auto', '自动提问', '识别到面试官完整提问自动生成回答'],
+          ['manual', '手动累计发送', '先累计对方转写，点击发送后再建题'],
+          ['transcript-only', '仅转写', '只记录转写不自动调用大模型']
+        ].map(([id, title, desc]) => (
+          <button
+            key={id}
+            type="button"
+            className="mc-dropdown-item"
+            style={{
+              flexDirection: 'column',
+              alignItems: 'flex-start',
+              gap: 2,
+              background: session.transcriptionMode === id ? 'var(--bg-hover)' : undefined
+            }}
+            onClick={() => {
+              onChangeSessionMeta({ transcriptionMode: id });
+              setModePopoverOpen(false);
+            }}
+          >
+            <strong style={{ fontSize: 12 }}>{title}{session.transcriptionMode === id ? ' ✓' : ''}</strong>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{desc}</span>
+          </button>
+        ))}
+        <div className="mc-dropdown-sep" />
+        <div style={{ padding: '4px 8px', fontSize: 10.5, color: 'var(--text-faint)' }}>
+          {asrCaps.supportsRevision ? '当前 ASR 支持同题修订协议' : '当前 ASR 返回临时/最终转写，不自动修订旧题'}
+        </div>
+      </AnchoredPopover>
+
+      {/* 5. Coding / 作答偏好 Popover (anchored directly above ⊞ button!) */}
+      <AnchoredPopover
+        open={codingPopoverOpen}
+        anchorRef={codingBtnRef}
+        placement="top"
+        align="start"
+        offset={8}
+        width={268}
+        estimatedHeight={280}
+        className="mc-dropdown-menu"
+        style={{ padding: 10, gap: 9 }}
+        ariaLabel="作答偏好设置"
+        onClose={() => setCodingPopoverOpen(false)}
+      >
+        <div className="mc-pref-row">
+          <span className="mc-pref-label">题型</span>
+          <div className="mc-segmented">
+            <button
+              type="button"
+              className={`mc-seg-btn${codingPrefs.mode === 'normal' ? ' is-active' : ''}`}
+              onClick={() => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, mode: 'normal' } })}
+            >
+              常规
+            </button>
+            <button
+              type="button"
+              className={`mc-seg-btn${codingPrefs.mode === 'coding' ? ' is-active' : ''}`}
+              onClick={() => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, mode: 'coding' } })}
+            >
+              <IconCode size={11} /> Coding
+            </button>
+          </div>
+        </div>
+
+        {codingPrefs.mode === 'coding' && (
+          <>
+            <div className="mc-pref-row">
+              <span className="mc-pref-label">编程语言</span>
+              <select
+                className="mc-select"
+                style={{ width: 132, height: 26, padding: '0 8px', fontSize: 12 }}
+                value={codingPrefs.language}
+                onChange={e => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, language: e.target.value } })}
+              >
+                {CODING_LANGUAGES.map(l => <option key={l.id} value={l.id}>{l.label}</option>)}
+              </select>
+            </div>
+
+            <div className="mc-pref-row">
+              <span className="mc-pref-label">代码格式</span>
+              <div className="mc-segmented">
+                {CODING_FORMATS.map(fmt => (
+                  <button
+                    key={fmt.id}
+                    type="button"
+                    className={`mc-seg-btn${codingPrefs.codeFormat === fmt.id ? ' is-active' : ''}`}
+                    onClick={() => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, codeFormat: fmt.id } })}
+                  >
+                    {fmt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="mc-pref-row">
+              <span className="mc-pref-label">结论格式</span>
+              <div className="mc-segmented">
+                {CODING_EXPLAIN_MODES.map(m => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    className={`mc-seg-btn${codingPrefs.explainMode === m.id ? ' is-active' : ''}`}
+                    onClick={() => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, explainMode: m.id } })}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="mc-dropdown-sep" style={{ margin: '1px 0' }} />
+
+            <div className="mc-pref-row">
+              <span className="mc-pref-label">附带时间 / 空间复杂度</span>
+              <Switch
+                checked={codingPrefs.includeComplexity}
+                onChange={v => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, includeComplexity: v } })}
+              />
+            </div>
+            <div className="mc-pref-row">
+              <span className="mc-pref-label">提示边界条件</span>
+              <Switch
+                checked={codingPrefs.includeEdgeCases}
+                onChange={v => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, includeEdgeCases: v } })}
+              />
+            </div>
+          </>
+        )}
+      </AnchoredPopover>
+
+      {/* 6. Bottom-Right Model & Health Status Popover */}
+      <AnchoredPopover
+        open={modelPopoverOpen}
+        anchorRef={modelBtnRef}
+        placement="top"
+        align="end"
+        offset={8}
+        width={256}
+        estimatedHeight={190}
+        className="mc-dropdown-menu"
+        style={{ padding: 10, gap: 8 }}
+        ariaLabel="当前模型与服务状态"
+        onClose={() => setModelPopoverOpen(false)}
+      >
+        <div style={{ fontSize: 12.5, fontWeight: 600 }}>当前模型与本地服务</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+            <span style={{ color: 'var(--text-muted)' }}>文本模型</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+              <i className={`mc-dot ${health.llm.ready ? 'mc-dot-ok' : 'mc-dot-warn'}`} />
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 150 }}>
+                {settings?.llm?.model || '未配置'}
+              </span>
+            </span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+            <span style={{ color: 'var(--text-muted)' }}>语音识别</span>
+            <span>{health.asr.label}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+            <span style={{ color: 'var(--text-muted)' }}>截图视觉</span>
+            <span>{health.vision.label}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+            <span style={{ color: 'var(--text-muted)' }}>本地资料库</span>
+            <span>{effectiveLibEnabled ? `已启用 (${library?.files?.length || 0} 份)` : '本场关闭'}</span>
+          </div>
+        </div>
+        <div className="mc-dropdown-sep" style={{ margin: '2px 0' }} />
+        <button
+          type="button"
+          className="mc-btn mc-btn-sm mc-btn-primary"
+          style={{ width: '100%' }}
+          onClick={() => { setModelPopoverOpen(false); onOpenSettings(); }}
+        >
+          前往模型与接口设置 →
+        </button>
+      </AnchoredPopover>
+
+      {/* 7. Gear Popover (anchored directly below Gear button, immune to workbench hover opacity!) */}
+      <GearPopover
+        open={gearOpen}
+        anchorRef={gearBtnRef}
+        workbenchPrefs={workbenchPrefs}
+        windowState={windowState}
+        onUpdatePrefs={onUpdatePrefs}
+        onSetPreventFocus={onSetPreventFocus}
+        onSetAllowCapture={onSetAllowCapture}
+        onSetClickThrough={onSetClickThrough}
+        onOpenShortcuts={() => setShortcutModalOpen(true)}
+        onClose={() => setGearOpen(false)}
+      />
+
+      {/* Interactive Workbench Shortcuts Modal */}
       {shortcutModalOpen && (
-        <ShortcutCheatSheetModal
+        <WorkbenchShortcutsModal
           settings={settings}
           windowState={windowState}
+          onSettingsUpdated={onSettingsUpdated}
           onOpenFullSettings={onOpenSettings}
           onClose={() => setShortcutModalOpen(false)}
         />
       )}
 
+      {/* Exit Confirm Modal */}
       {exitModalOpen && (
         <ExitConfirmModal
           saving={exitSaving}
@@ -1206,6 +1592,9 @@ export function WorkbenchView({
           onCancel={() => { if (!exitSaving) setExitModalOpen(false); }}
         />
       )}
+
+      {/* Security Mode Virtual SVG Cursor */}
+      <VirtualCursor active={virtualCursorActive} />
     </>
   );
 }

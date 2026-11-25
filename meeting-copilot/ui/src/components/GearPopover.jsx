@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { IconChevronRight, IconRefresh, IconX } from './Icons.jsx';
+import { AnchoredPopover } from './AnchoredPopover.jsx';
+import { IconChevronRight, IconRefresh } from './Icons.jsx';
 import { Switch } from './SharedWidgets.jsx';
+export { WorkbenchShortcutsModal } from './WorkbenchShortcutsModal.jsx';
 
 const STEPPER_DEFAULTS = {
   fontSize: 14,
@@ -50,7 +52,8 @@ function StepperRow({ label, value, unit, min, max, step, defaultVal, onChange }
 }
 
 export function GearPopover({
-  anchorRect,
+  open,
+  anchorRef,
   workbenchPrefs,
   windowState,
   onUpdatePrefs,
@@ -64,14 +67,10 @@ export function GearPopover({
   const [error, setError] = useState('');
 
   useEffect(() => {
+    if (!open) return;
+    setError('');
     window.mc?.getDisplays?.().then(list => setDisplays(list || [])).catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [open]);
 
   const securityLocked = Boolean(windowState?.securityMode?.enabled);
   const preventFocus = Boolean(windowState?.preventFocus);
@@ -80,13 +79,6 @@ export function GearPopover({
   const autoCollapse = Boolean(workbenchPrefs?.autoCollapseChrome);
   const captureDisplayId = workbenchPrefs?.captureDisplayId || '';
 
-  const width = Math.min(220, Math.max(180, window.innerWidth - 16));
-  const rawLeft = anchorRect ? anchorRect.right - width : window.innerWidth - width - 12;
-  const left = Math.max(8, Math.min(rawLeft, window.innerWidth - width - 8));
-  const belowSpace = anchorRect ? window.innerHeight - anchorRect.bottom - 8 : window.innerHeight - 56;
-  const top = anchorRect && belowSpace >= 220 ? anchorRect.bottom + 8 : 8;
-  const maxHeight = Math.max(160, window.innerHeight - top - 8);
-
   const safeAction = async (fn) => {
     setError('');
     try { await fn(); }
@@ -94,15 +86,21 @@ export function GearPopover({
   };
 
   return (
-    <div
+    <AnchoredPopover
+      open={open}
+      anchorRef={anchorRef}
+      placement="bottom"
+      align="end"
+      offset={8}
+      width={216}
+      estimatedHeight={380}
+      zIndex={9999}
       className="mc-gear-popover"
-      data-interactive="true"
       role="menu"
-      aria-label="会中设置"
-      style={{ left, top, width, maxHeight }}
-      onClick={e => e.stopPropagation()}
+      ariaLabel="会中设置"
+      onClose={onClose}
     >
-      <div className="mc-gear-row" title={securityLocked ? '安全模式已开启，不抢焦点已锁定' : '开启后点击本窗不抢占会议/编辑器焦点（Ctrl+Shift+8）'}>
+      <div className="mc-gear-row" title={securityLocked ? '安全模式已开启，不抢焦点已锁定' : '开启后点击本窗不抢占会议或编辑器焦点（Ctrl+Shift+8）'}>
         <span>不抢焦点</span>
         <Switch
           checked={preventFocus}
@@ -131,12 +129,15 @@ export function GearPopover({
         />
       </div>
 
-      <div className="mc-gear-row" title="点击正文区直接穿透到底层窗口；悬停顶栏按钮与滚动条边缘仍可操作（Ctrl+Shift+9）">
+      <div className="mc-gear-row" title="开启后正文区直接穿透到底层窗口；悬停顶栏按钮、滚动条边缘或退出条仍可点击（Ctrl+Shift+9）">
         <span>鼠标穿透</span>
         <Switch
           checked={clickThrough}
           aria-label="鼠标穿透"
-          onChange={(v) => void safeAction(() => onSetClickThrough(v))}
+          onChange={(v) => void safeAction(async () => {
+            await onSetClickThrough(v);
+            if (v) onClose(); // Auto-close menu so floating unlock pill is completely unobstructed
+          })}
         />
       </div>
 
@@ -155,6 +156,8 @@ export function GearPopover({
           ))}
         </select>
       </div>
+
+      <div className="mc-dropdown-sep" />
 
       <button
         type="button"
@@ -227,38 +230,6 @@ export function GearPopover({
       {error && (
         <div className="mc-alert mc-alert-err" style={{ marginTop: 4, padding: '6px 8px', fontSize: 11 }}>{error}</div>
       )}
-    </div>
-  );
-}
-
-export function ShortcutCheatSheetModal({ settings, windowState, onOpenFullSettings, onClose }) {
-  const rows = [
-    ['隐藏 / 呼出窗口', settings?.ui?.hotkeyToggle || 'Control+B'],
-    ['全屏截图识题', settings?.ui?.hotkeyShot || 'Control+Shift+S'],
-    ['框选区域识题', settings?.capture?.hotkeyRegion || 'Control+Shift+A'],
-    ['不抢焦点开关', windowState?.hotkeys?.togglePreventFocus || 'Control+Shift+8'],
-    ['鼠标穿透开关', windowState?.hotkeys?.toggleClickThrough || 'Control+Shift+9']
-  ];
-  return (
-    <div className="mc-modal-backdrop" onClick={onClose} data-interactive="true">
-      <div className="mc-modal mc-modal-sm" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="快捷键一览">
-        <div className="mc-modal-header">
-          <h3 className="mc-modal-title">快捷键一览</h3>
-          <button type="button" className="mc-icon-btn" onClick={onClose}><IconX size={14} /></button>
-        </div>
-        <div className="mc-modal-body" style={{ gap: 8 }}>
-          {rows.map(([label, key]) => (
-            <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
-              <span style={{ fontSize: 12.5 }}>{label}</span>
-              <span className="mc-kbd">{key.replace(/Control/g, 'Ctrl')}</span>
-            </div>
-          ))}
-        </div>
-        <div className="mc-modal-footer">
-          <button type="button" className="mc-btn mc-btn-sm" onClick={() => { onClose(); onOpenFullSettings(); }}>前往设置修改</button>
-          <button type="button" className="mc-btn mc-btn-sm mc-btn-primary" onClick={onClose}>关闭</button>
-        </div>
-      </div>
-    </div>
+    </AnchoredPopover>
   );
 }

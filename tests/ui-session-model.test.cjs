@@ -202,8 +202,12 @@ test('codingPrefs, clickThroughHitTest, and audioController system vs mic routin
   const { codingPrefs, hitTest, audioController } = await loadCore();
   assert.equal(codingPrefs.formatCodingSummary({ mode: 'normal' }), '常规');
   assert.equal(codingPrefs.formatCodingSummary({ mode: 'coding', language: 'cpp' }), 'Coding · C++');
+  assert.equal(codingPrefs.formatCodingSummary({ mode: 'coding', language: 'cpp', codeFormat: 'acm' }), 'Coding · C++ · ACM');
+  assert.equal(codingPrefs.formatCodingSummary({ mode: 'coding', language: 'python', codeFormat: 'core' }), 'Coding · Python · 核心');
 
-  // Hit-test: interactive button -> true; passive reading area -> false; 16px right scrollbar edge -> true
+  // Hit-test: explicit passive marker -> false; interactive button -> true; passive reading area -> false; 16px right scrollbar edge -> true
+  const passiveOverride = { nodeType: 1, closest: sel => sel.includes('passive') ? {} : null };
+  assert.equal(hitTest.isInteractiveTarget(passiveOverride, 100, 100), false);
   const interactiveBtn = { nodeType: 1, closest: sel => sel.includes('button') ? {} : null };
   assert.equal(hitTest.isInteractiveTarget(interactiveBtn, 100, 100), true);
 

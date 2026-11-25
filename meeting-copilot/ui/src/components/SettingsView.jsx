@@ -923,14 +923,20 @@ export function SettingsView({
                 <ShortcutRecorder label="隐藏 / 显示主窗口" description="在任意应用中一键切换窗口显示状态" value={hotkey} onChange={setHotkey} />
                 <ShortcutRecorder label="静默全屏截图识题" description="支持组合键、F1–F24 或鼠标侧键 Mouse4 / Mouse5" value={hotkeyShot} onChange={setHotkeyShot} />
                 <ShortcutRecorder label="框选区域截图识题" description="拖动选取屏幕局部区域并发送到视觉模型" value={hotkeyRegion} onChange={setHotkeyRegion} />
-                <div className="mc-srow mc-srow-compact">
+                <div className="mc-srow">
                   <div>
-                    <div className="mc-srow-label">工作台防干扰快捷键（内置）</div>
-                    <div className="mc-srow-desc">可在工作台齿轮菜单或键盘直接触发，无需抢占焦点</div>
+                    <div className="mc-srow-label">工作台防干扰快捷键</div>
+                    <div className="mc-srow-desc">可在工作台「齿轮 → 快捷键」中自定义全部按键或鼠标侧键</div>
                   </div>
-                  <div className="mc-srow-control is-inline">
-                    <span className="mc-kbd">Ctrl+Shift+8</span> <span className="mc-field-hint">不抢焦点</span>
-                    <span className="mc-kbd">Ctrl+Shift+9</span> <span className="mc-field-hint">鼠标穿透</span>
+                  <div className="mc-srow-control" style={{ gap: 6 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, flexWrap: 'wrap' }}>
+                      <span className="mc-kbd">{(windowState?.workbenchHotkeys?.togglePreventFocus || 'Control+Shift+8').replace(/Control/g, 'Ctrl')}</span>
+                      <span className="mc-field-hint" style={{ whiteSpace: 'nowrap' }}>不抢焦点</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, flexWrap: 'wrap' }}>
+                      <span className="mc-kbd">{(windowState?.workbenchHotkeys?.toggleClickThrough || 'Control+Shift+9').replace(/Control/g, 'Ctrl')}</span>
+                      <span className="mc-field-hint" style={{ whiteSpace: 'nowrap' }}>鼠标穿透</span>
+                    </div>
                   </div>
                 </div>
               </section>
@@ -1032,6 +1038,18 @@ export function SettingsView({
                     <Switch
                       checked={Boolean(workbenchPrefs?.securityMode?.autoEnableOnLaunch)}
                       onChange={(next) => onSetSecurityPrefs({ autoEnableOnLaunch: next })}
+                    />
+                  </div>
+                </div>
+                <div className="mc-srow mc-srow-compact">
+                  <div>
+                    <div className="mc-srow-label">安全模式下隐藏真实鼠标（启用浮窗虚拟光标）</div>
+                    <div className="mc-srow-desc">开启安全模式时，工作台内隐藏系统光标并渲染防截屏保护层内的 SVG 替代光标</div>
+                  </div>
+                  <div className="mc-srow-control is-inline">
+                    <Switch
+                      checked={workbenchPrefs?.securityMode?.hideCursor !== false}
+                      onChange={(next) => onSetSecurityPrefs({ hideCursor: next })}
                     />
                   </div>
                 </div>

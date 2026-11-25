@@ -798,6 +798,7 @@ button:disabled {
   gap: 14px;
   min-height: 0;
 }
+.mc-modal-body > * { flex-shrink: 0; }
 .mc-modal-footer {
   display: flex;
   align-items: center;
@@ -1109,7 +1110,8 @@ button:disabled {
   gap: 8px;
   border-bottom: 1px solid var(--border);
   background: rgba(var(--wb-subtle-rgb), var(--wb-bg-alpha));
-  -webkit-app-region: drag;
+  cursor: default;
+  user-select: none;
   flex-shrink: 0;
   opacity: var(--wb-chrome-opacity, 1);
   transition: height 200ms ease, opacity 180ms ease, border-color 180ms ease;
@@ -1438,3 +1440,227 @@ button:disabled {
   to { transform: rotate(360deg); }
 }
 .mc-spin { animation: mc-spin 0.9s linear infinite; }
+
+/* Smooth Popover & Modal Micro-Animations (150ms cubic-bezier) */
+.mc-popover-anim {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms cubic-bezier(0.22, 1, 0.36, 1), transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+.mc-popover-anim.is-bottom {
+  transform-origin: top center;
+  transform: translateY(-5px) scale(0.96);
+}
+.mc-popover-anim.is-top {
+  transform-origin: bottom center;
+  transform: translateY(5px) scale(0.96);
+}
+.mc-popover-anim.is-open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+
+@keyframes mc-modal-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.mc-modal-anim {
+  animation: mc-modal-in 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.mc-popover-pill {
+  padding: 4px;
+  border-radius: 99px;
+  border: 1px solid var(--border);
+  background: var(--popover-bg);
+  box-shadow: var(--shadow-lg);
+}
+
+/* Sleek Single-Row Left Bottom Composer (SuiSi style) */
+.mc-composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 10px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: rgba(var(--wb-bg-rgb), 0.85);
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.mc-composer-bar:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(24, 24, 27, 0.08);
+}
+.mc-composer-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 26px;
+  max-height: 76px;
+  border: 0;
+  background: transparent;
+  outline: none;
+  resize: none;
+  font-size: 12.5px;
+  line-height: 1.45;
+  padding: 4px 0;
+  color: var(--text);
+}
+.mc-composer-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+.mc-composer-send {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 0;
+  background: var(--primary);
+  color: var(--primary-fg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 120ms ease, transform 120ms ease, opacity 120ms ease;
+}
+.mc-composer-send:hover:not(:disabled) {
+  background: var(--primary-hover);
+  transform: scale(1.04);
+}
+.mc-composer-send.is-stop {
+  background: var(--danger);
+  color: #ffffff;
+}
+
+/* Subtle Soft Active Button (for Coding Prefs trigger) */
+.mc-btn.is-active-soft {
+  background: var(--bg-subtle);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+/* Segmented Controls in Coding Popover */
+.mc-pref-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 26px;
+}
+.mc-pref-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.mc-segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+}
+.mc-seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 500;
+  transition: background 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+.mc-seg-btn:hover { color: var(--text); }
+.mc-seg-btn.is-active {
+  background: var(--bg-base);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Multi-Tab Third Pane Tabs */
+.mc-side-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  max-width: 132px;
+  padding: 0 4px 0 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.mc-side-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.mc-side-tab.is-active {
+  background: var(--bg-base);
+  color: var(--text);
+  border-color: var(--border);
+  box-shadow: var(--shadow-sm);
+}
+.mc-side-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+}
+.mc-side-tab-close:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* Click-Through Floating Unlock Pill inside Right Pane (zero overlap with Gear Popover) */
+.mc-floating-click-pill {
+  position: absolute;
+  top: 44px;
+  right: 12px;
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px 5px 10px;
+  border-radius: 99px;
+  background: var(--popover-bg);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-md);
+  font-size: 11.5px;
+  color: var(--text);
+  animation: mc-modal-in 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Security Mode Real Cursor Hiding + Virtual SVG Cursor */
+html.mc-hide-real-cursor,
+html.mc-hide-real-cursor * {
+  cursor: none !important;
+}
+.mc-virtual-cursor {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 99999;
+  pointer-events: none;
+  will-change: transform, opacity;
+  transition: opacity 80ms ease;
+}

@@ -2,7 +2,7 @@
 const net = require('node:net');
 const cp = require('node:child_process');
 
-function createShortcutRuntime({ shortcuts, helperPath, getBindings, onToggle, onCapture, onRecord, onError, onRegistered = () => {}, createServer = net.createServer, spawn = cp.spawn }) {
+function createShortcutRuntime({ shortcuts, helperPath, getBindings, onToggle, onCapture, onRecord, onError, onRegistered = () => {}, getExtraMouseBindings = () => [], onExtraMouse = () => {}, createServer = net.createServer, spawn = cp.spawn }) {
   let host = null, epoch = 0, recording = null, disposed = false;
   function stopHost() {
     epoch++;
@@ -47,6 +47,11 @@ function createShortcutRuntime({ shortcuts, helperPath, getBindings, onToggle, o
               const bindings = getBindings();
               if (key === bindings.full) onCapture('full');
               else if (key === bindings.region) onCapture('region');
+              else {
+                const extras = getExtraMouseBindings() || [];
+                const hit = extras.find(item => item && item.key === key);
+                if (hit) onExtraMouse(hit.action, key);
+              }
             }
           }
         });
@@ -78,6 +83,9 @@ function createShortcutRuntime({ shortcuts, helperPath, getBindings, onToggle, o
       } catch { onError(`快捷键 ${key} 格式无效，请重新录入`); }
     }
     onRegistered();
+    for (const item of getExtraMouseBindings() || []) {
+      if (item && /^Mouse[45]$/.test(item.key)) mouse.push(item.key);
+    }
     if (mouse.length) {
       const current = epoch + 1;
       startHost([...new Set(mouse)]).catch(error => { if (current === epoch) onError(error.message); });

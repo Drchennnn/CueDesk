@@ -29,12 +29,19 @@ function formatCodingDirective(codingPrefs) {
   const parts = [
     `【编程作答偏好】请使用 ${lang} 编写代码。`
   ];
+  if (codingPrefs.codeFormat === "acm") {
+    parts.push("代码格式要求：完整 ACM 模式（包含必要头文件/导入、标准输入输出读取与打印、完整主函数）。");
+  } else if (codingPrefs.codeFormat === "core") {
+    parts.push("代码格式要求：核心代码模式（保留题目或签名中的函数/类结构，仅实现核心逻辑，不写多余 I/O 模板）。");
+  } else {
+    parts.push("代码格式要求：优先按题面或截图中的提交模板选择格式——有待实现函数/类签名时采用核心代码模式，明确要求标准输入输出时采用完整 ACM 程序；仅给出样例且无其他线索时默认完整可运行程序。");
+  }
   if (codingPrefs.explainMode === "code-only") {
     parts.push("仅输出可直接运行的完整代码和极简关键注释，不要冗长文字说明。");
   } else if (codingPrefs.explainMode === "detailed") {
-    parts.push("先清晰讲解解题思路与推导过程，再给出完整可运行代码和关键步骤说明。");
+    parts.push("结论风格（全面）：先清晰讲解解题思路、算法选择与正确性说明，再给出完整代码和关键步骤说明。");
   } else {
-    parts.push("先用 1-2 句话讲清核心思路，再给出简洁、完整、可直接运行的代码。");
+    parts.push("结论风格（精简）：先用 1-2 句话讲清核心思路，再直接给出简洁、完整的代码。");
   }
   if (codingPrefs.includeComplexity !== false) {
     parts.push("最后简明给出时间复杂度和空间复杂度。");
@@ -46,21 +53,43 @@ function formatCodingDirective(codingPrefs) {
   if (extra) parts.push(`补充要求：${extra.slice(0, 500)}`);
   return parts.join("\n");
 }
-function appendCodingDirective(messages, codingPrefs) {
+function appendCodingDirective(messages, codingPrefs, dialogueThinking = false) {
+  const parts = [];
   const directive = formatCodingDirective(codingPrefs);
-  if (!directive || !Array.isArray(messages) || !messages.length) return messages;
+  if (directive) parts.push(directive);
+  if (dialogueThinking) {
+    parts.push("【对话思考模式】请结合前序多轮对话上下文做更深入、结构化的思考与拆解，指出关键权衡点与潜在追问方向。");
+  }
+  const combined = parts.join("\n\n");
+  if (!combined || !Array.isArray(messages) || !messages.length) return messages;
   const lastIdx = messages.length - 1;
   const last = messages[lastIdx];
   if (last && last.role === "user") {
     if (typeof last.content === "string") {
-      messages[lastIdx] = { ...last, content: `${last.content}\n\n${directive}` };
+      messages[lastIdx] = { ...last, content: `${last.content}\n\n${combined}` };
     } else if (Array.isArray(last.content)) {
-      messages[lastIdx] = { ...last, content: [...last.content, { type: "text", text: `\n\n${directive}` }] };
+      messages[lastIdx] = { ...last, content: [...last.content, { type: "text", text: `\n\n${combined}` }] };
     }
     return messages;
   }
-  messages.push({ role: "user", content: directive });
+  messages.push({ role: "user", content: combined });
   return messages;
+}
+const TRANSLATE_TARGET_LABELS = {
+  "zh-CN": "简体中文",
+  en: "English",
+  ja: "日本語",
+  ko: "한국어"
+};
+function buildTargetTranslateMessages(text, targetLang) {
+  const label = TRANSLATE_TARGET_LABELS[targetLang] || "简体中文";
+  return [
+    {
+      role: "system",
+      content: `你是专业技术面试翻译助手。请将用户提供的文本准确、自然地翻译为${label}，保留代码片段、专有名词与结构格式，不要添加多余解释。`
+    },
+    { role: "user", content: String(text || "") }
+  ];
 }
 '''
 
@@ -174,7 +203,7 @@ def patch_main(raw: bytes) -> bytes:
         "win show taskbar delegation",
     )
 
-    # 6. Add interview-library:pick-root directory dialog IPC
+    # 6. Add interview-library:pick-root and interview-library:read-doc IPCs
     text = replace_once(
         text,
         '    electron.ipcMain.handle("interview-library:get", event => { assertLibrarySender(event); return interviewLibrary.getPublic(); });',
@@ -187,8 +216,19 @@ def patch_main(raw: bytes) -> bytes:
       });
       if (r.canceled || !r.filePaths[0]) return null;
       return r.filePaths[0];
+    });
+    electron.ipcMain.handle("interview-library:read-doc", async (event, ref) => {
+      assertLibrarySender(event);
+      return interviewLibrary.readDocument(ref);
+    });
+    electron.ipcMain.handle("interview-library:open-doc", async (event, ref) => {
+      assertLibrarySender(event);
+      const doc = await interviewLibrary.readDocument(ref);
+      const err = await electron.shell.openPath(doc.file);
+      if (err) throw new Error(err);
+      return { ok: true, title: doc.title };
     });''',
-        "interview-library pick-root IPC",
+        "interview-library pick-root + read-doc IPC",
     )
 
     # 7. Notify workbenchWindow when written compact mode toggles
@@ -203,12 +243,12 @@ def patch_main(raw: bytes) -> bytes:
         "writtenWindow toggle sync",
     )
 
-    # 8. Instantiate templatesStore, workbenchPrefs, workbenchWindow and register their IPCs + hotkeys
+    # 8. Instantiate templatesStore, workbenchPrefs, workbenchWindow and register their IPCs + hotkeys + mouse bindings + capture affinity lifecycle
     text = replace_once(
         text,
         '      onRegistered: () => windowControls.register(),',
-        '      onRegistered: () => { windowControls.register(); workbenchWindow?.registerHotkeys(); },',
-        "shortcutRuntime onRegistered workbench hotkeys",
+        '      onRegistered: () => { windowControls.register(); workbenchWindow?.registerHotkeys(); },\n      getExtraMouseBindings: () => workbenchWindow?.getMouseBindings() || [],\n      onExtraMouse: (action) => workbenchWindow?.dispatchHotkeyAction(action),',
+        "shortcutRuntime onRegistered workbench hotkeys + mouse bindings",
     )
 
     text = replace_once(
@@ -240,8 +280,16 @@ def patch_main(raw: bytes) -> bytes:
       },
       isWrittenCompact: () => !!writtenWindow?.getPublic().enabled,
       onStateChange: (state) => { if (win && !win.isDestroyed()) win.webContents.send("win:state", state); },
-      onHoverChange: (inside) => { if (win && !win.isDestroyed()) win.webContents.send("win:hover-state", { inside }); }
+      onHoverChange: (inside) => { if (win && !win.isDestroyed()) win.webContents.send("win:hover-state", { inside }); },
+      onHotkeyAction: (action) => { if (win && !win.isDestroyed()) win.webContents.send("win:hotkey-action", { action }); },
+      onHotkeysChanged: () => { if (!shortcutRuntime?.recording) shortcutRuntime?.register(); }
     });
+    const reapplyCapture = () => { workbenchWindow?.reapplyContentProtection(); };
+    electron.powerMonitor?.on?.("resume", reapplyCapture);
+    electron.powerMonitor?.on?.("unlock-screen", reapplyCapture);
+    electron.screen?.on?.("display-added", reapplyCapture);
+    electron.screen?.on?.("display-removed", reapplyCapture);
+    electron.screen?.on?.("display-metrics-changed", reapplyCapture);
     electron.ipcMain.handle("templates:load", (event) => { assertMainSender(event); return templatesStore.load(); });
     electron.ipcMain.handle("templates:save", (event, data) => { assertMainSender(event); return templatesStore.save(data); });
     electron.ipcMain.handle("workbench-prefs:get", (event) => { assertMainSender(event); return workbenchPrefs.getPublic(); });
@@ -263,7 +311,26 @@ def patch_main(raw: bytes) -> bytes:
       if (!win || event.sender !== win.webContents) return;
       workbenchWindow.setMouseInteractive(interactive);
     });
+    electron.ipcMain.handle("win:cursor-in-content", (event) => {
+      assertMainSender(event);
+      return workbenchWindow.getCursorInContent();
+    });
     electron.ipcMain.handle("win:set-hover-tracking", (event, on) => { assertMainSender(event); return workbenchWindow.setHoverTracking(on); });
+    electron.ipcMain.handle("win:set-hover-blocked", (event, blocked) => { assertMainSender(event); return workbenchWindow.setHoverBlocked(blocked); });
+    electron.ipcMain.on("win:drag-start", (event, sx, sy) => {
+      if (!win || event.sender !== win.webContents) return;
+      workbenchWindow.beginDrag(sx, sy);
+    });
+    electron.ipcMain.on("win:drag-move", (event, sx, sy) => {
+      if (!win || event.sender !== win.webContents) return;
+      workbenchWindow.dragTo(sx, sy);
+    });
+    electron.ipcMain.on("win:drag-end", (event) => {
+      if (!win || event.sender !== win.webContents) return;
+      workbenchWindow.endDrag();
+    });
+    electron.ipcMain.handle("win:set-workbench-hotkeys", (event, patch) => { assertMainSender(event); return workbenchWindow.setWorkbenchHotkeys(patch); });
+    electron.ipcMain.handle("win:reset-workbench-hotkeys", (event) => { assertMainSender(event); return workbenchWindow.resetWorkbenchHotkeys(); });
     electron.ipcMain.handle("win:set-allow-capture", (event, allow) => { assertMainSender(event); return workbenchWindow.setAllowCapture(allow); });
     electron.ipcMain.handle("win:get-displays", (event) => { assertMainSender(event); return workbenchWindow.getDisplays(); });
     electron.ipcMain.handle("security:enable", (event, options) => { assertMainSender(event); return workbenchWindow.enableSecurity(options); });
@@ -271,6 +338,36 @@ def patch_main(raw: bytes) -> bytes:
     electron.ipcMain.handle("security:set-prefs", (event, patch) => { assertMainSender(event); return workbenchWindow.setSecurityPrefs(patch); });
     electron.ipcMain.handle("security:check-env", (event) => { assertMainSender(event); return workbenchWindow.checkEnvironment(); });''',
         "workbench IPC registration",
+    )
+
+    # 8b. Support optional targetLang on translateText IPC
+    text = replace_once(
+        text,
+        '''    electron.ipcMain.handle(IPC.translateText, async (_e, text) => {
+      const apiKey = settings.getLlmApiKey();
+      if (!apiKey) throw new Error(T().noApiKeyShort);
+      const r = await chatStream(
+        { baseUrl: settings.data.llm.baseUrl, model: settings.data.llm.model, apiKey },
+        buildTranslateMessages(text),
+        { onDelta: () => {
+        } }
+      );
+      return r.text;
+    });''',
+        '''    electron.ipcMain.handle(IPC.translateText, async (_e, text, targetLang) => {
+      const apiKey = settings.getLlmApiKey();
+      if (!apiKey) throw new Error(T().noApiKeyShort);
+      const msgs = targetLang && targetLang !== "zh-CN"
+        ? buildTargetTranslateMessages(text, targetLang)
+        : buildTranslateMessages(text);
+      const r = await chatStream(
+        { baseUrl: settings.data.llm.baseUrl, model: settings.data.llm.model, apiKey },
+        msgs,
+        { onDelta: () => {} }
+      );
+      return r.text;
+    });''',
+        "translateText targetLang",
     )
 
     # 9. Add sessions:save-sync and display-aware region:pick + stealthSet sync
@@ -327,8 +424,8 @@ def patch_main(raw: bytes) -> bytes:
         text,
         '''      const evidence = messages.evidence;
       const stream = evidence ?''',
-        '''      if (!isTranslate && payload.codingPrefs?.mode === "coding" && !messages.skipGeneration && !messages.directAnswer && !messages.blockedUnknown) {
-        appendCodingDirective(messages, payload.codingPrefs);
+        '''      if (!isTranslate && (payload.codingPrefs?.mode === "coding" || payload.dialogueThinking) && !messages.skipGeneration && !messages.directAnswer && !messages.blockedUnknown) {
+        appendCodingDirective(messages, payload.codingPrefs, Boolean(payload.dialogueThinking));
       }
       const evidence = messages.evidence;
       const stream = evidence ?''',
@@ -398,12 +495,18 @@ def patch_preload(raw: bytes) -> bytes:
     """Apply incremental preload IPC enhancements onto the verified portable baseline."""
     text = raw.decode("utf-8")
 
-    # Extend pickRegion to accept optional displayId
+    # Extend pickRegion to accept optional displayId and translate to accept optional targetLang
     text = replace_once(
         text,
         '  pickRegion: (mode = "full") => electron.ipcRenderer.invoke(IPC.regionPick, mode === "region" ? "region" : "full"),',
         '  pickRegion: (mode = "full", displayId) => electron.ipcRenderer.invoke(IPC.regionPick, mode === "region" ? "region" : "full", displayId),',
         "preload pickRegion displayId",
+    )
+    text = replace_once(
+        text,
+        '  translate: (text) => electron.ipcRenderer.invoke(IPC.translateText, text),',
+        '  translate: (text, targetLang) => electron.ipcRenderer.invoke(IPC.translateText, text, targetLang),',
+        "preload translate targetLang",
     )
 
     # Add new window.mc APIs right before quit
@@ -412,6 +515,8 @@ def patch_preload(raw: bytes) -> bytes:
         '  hide: () => electron.ipcRenderer.send(IPC.winHide),\n  quit: () => electron.ipcRenderer.send(IPC.appQuit)\n};',
         '''  saveSessionsSync: (data) => electron.ipcRenderer.invoke("sessions:save-sync", data),
   pickInterviewLibraryRoot: () => electron.ipcRenderer.invoke("interview-library:pick-root"),
+  readInterviewDocument: (ref) => electron.ipcRenderer.invoke("interview-library:read-doc", ref),
+  openInterviewDocument: (ref) => electron.ipcRenderer.invoke("interview-library:open-doc", ref),
   loadTemplates: () => electron.ipcRenderer.invoke("templates:load"),
   saveTemplates: (data) => electron.ipcRenderer.invoke("templates:save", data),
   getWorkbenchPrefs: () => electron.ipcRenderer.invoke("workbench-prefs:get"),
@@ -435,11 +540,23 @@ def patch_preload(raw: bytes) -> bytes:
   requestTempFocus: (active) => electron.ipcRenderer.invoke("win:request-temp-focus", active),
   setClickThrough: (on) => electron.ipcRenderer.invoke("win:set-click-through", on),
   setMouseInteractive: (interactive) => electron.ipcRenderer.send("win:set-mouse-interactive", !!interactive),
+  getCursorInContent: () => electron.ipcRenderer.invoke("win:cursor-in-content"),
   setHoverTracking: (on) => electron.ipcRenderer.invoke("win:set-hover-tracking", on),
+  setHoverBlocked: (blocked) => electron.ipcRenderer.invoke("win:set-hover-blocked", !!blocked),
   onHoverState: (cb) => {
     const listener = (_e, value) => cb(value);
     electron.ipcRenderer.on("win:hover-state", listener);
     return () => electron.ipcRenderer.removeListener("win:hover-state", listener);
+  },
+  dragStart: (sx, sy) => electron.ipcRenderer.send("win:drag-start", sx, sy),
+  dragMove: (sx, sy) => electron.ipcRenderer.send("win:drag-move", sx, sy),
+  dragEnd: () => electron.ipcRenderer.send("win:drag-end"),
+  setWorkbenchHotkeys: (patch) => electron.ipcRenderer.invoke("win:set-workbench-hotkeys", patch),
+  resetWorkbenchHotkeys: () => electron.ipcRenderer.invoke("win:reset-workbench-hotkeys"),
+  onWorkbenchHotkeyAction: (cb) => {
+    const listener = (_e, value) => cb(value);
+    electron.ipcRenderer.on("win:hotkey-action", listener);
+    return () => electron.ipcRenderer.removeListener("win:hotkey-action", listener);
   },
   setAllowCapture: (allow) => electron.ipcRenderer.invoke("win:set-allow-capture", allow),
   getDisplays: () => electron.ipcRenderer.invoke("win:get-displays"),

@@ -43,23 +43,24 @@ function createWrittenWindow({ file, screen, getModelCount = () => 1, onChange =
   function getPublic() {
     return { enabled: data.enabled, fontSize: data.fontSize, fontFamily: data.fontFamily, showNames: data.showNames, clickThrough: data.clickThrough, bounds: data.compactBounds ? { ...data.compactBounds } : null };
   }
-  function applyInputMode() {
+  function applyInputMode(forceRestore = false) {
     if (!win || win.isDestroyed()) return;
+    if (!data.enabled && !forceRestore) return;
     const locked = data.enabled && data.clickThrough;
     win.setIgnoreMouseEvents(locked, { forward: true });
     win.setFocusable(!locked);
-    win.setSkipTaskbar(true); // Reapply after Windows focusability changes.
+    if (data.enabled) win.setSkipTaskbar(true); // Reapply after Windows focusability changes in compact mode.
   }
   function unlock() {
     if (data.clickThrough) {
       data.clickThrough = false;
-      applyInputMode();
+      applyInputMode(true);
       persist();
       onChange(getPublic());
     }
   }
   function raiseWindow() {
-    if (!win || win.isDestroyed() || !win.isVisible() || win.isMinimized()) return;
+    if (!data.enabled || !win || win.isDestroyed() || !win.isVisible() || win.isMinimized()) return;
     win.setAlwaysOnTop(true, 'screen-saver');
     win.moveTop();
   }
@@ -147,7 +148,7 @@ function createWrittenWindow({ file, screen, getModelCount = () => 1, onChange =
       data.compactBounds = clampBounds({ ...current, width: current.width * patch.scale, height: current.height * patch.scale });
     }
     if (changedMode || patch.resetBounds || patch.scale) applyLayout(!!patch.resetBounds);
-    applyInputMode();
+    applyInputMode(changedMode);
     raiseWindow();
     persist();
     onChange(getPublic());

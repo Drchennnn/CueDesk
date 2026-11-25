@@ -1,5 +1,6 @@
 'use strict';
 const { execFile } = require('node:child_process');
+const { DEFAULT_WORKBENCH_HOTKEYS, WORKBENCH_HOTKEY_ACTIONS } = require('./workbench-prefs.cjs');
 
 const HOME_DEFAULT = Object.freeze({ width: 1120, height: 760 });
 const HOME_MIN = Object.freeze([380, 440]);
@@ -77,6 +78,8 @@ function createWorkbenchWindow({
   isWrittenCompact = () => false,
   onStateChange = () => {},
   onHoverChange = () => {},
+  onHotkeyAction = () => {},
+  onHotkeysChanged = () => {},
   listProcesses = defaultListProcesses,
   pollIntervalMs = 60
 }) {
@@ -87,8 +90,11 @@ function createWorkbenchWindow({
   let clickThrough = false;
   let mouseInteractive = false;
   let hoverInside = true;
+  let hoverBlocked = false;
+  let hoverHidden = false;
   let hoverTimer = null;
   let boundsTimer = null;
+  let dragStart = null;
   let hotkeyErrors = [];
   let disposed = false;
   const ownedHotkeys = new Set();
@@ -101,13 +107,15 @@ function createWorkbenchWindow({
     return !!prefs.getPublic().securityMode.enabled;
   }
 
+  // Prevent-focus policy is ONLY applied in Workbench mode (never locks Home on startup or return).
   function effectivePreventFocus() {
     const p = prefs.getPublic();
-    return !!p.securityMode.enabled || !!p.preventFocus;
+    return mode === 'workbench' && (!!p.securityMode.enabled || !!p.preventFocus);
   }
 
+  // Match SuiSi: only hide taskbar icon during security mode or written compact mode so OS focus & interaction stay reliable.
   function shouldSkipTaskbar() {
-    return isWrittenCompact() || mode === 'workbench' || effectivePreventFocus() || isSecurityActive();
+    return isWrittenCompact() || isSecurityActive();
   }
 
   function getWindowState() {
@@ -128,7 +136,10 @@ function createWorkbenchWindow({
       hoverReveal: !!p.hoverReveal,
       autoCollapseChrome: !!p.autoCollapseChrome,
       hoverInside,
+      hoverHidden,
       hotkeys: { ...p.hotkeys },
+      workbenchHotkeysEnabled: p.workbenchHotkeysEnabled !== false,
+      workbenchHotkeys: { ...p.workbenchHotkeys },
       hotkeyErrors: [...hotkeyErrors]
     };
   }
@@ -137,33 +148,55 @@ function createWorkbenchWindow({
     try { onStateChange(getWindowState()); } catch {}
   }
 
-  function syncFocusAndTaskbar() {
-    const w = activeWin();
-    if (!w || isWrittenCompact()) return;
-    const focusable = tempFocus || !effectivePreventFocus();
-    try { w.setFocusable(focusable); } catch {}
-    try { w.setSkipTaskbar(shouldSkipTaskbar()); } catch {}
-  }
-
   function syncAlwaysOnTop() {
     const w = activeWin();
     if (!w || isWrittenCompact()) return;
     const p = prefs.getPublic();
-    const topmost = mode === 'workbench' ? !!p.alwaysOnTop : false;
+    const topmost = mode === 'workbench' ? !!p.alwaysOnTop : isSecurityActive();
     try {
       if (topmost) w.setAlwaysOnTop(true, 'screen-saver');
       else w.setAlwaysOnTop(false);
     } catch {}
   }
 
-  function syncClickThroughNative() {
+  function syncFocusAndTaskbar() {
     const w = activeWin();
     if (!w || isWrittenCompact()) return;
-    const shouldIgnore = mode === 'workbench' && clickThrough && !mouseInteractive;
+    // Home mode is ALWAYS focusable so restart/return never locks the main UI.
+    const focusable = mode !== 'workbench'
+      ? true
+      : (tempFocus || (!effectivePreventFocus() && !clickThrough));
+    try {
+      const current = typeof w.isFocusable === 'function' ? w.isFocusable() : undefined;
+      if (current === undefined || current !== focusable) {
+        w.setFocusable(focusable);
+      }
+    } catch {}
+    try { w.setSkipTaskbar(shouldSkipTaskbar()); } catch {}
+    // Critical Windows fix (matching SuiSi applyFocusPreference):
+    // setFocusable(false) drops z-order via Focus(false), so re-assert alwaysOnTop right after.
+    if (!focusable) {
+      syncAlwaysOnTop();
+    }
+  }
+
+  // Unified SuiSi-style mouse passthrough state machine:
+  // ignores pointer when hidden by hover-reveal OR when clickThrough is ON outside interactive regions.
+  function syncMousePassthrough() {
+    const w = activeWin();
+    if (!w || isWrittenCompact()) return;
+    const shouldIgnore = mode === 'workbench' && (hoverHidden || (clickThrough && !mouseInteractive));
     try {
       if (shouldIgnore) w.setIgnoreMouseEvents(true, { forward: true });
       else w.setIgnoreMouseEvents(false);
     } catch {}
+  }
+
+  function setHoverHiddenNative(nextHidden) {
+    const next = !!nextHidden && mode === 'workbench' && !hoverBlocked;
+    if (next === hoverHidden) return;
+    hoverHidden = next;
+    syncMousePassthrough();
   }
 
   function stopHoverPolling() {
@@ -173,16 +206,20 @@ function createWorkbenchWindow({
     }
   }
 
-  function checkHoverOnce() {
+  function checkHoverOnce(forceEmit = false) {
     const w = activeWin();
     if (!w || !w.isVisible?.() || w.isMinimized?.()) return;
     const pt = screen.getCursorScreenPoint?.();
     if (!pt) return;
     const b = w.getBounds();
     const inside = pt.x >= b.x && pt.x < b.x + b.width && pt.y >= b.y && pt.y < b.y + b.height;
-    if (inside !== hoverInside) {
+    const p = prefs.getPublic();
+    if (inside !== hoverInside || forceEmit) {
       hoverInside = inside;
+      setHoverHiddenNative(!!p.hoverReveal && !inside && !hoverBlocked);
       try { onHoverChange(inside); } catch {}
+    } else if (p.hoverReveal && !inside && !hoverBlocked && !hoverHidden) {
+      setHoverHiddenNative(true);
     }
   }
 
@@ -190,11 +227,13 @@ function createWorkbenchWindow({
     const w = activeWin();
     const p = prefs.getPublic();
     const wantPoll = !disposed && !!w && mode === 'workbench' && !isWrittenCompact() &&
+      !hoverBlocked &&
       (p.hoverReveal || p.autoCollapseChrome) &&
       (w.isVisible ? w.isVisible() : true) &&
       !(w.isMinimized && w.isMinimized());
     if (!wantPoll) {
       stopHoverPolling();
+      setHoverHiddenNative(false);
       if (!hoverInside) {
         hoverInside = true;
         try { onHoverChange(true); } catch {}
@@ -202,10 +241,93 @@ function createWorkbenchWindow({
       return;
     }
     if (!hoverTimer) {
-      checkHoverOnce();
-      hoverTimer = setInterval(checkHoverOnce, pollIntervalMs);
+      checkHoverOnce(true);
+      hoverTimer = setInterval(() => checkHoverOnce(false), pollIntervalMs);
       hoverTimer.unref?.();
+    } else {
+      checkHoverOnce(false);
     }
+  }
+
+  function setHoverBlocked(blocked) {
+    const next = !!blocked;
+    if (next === hoverBlocked) return getWindowState();
+    hoverBlocked = next;
+    syncHoverPolling();
+    return getWindowState();
+  }
+
+  // Exact SuiSi `window:cursor-in-content` logic for reliable 80ms click-through hit-testing on Windows.
+  function getCursorInContent() {
+    const w = activeWin();
+    if (!w || !w.isVisible?.() || w.isMinimized?.()) return null;
+    const pt = screen.getCursorScreenPoint?.();
+    if (!pt) return null;
+    const b = typeof w.getContentBounds === 'function' ? w.getContentBounds() : w.getBounds();
+    const rawZoom = typeof w.webContents?.getZoomFactor === 'function' ? w.webContents.getZoomFactor() : 1;
+    const zoom = Number.isFinite(rawZoom) && rawZoom > 0 ? rawZoom : 1;
+    const x = (pt.x - b.x) / zoom;
+    const y = (pt.y - b.y) / zoom;
+    const inside = pt.x >= b.x && pt.x < b.x + b.width && pt.y >= b.y && pt.y < b.y + b.height;
+    return { x, y, inside };
+  }
+
+  // SuiSi JS window dragging (avoids `-webkit-app-region: drag` conflicts with click-through & non-focusable windows).
+  // Reads live DIP coordinates from screen.getCursorScreenPoint() when caller omits coords (DPI-proof across monitors).
+  function resolveDragPoint(cursorX, cursorY) {
+    if (cursorX != null && cursorY != null) {
+      const sx = Number(cursorX);
+      const sy = Number(cursorY);
+      if (Number.isFinite(sx) && Number.isFinite(sy)) return { x: sx, y: sy };
+    }
+    const pt = screen.getCursorScreenPoint?.();
+    if (pt && Number.isFinite(pt.x) && Number.isFinite(pt.y)) return { x: pt.x, y: pt.y };
+    return null;
+  }
+
+  function beginDrag(cursorX, cursorY) {
+    const w = activeWin();
+    if (!w || clickThrough || w.isMaximized?.()) return false;
+    const pt = resolveDragPoint(cursorX, cursorY);
+    if (!pt) return false;
+    const b = w.getBounds();
+    dragStart = {
+      cursorX: pt.x,
+      cursorY: pt.y,
+      windowX: b.x,
+      windowY: b.y,
+      windowWidth: b.width,
+      windowHeight: b.height,
+      lastX: b.x,
+      lastY: b.y
+    };
+    return true;
+  }
+
+  function dragTo(cursorX, cursorY) {
+    const w = activeWin();
+    if (!w || !dragStart || clickThrough) return false;
+    const pt = resolveDragPoint(cursorX, cursorY);
+    if (!pt) return false;
+    const nx = dragStart.windowX + Math.round(pt.x - dragStart.cursorX);
+    const ny = dragStart.windowY + Math.round(pt.y - dragStart.cursorY);
+    if (nx === dragStart.lastX && ny === dragStart.lastY) return false;
+    try {
+      w.setBounds({ x: nx, y: ny, width: dragStart.windowWidth, height: dragStart.windowHeight }, false);
+      dragStart.lastX = nx;
+      dragStart.lastY = ny;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function endDrag() {
+    if (dragStart) {
+      dragStart = null;
+      scheduleBoundsSave();
+    }
+    return true;
   }
 
   function saveCurrentModeBounds() {
@@ -263,8 +385,9 @@ function createWorkbenchWindow({
       ...bounds,
       minWidth: HOME_MIN[0],
       minHeight: HOME_MIN[1],
-      alwaysOnTop: false,
-      skipTaskbar: effectivePreventFocus() || isSecurityActive()
+      alwaysOnTop: isSecurityActive(),
+      focusable: true,
+      skipTaskbar: isSecurityActive()
     };
   }
 
@@ -291,18 +414,24 @@ function createWorkbenchWindow({
     }
     const changed = mode !== nextMode;
     if (changed) saveCurrentModeBounds();
+    dragStart = null;
     mode = nextMode;
     if (mode === 'home') {
       tempFocus = false;
       clickThrough = false;
       mouseInteractive = false;
+      hoverHidden = false;
+      hoverBlocked = false;
       prefs.applyPatch({ clickThrough: false }, { silent: true, save: false });
     }
     if (!isWrittenCompact()) {
       applyModeLayout(mode);
       syncAlwaysOnTop();
       syncFocusAndTaskbar();
-      syncClickThroughNative();
+      syncMousePassthrough();
+      if (changed && mode === 'home') {
+        try { w.focus(); } catch {}
+      }
     }
     syncHoverPolling();
     emitState();
@@ -310,7 +439,17 @@ function createWorkbenchWindow({
   }
 
   function setAlwaysOnTop(on) {
-    prefs.applyPatch({ alwaysOnTop: !!on }, { silent: false });
+    const next = !!on;
+    prefs.applyPatch({ alwaysOnTop: next }, { silent: false });
+    // Turning off always-on-top automatically turns off click-through (matches SuiSi)
+    // so a click-through window cannot sink behind other apps permanently.
+    if (!next && clickThrough) {
+      clickThrough = false;
+      mouseInteractive = false;
+      prefs.applyPatch({ clickThrough: false }, { silent: false, save: false });
+      syncMousePassthrough();
+      syncFocusAndTaskbar();
+    }
     syncAlwaysOnTop();
     emitState();
     return getWindowState();
@@ -331,7 +470,7 @@ function createWorkbenchWindow({
   function requestTempFocus(active) {
     const w = activeWin();
     if (!w || isWrittenCompact()) return getWindowState();
-    const next = !!active && effectivePreventFocus();
+    const next = !!active && (effectivePreventFocus() || clickThrough);
     tempFocus = next;
     syncFocusAndTaskbar();
     if (next) {
@@ -343,10 +482,16 @@ function createWorkbenchWindow({
 
   function setClickThrough(on) {
     const next = !!on && mode === 'workbench' && !isWrittenCompact();
+    if (next && !prefs.getPublic().alwaysOnTop) {
+      prefs.applyPatch({ alwaysOnTop: true }, { silent: false });
+    }
     clickThrough = next;
     mouseInteractive = false;
+    if (next) dragStart = null;
     prefs.applyPatch({ clickThrough: next }, { silent: false, save: false });
-    syncClickThroughNative();
+    syncAlwaysOnTop();
+    syncMousePassthrough();
+    syncFocusAndTaskbar();
     emitState();
     return getWindowState();
   }
@@ -356,14 +501,14 @@ function createWorkbenchWindow({
     const next = !!interactive;
     if (next === mouseInteractive) return mouseInteractive;
     mouseInteractive = next;
-    syncClickThroughNative();
+    syncMousePassthrough();
     return mouseInteractive;
   }
 
   function setHoverTracking(on) {
-    if (typeof on === 'boolean') {
-      // Explicit refresh; actual polling obeys hoverReveal || autoCollapseChrome.
-      if (!on) stopHoverPolling();
+    if (typeof on === 'boolean' && !on) {
+      stopHoverPolling();
+      setHoverHiddenNative(false);
     }
     syncHoverPolling();
     return getWindowState();
@@ -373,6 +518,7 @@ function createWorkbenchWindow({
     const w = activeWin();
     if (!w) return false;
     stopHoverPolling();
+    setHoverHiddenNative(false);
     w.minimize();
     emitState();
     return true;
@@ -417,6 +563,7 @@ function createWorkbenchWindow({
       }
     });
     setStealth(true);
+    syncAlwaysOnTop();
     syncFocusAndTaskbar();
     emitState();
     return getWindowState();
@@ -431,7 +578,6 @@ function createWorkbenchWindow({
       }
       return getWindowState();
     }
-    // Ending an interview session should only clear session-scoped security mode.
     if (options.scope === 'session' && current.securityMode.scope === 'persistent') {
       return getWindowState();
     }
@@ -457,6 +603,7 @@ function createWorkbenchWindow({
     });
     setStealth(!restoreAllowCapture);
     if (!restorePreventFocus) tempFocus = false;
+    syncAlwaysOnTop();
     syncFocusAndTaskbar();
     emitState();
     return getWindowState();
@@ -467,14 +614,29 @@ function createWorkbenchWindow({
     const nextAuto = typeof patch.autoEnableOnLaunch === 'boolean'
       ? patch.autoEnableOnLaunch
       : current.securityMode.autoEnableOnLaunch;
+    const nextHideCursor = typeof patch.hideCursor === 'boolean'
+      ? patch.hideCursor
+      : (current.securityMode.hideCursor !== false);
     prefs.applyPatch({
       securityMode: {
         autoEnableOnLaunch: nextAuto,
+        hideCursor: nextHideCursor,
         scope: nextAuto && current.securityMode.enabled ? 'persistent' : current.securityMode.scope
       }
     });
     emitState();
     return getWindowState();
+  }
+
+  function reapplyContentProtection() {
+    const w = activeWin();
+    if (!w || typeof w.setContentProtection !== 'function') return false;
+    try {
+      w.setContentProtection(!!getStealth());
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async function checkEnvironment() {
@@ -484,7 +646,6 @@ function createWorkbenchWindow({
     const warnings = [];
     if (w && typeof w.setContentProtection === 'function') {
       try {
-        // Re-apply current state without changing user settings to verify native affinity call.
         w.setContentProtection(stealthNow);
         contentProtectionSupported = true;
       } catch (e) {
@@ -559,6 +720,37 @@ function createWorkbenchWindow({
     return { rect: { ...found.physicalBounds }, display: found, fallback: false };
   }
 
+  function dispatchHotkeyAction(action) {
+    if (action === 'togglePreventFocus') {
+      if (isSecurityActive()) { emitState(); return; }
+      try { setPreventFocus(!prefs.getPublic().preventFocus); } catch {}
+      return;
+    }
+    if (action === 'toggleClickThrough') {
+      if (clickThrough) setClickThrough(false);
+      else if (mode === 'workbench') setClickThrough(true);
+      return;
+    }
+    if (action === 'toggleHotkeys') {
+      const nextEnabled = !(prefs.getPublic().workbenchHotkeysEnabled !== false);
+      prefs.applyPatch({ workbenchHotkeysEnabled: nextEnabled });
+      registerHotkeys();
+      return;
+    }
+    if (mode !== 'workbench') return;
+    if (action === 'toggleAlwaysOnTop') {
+      setAlwaysOnTop(!prefs.getPublic().alwaysOnTop);
+      return;
+    }
+    if (action === 'toggleHoverReveal') {
+      prefs.applyPatch({ hoverReveal: !prefs.getPublic().hoverReveal });
+      syncHoverPolling();
+      emitState();
+      return;
+    }
+    try { onHotkeyAction(action); } catch {}
+  }
+
   function unregisterHotkeys() {
     for (const key of ownedHotkeys) {
       try { shortcuts?.unregister?.(key); } catch {}
@@ -566,49 +758,104 @@ function createWorkbenchWindow({
     ownedHotkeys.clear();
   }
 
+  function getMouseBindings() {
+    const pub = prefs.getPublic();
+    const enabled = pub.workbenchHotkeysEnabled !== false;
+    const map = pub.workbenchHotkeys || DEFAULT_WORKBENCH_HOTKEYS;
+    const activeActions = enabled
+      ? WORKBENCH_HOTKEY_ACTIONS
+      : ['togglePreventFocus', 'toggleClickThrough', 'toggleHotkeys'];
+    const out = [];
+    for (const action of activeActions) {
+      const key = String(map[action] || '').trim();
+      if (/^Mouse[45]$/.test(key)) out.push({ action, key });
+    }
+    return out;
+  }
+
   function registerHotkeys() {
     if (disposed || !shortcuts) return [];
     unregisterHotkeys();
     hotkeyErrors = [];
-    const { togglePreventFocus, toggleClickThrough } = prefs.getPublic().hotkeys;
+    const pub = prefs.getPublic();
+    const enabled = pub.workbenchHotkeysEnabled !== false;
+    const map = pub.workbenchHotkeys || DEFAULT_WORKBENCH_HOTKEYS;
 
-    const pairs = [
-      ['togglePreventFocus', togglePreventFocus, () => {
-        if (isSecurityActive()) {
-          emitState();
-          return;
-        }
-        try { setPreventFocus(!prefs.getPublic().preventFocus); } catch {}
-      }],
-      ['toggleClickThrough', toggleClickThrough, () => {
-        if (clickThrough) setClickThrough(false);
-        else if (mode === 'workbench') setClickThrough(true);
-      }]
-    ];
+    // Even when workbench hotkeys are toggled off, keep safety unlocks & toggleHotkeys active.
+    const activeActions = enabled
+      ? WORKBENCH_HOTKEY_ACTIONS
+      : ['togglePreventFocus', 'toggleClickThrough', 'toggleHotkeys'];
 
-    for (const [name, key, handler] of pairs) {
+    const seenKeys = new Set();
+    for (const action of activeActions) {
+      const key = String(map[action] || '').trim();
       if (!key) continue;
+      if (seenKeys.has(key)) {
+        hotkeyErrors.push(`快捷键 ${key}（${action}）重复`);
+        continue;
+      }
+      seenKeys.add(key);
+      // Mouse4/Mouse5 are registered via QuietCapture --mouse-watch inside shortcutRuntime
+      if (/^Mouse[45]$/.test(key)) continue;
       if (shortcuts.isRegistered?.(key)) {
-        hotkeyErrors.push(`快捷键 ${key}（${name}）已被占用`);
+        hotkeyErrors.push(`快捷键 ${key}（${action}）已被占用`);
         continue;
       }
       try {
-        const ok = shortcuts.register(key, handler);
+        const ok = shortcuts.register(key, () => dispatchHotkeyAction(action));
         if (ok) ownedHotkeys.add(key);
-        else hotkeyErrors.push(`无法注册快捷键 ${key}（${name}）`);
+        else hotkeyErrors.push(`无法注册快捷键 ${key}（${action}）`);
       } catch {
-        hotkeyErrors.push(`快捷键 ${key}（${name}）格式无效`);
+        hotkeyErrors.push(`快捷键 ${key}（${action}）格式无效`);
       }
     }
     emitState();
     return [...hotkeyErrors];
   }
 
+  function setWorkbenchHotkeys(patch = {}) {
+    const prev = prefs.getPublic();
+    const nextPatch = {};
+    if (typeof patch.enabled === 'boolean') nextPatch.workbenchHotkeysEnabled = patch.enabled;
+    if (patch.bindings && typeof patch.bindings === 'object') {
+      const merged = { ...prev.workbenchHotkeys };
+      for (const [k, v] of Object.entries(patch.bindings)) {
+        if (WORKBENCH_HOTKEY_ACTIONS.includes(k)) merged[k] = String(v || '').trim();
+      }
+      const nonEmpty = Object.values(merged).filter(Boolean);
+      if (new Set(nonEmpty).size !== nonEmpty.length) {
+        throw new Error('工作台快捷键存在重复按键，请更换后重试');
+      }
+      nextPatch.workbenchHotkeys = merged;
+    }
+    prefs.applyPatch(nextPatch);
+    const errs = registerHotkeys();
+    if (errs.length && patch.bindings) {
+      prefs.applyPatch({
+        workbenchHotkeysEnabled: prev.workbenchHotkeysEnabled,
+        workbenchHotkeys: prev.workbenchHotkeys
+      });
+      registerHotkeys();
+      throw new Error(errs[0]);
+    }
+    try { onHotkeysChanged(); } catch {}
+    return getWindowState();
+  }
+
+  function resetWorkbenchHotkeys() {
+    prefs.applyPatch({
+      workbenchHotkeysEnabled: true,
+      workbenchHotkeys: { ...DEFAULT_WORKBENCH_HOTKEYS }
+    });
+    registerHotkeys();
+    try { onHotkeysChanged(); } catch {}
+    return getWindowState();
+  }
+
   function attach(window) {
     win = window;
     if (!win) return;
 
-    // Apply startup security recovery / auto-enable on launch.
     const recovered = prefs.consumeRecoveredSessionSecurity?.();
     if (recovered && typeof recovered.savedAllowCapture === 'boolean') {
       setStealth(!recovered.savedAllowCapture);
@@ -620,27 +867,31 @@ function createWorkbenchWindow({
     win.on('move', scheduleBoundsSave);
     win.on('maximize', () => emitState());
     win.on('unmaximize', () => emitState());
-    win.on('minimize', () => { stopHoverPolling(); emitState(); });
-    win.on('restore', () => { syncFocusAndTaskbar(); syncHoverPolling(); emitState(); });
-    win.on('show', () => { syncFocusAndTaskbar(); syncAlwaysOnTop(); syncHoverPolling(); emitState(); });
-    win.on('hide', () => { stopHoverPolling(); emitState(); });
+    win.on('minimize', () => { stopHoverPolling(); setHoverHiddenNative(false); emitState(); });
+    win.on('restore', () => { syncAlwaysOnTop(); syncFocusAndTaskbar(); syncMousePassthrough(); syncHoverPolling(); emitState(); });
+    win.on('show', () => { syncAlwaysOnTop(); syncFocusAndTaskbar(); syncMousePassthrough(); syncHoverPolling(); emitState(); });
+    win.on('hide', () => { stopHoverPolling(); setHoverHiddenNative(false); emitState(); });
     win.on('blur', () => {
       if (tempFocus) {
         tempFocus = false;
         syncFocusAndTaskbar();
         emitState();
+      } else if (mode === 'workbench') {
+        syncAlwaysOnTop();
       }
     });
     win.on('closed', () => {
       stopHoverPolling();
       clearTimeout(boundsTimer);
       boundsTimer = null;
+      dragStart = null;
       win = null;
     });
 
     if (!isWrittenCompact()) {
       syncAlwaysOnTop();
       syncFocusAndTaskbar();
+      syncMousePassthrough();
     }
     syncHoverPolling();
     emitState();
@@ -651,11 +902,12 @@ function createWorkbenchWindow({
       applyModeLayout(mode);
       syncAlwaysOnTop();
       syncFocusAndTaskbar();
-      syncClickThroughNative();
+      syncMousePassthrough();
       syncHoverPolling();
       emitState();
     } else {
       stopHoverPolling();
+      setHoverHiddenNative(false);
     }
   }
 
@@ -664,8 +916,8 @@ function createWorkbenchWindow({
     stopHoverPolling();
     clearTimeout(boundsTimer);
     boundsTimer = null;
+    dragStart = null;
     unregisterHotkeys();
-    // Cleanly restore session-scoped security mode on normal quit.
     try { disableSecurity({ scope: 'session' }); } catch {}
   }
 
@@ -682,6 +934,11 @@ function createWorkbenchWindow({
     setClickThrough,
     setMouseInteractive,
     setHoverTracking,
+    setHoverBlocked,
+    getCursorInContent,
+    beginDrag,
+    dragTo,
+    endDrag,
     setAllowCapture,
     enableSecurity,
     disableSecurity,
@@ -690,6 +947,11 @@ function createWorkbenchWindow({
     getDisplays,
     resolveCaptureRect,
     registerHotkeys,
+    setWorkbenchHotkeys,
+    resetWorkbenchHotkeys,
+    getMouseBindings,
+    dispatchHotkeyAction,
+    reapplyContentProtection,
     onWrittenCompactChanged,
     syncHoverPolling,
     dispose
