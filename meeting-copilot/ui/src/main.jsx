@@ -123,6 +123,7 @@ function App() {
   const [hud, setHud] = useState({ count: 0 });
   const [capturing, setCapturing] = useState(false);
   const [secondaryMicActive, setSecondaryMicActive] = useState(false);
+  const [recordingState, setRecordingState] = useState({ active: false, durationSec: 0, themBytes: 0, meBytes: 0 });
   const [partials, setPartials] = useState({});
   const [manualDraft, setManualDraft] = useState(createManualDraftState);
   const [modal, setModal] = useState(null); // 'health' | 'diagnostics' | 'help' | null
@@ -208,6 +209,7 @@ function App() {
       scene: session.scene || 'interview',
       answerLang: session.answerLang || settingsRef.current?.llm?.answerLang || 'chinese',
       libraryOverride: buildLibraryOverrideFor(session),
+      memoryEnabled: workbenchPrefsRef.current?.memoryRecallEnabled !== false,
       codingPrefs: workbenchPrefsRef.current?.codingPrefs,
       dialogueThinking: Boolean(workbenchPrefsRef.current?.dialogueThinking)
     });
@@ -308,8 +310,9 @@ function App() {
       window.mc.loadTemplates().catch(() => ({ version: 1, groups: [{ id: 'group-default', name: '默认分组', order: 0, collapsed: false }], templates: [] })),
       window.mc.getInterviewLibrary().catch(() => null),
       window.mc.getWorkbenchPrefs().catch(() => null),
-      window.mc.getWindowState().catch(() => null)
-    ]).then(([s, rawSessions, tpls, lib, prefs, winSt]) => {
+      window.mc.getWindowState().catch(() => null),
+      window.mc.getRecordingStatus?.().catch(() => null)
+    ]).then(([s, rawSessions, tpls, lib, prefs, winSt, recSt]) => {
       if (!alive) return;
       setSettings(s);
       const migrated = migrateSessionsFile(rawSessions);
@@ -318,6 +321,7 @@ function App() {
       setLibrary(lib);
       setWorkbenchPrefs(prefs);
       setWindowState(winSt);
+      if (recSt) setRecordingState(recSt);
       loadedRef.current = true;
     }).catch(() => {});
 
@@ -327,6 +331,7 @@ function App() {
     const offWin = window.mc.onWindowState?.((st) => setWindowState(st));
     const offPrefs = window.mc.onWorkbenchPrefsState?.((p) => setWorkbenchPrefs(p));
     const offHover = window.mc.onHoverState?.(({ inside }) => setHoverInside(Boolean(inside)));
+    const offRec = window.mc.onRecordingState?.((st) => setRecordingState(st));
     const onLibEvt = () => { void window.mc.getInterviewLibrary().then(setLibrary).catch(() => {}); };
     window.addEventListener('mc-library-updated', onLibEvt);
 
@@ -424,6 +429,7 @@ function App() {
       offWin?.();
       offPrefs?.();
       offHover?.();
+      offRec?.();
       offAsr?.();
       offLlm?.();
       offShot?.();
@@ -552,11 +558,24 @@ function App() {
     }
     navigateWithFlush('workbench');
     window.mc.prewarm({ resume: session.resume || undefined, jd: session.jd || undefined, immediate: true });
-    if (config.autoStartCapture) {
+    if (config.autoStartCapture || config.startAudioRecording) {
       try {
-        await startCaptureWithSource(config.audioSource, false);
+        await startCaptureWithSource(config.audioSource, Boolean(config.startAudioRecording && config.audioSource === 'system'));
       } catch (e) {
         setAsr(prev => ({ ...prev, lastError: e.message }));
+      }
+    }
+    if (config.startAudioRecording) {
+      try {
+        const st = await window.mc.startRecording?.({
+          sessionId: session.id,
+          sessionName: session.name,
+          role: session.role || '',
+          audioSource: session.audioSource
+        });
+        if (st) setRecordingState(st);
+      } catch (e) {
+        setAsr(prev => ({ ...prev, lastError: `开启录音失败：${e.message}` }));
       }
     }
   }, [handleUpdateWorkbenchPrefs, navigateWithFlush, startCaptureWithSource]);
@@ -568,10 +587,12 @@ function App() {
 
   const finalizeCloseSession = useCallback(async (discardCurrent = false) => {
     clearTimeout(autoTurnTimerRef.current);
+    try { await window.mc.stopRecording?.(); } catch {}
     await stopCaptureNow();
     const closingId = activeSessionIdRef.current;
     await window.mc.disableSecurity({ scope: 'session' }).then(setWindowState).catch(() => {});
     if (discardCurrent && closingId) {
+      try { await window.mc.discardRecording?.(closingId); } catch {}
       setSessions(list => list.filter(s => s.id !== closingId));
     }
     setActiveSessionId(null);
@@ -579,6 +600,38 @@ function App() {
     setManualDraft(createManualDraftState());
     navigateWithFlush('home');
   }, [navigateWithFlush, stopCaptureNow]);
+
+  const handleToggleRecording = useCallback(async () => {
+    const cur = sessionsRef.current.find(s => s.id === activeSessionIdRef.current);
+    if (!cur) return;
+    if (recordingState?.active) {
+      try {
+        await window.mc.stopRecording?.();
+        const st = await window.mc.getRecordingStatus?.();
+        if (st) setRecordingState(st);
+      } catch {}
+      return;
+    }
+    try {
+      if (!capturing) {
+        await startCaptureWithSource(cur.audioSource, cur.audioSource === 'system');
+      } else if (cur.audioSource === 'system' && !secondaryMicActive) {
+        try {
+          const res = await audioRef.current.setSecondaryMic(true, settingsRef.current?.audio?.micDeviceId || '');
+          setSecondaryMicActive(Boolean(res.secondaryMicActive));
+        } catch {}
+      }
+      const st = await window.mc.startRecording?.({
+        sessionId: cur.id,
+        sessionName: cur.name,
+        role: cur.role || '',
+        audioSource: cur.audioSource
+      });
+      if (st) setRecordingState(st);
+    } catch (e) {
+      setAsr(prev => ({ ...prev, lastError: `开启录音失败：${e.message}` }));
+    }
+  }, [capturing, recordingState?.active, secondaryMicActive, startCaptureWithSource]);
 
   const handleEndSessionSave = useCallback(async () => {
     const res = await handleSaveProgressSync();
@@ -724,6 +777,7 @@ function App() {
         hud={hud}
         capturing={capturing}
         secondaryMicActive={secondaryMicActive}
+        recordingState={recordingState}
         partials={partials}
         manualDraft={manualDraft}
         workbenchPrefs={workbenchPrefs}
@@ -731,6 +785,7 @@ function App() {
         hoverInside={hoverInside}
         onBackHome={() => navigateWithFlush('home')}
         onToggleCapture={() => void handleToggleCapture()}
+        onToggleRecording={() => void handleToggleRecording()}
         onSwitchAudioSource={(src) => void handleSwitchAudioSource(src)}
         onToggleSecondaryMic={() => void handleToggleSecondaryMic()}
         onCaptureScreen={(mode) => void batchController.take(mode)}
@@ -781,8 +836,6 @@ function App() {
         onResumeWorkbench={() => navigateWithFlush('workbench')}
         onToggleSecurity={(next) => void handleToggleSecurity(next)}
         onOpenHealth={() => setModal('health')}
-        onOpenDiagnostics={() => setModal('diagnostics')}
-        onOpenHelp={() => setModal('help')}
         onMinimize={() => void window.mc.minimizeWindow()}
         onToggleMaximize={() => void window.mc.toggleMaximizeWindow()}
         onQuit={() => window.mc.quit()}
@@ -821,9 +874,15 @@ function App() {
           <RecordsView
             sessions={sessions}
             activeSessionId={activeSessionId}
+            library={library}
+            workbenchPrefs={workbenchPrefs}
+            onUpdateWorkbenchPrefs={handleUpdateWorkbenchPrefs}
             onResumeFromRecord={handleResumeFromRecord}
             onRenameSession={(id, name) => patchSessionById(id, s => ({ ...s, name }))}
-            onDeleteSession={(id) => setSessions(list => list.filter(s => s.id !== id))}
+            onDeleteSession={(id) => {
+              void window.mc.discardRecording?.(id).catch(() => {});
+              setSessions(list => list.filter(s => s.id !== id));
+            }}
           />
         )}
 
@@ -837,14 +896,7 @@ function App() {
             onUpdateWorkbenchPrefs={handleUpdateWorkbenchPrefs}
             onToggleSecurity={(next) => void handleToggleSecurity(next)}
             onSetSecurityPrefs={(patch) => void window.mc.setSecurityPrefs(patch).then(setWindowState).catch(() => {})}
-            onNavigate={(next) => navigateWithFlush(next)}
-            onOpenHealth={() => setModal('health')}
-            onOpenDiagnostics={() => setModal('diagnostics')}
-            onOpenHelp={() => setModal('help')}
-            onEnterWrittenCompact={() => void handleEnterWrittenCompact()}
             closeRef={settingsCloseRef}
-            batch={batch}
-            batchController={batchController}
           />
         )}
       </AppShell>

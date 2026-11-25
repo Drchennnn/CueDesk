@@ -149,7 +149,7 @@ def patch_main(raw: bytes) -> bytes:
     text = replace_once(
         text,
         '  let eyeContact;\n',
-        '  let eyeContact;\n  let templatesStore;\n  let workbenchPrefs;\n  let workbenchWindow;\n',
+        '  let eyeContact;\n  let templatesStore;\n  let workbenchPrefs;\n  let workbenchWindow;\n  let audioRecorder;\n',
         "bootstrap controller variables",
     )
 
@@ -227,6 +227,14 @@ def patch_main(raw: bytes) -> bytes:
       const err = await electron.shell.openPath(doc.file);
       if (err) throw new Error(err);
       return { ok: true, title: doc.title };
+    });
+    electron.ipcMain.handle("interview-library:read-chunks", async (event, ref) => {
+      assertLibrarySender(event);
+      return interviewLibrary.readChunks(ref);
+    });
+    electron.ipcMain.handle("interview-library:rag-status", async (event) => {
+      assertLibrarySender(event);
+      return interviewLibrary.getRagStatus();
     });''',
         "interview-library pick-root + read-doc IPC",
     )
@@ -336,8 +344,50 @@ def patch_main(raw: bytes) -> bytes:
     electron.ipcMain.handle("security:enable", (event, options) => { assertMainSender(event); return workbenchWindow.enableSecurity(options); });
     electron.ipcMain.handle("security:disable", (event, options) => { assertMainSender(event); return workbenchWindow.disableSecurity(options); });
     electron.ipcMain.handle("security:set-prefs", (event, patch) => { assertMainSender(event); return workbenchWindow.setSecurityPrefs(patch); });
-    electron.ipcMain.handle("security:check-env", (event) => { assertMainSender(event); return workbenchWindow.checkEnvironment(); });''',
+    electron.ipcMain.handle("security:check-env", (event) => { assertMainSender(event); return workbenchWindow.checkEnvironment(); });
+    const { createAudioRecorder } = require(path.join(process.resourcesPath, "tools", "audio-recorder.cjs"));
+    audioRecorder = createAudioRecorder({
+      defaultDir: path.join(electron.app.getPath("userData"), "recordings"),
+      getCustomDir: () => workbenchPrefs?.getPublic().recordingDir || "",
+      onStateChange: (state) => { if (win && !win.isDestroyed()) win.webContents.send("recording:state", state); }
+    });
+    electron.ipcMain.handle("recording:start", (event, opts) => { assertMainSender(event); return audioRecorder.start(opts); });
+    electron.ipcMain.handle("recording:stop", (event) => { assertMainSender(event); return audioRecorder.stop(); });
+    electron.ipcMain.handle("recording:status", (event) => { assertMainSender(event); return audioRecorder.status(); });
+    electron.ipcMain.handle("recording:list", (event, sessionId) => { assertMainSender(event); return audioRecorder.list(sessionId); });
+    electron.ipcMain.handle("recording:read-track", (event, opts) => { assertMainSender(event); return audioRecorder.readTrack(opts); });
+    electron.ipcMain.handle("recording:discard", (event, sessionId) => { assertMainSender(event); return audioRecorder.discardSession(sessionId); });
+    electron.ipcMain.handle("recording:open-folder", async (event, sessionId) => {
+      assertMainSender(event);
+      const target = audioRecorder.getRecordingDir(sessionId);
+      const err = await electron.shell.openPath(target);
+      if (err) throw new Error(err);
+      return { ok: true, path: target };
+    });
+    electron.ipcMain.handle("recording:pick-dir", async (event) => {
+      assertMainSender(event);
+      const r = await electron.dialog.showOpenDialog(win ?? undefined, {
+        title: "选择整场录音存储目录",
+        properties: ["openDirectory", "createDirectory"]
+      });
+      if (r.canceled || !r.filePaths[0]) return null;
+      return r.filePaths[0];
+    });''',
         "workbench IPC registration",
+    )
+
+    # 8a. Tee capture:pcm stream to dual-track WAV audioRecorder when recording is active
+    text = replace_once(
+        text,
+        '''    electron.ipcMain.on(IPC.capturePcm, (_e, buf, captureTs, channel) => {
+      asr.sendPcm(buf, captureTs, channel === "me" ? "me" : "them");
+    });''',
+        '''    electron.ipcMain.on(IPC.capturePcm, (_e, buf, captureTs, channel) => {
+      const ch = channel === "me" ? "me" : "them";
+      asr.sendPcm(buf, captureTs, ch);
+      audioRecorder?.writePcm(buf, ch);
+    });''',
+        "capturePcm tee to audioRecorder",
     )
 
     # 8b. Support optional targetLang on translateText IPC
@@ -477,12 +527,13 @@ def patch_main(raw: bytes) -> bytes:
         "shotAsk codingPrefs + options fix",
     )
 
-    # 11. Dispose workbenchWindow cleanly on before-quit
+    # 11. Dispose workbenchWindow & audioRecorder cleanly on before-quit
     text = replace_once(
         text,
         '''    writtenWindow?.flush();
     windowControls?.dispose();''',
-        '''    workbenchWindow?.dispose();
+        '''    audioRecorder?.dispose();
+    workbenchWindow?.dispose();
     writtenWindow?.flush();
     windowControls?.dispose();''',
         "before-quit dispose workbenchWindow",
@@ -517,6 +568,21 @@ def patch_preload(raw: bytes) -> bytes:
   pickInterviewLibraryRoot: () => electron.ipcRenderer.invoke("interview-library:pick-root"),
   readInterviewDocument: (ref) => electron.ipcRenderer.invoke("interview-library:read-doc", ref),
   openInterviewDocument: (ref) => electron.ipcRenderer.invoke("interview-library:open-doc", ref),
+  readInterviewChunks: (ref) => electron.ipcRenderer.invoke("interview-library:read-chunks", ref),
+  getRagStatus: () => electron.ipcRenderer.invoke("interview-library:rag-status"),
+  startRecording: (opts) => electron.ipcRenderer.invoke("recording:start", opts),
+  stopRecording: () => electron.ipcRenderer.invoke("recording:stop"),
+  getRecordingStatus: () => electron.ipcRenderer.invoke("recording:status"),
+  listRecordings: (sessionId) => electron.ipcRenderer.invoke("recording:list", sessionId),
+  readRecordingTrack: (opts) => electron.ipcRenderer.invoke("recording:read-track", opts),
+  discardRecording: (sessionId) => electron.ipcRenderer.invoke("recording:discard", sessionId),
+  openRecordingFolder: (sessionId) => electron.ipcRenderer.invoke("recording:open-folder", sessionId),
+  pickRecordingDir: () => electron.ipcRenderer.invoke("recording:pick-dir"),
+  onRecordingState: (cb) => {
+    const listener = (_e, value) => cb(value);
+    electron.ipcRenderer.on("recording:state", listener);
+    return () => electron.ipcRenderer.removeListener("recording:state", listener);
+  },
   loadTemplates: () => electron.ipcRenderer.invoke("templates:load"),
   saveTemplates: (data) => electron.ipcRenderer.invoke("templates:save", data),
   getWorkbenchPrefs: () => electron.ipcRenderer.invoke("workbench-prefs:get"),

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { getActiveAttempt, projectLegacyTurns } from '../core/sessionModel.js';
 import {
   IconArrowLeft,
@@ -6,11 +6,143 @@ import {
   IconCopy,
   IconDownload,
   IconEdit,
+  IconFolder,
   IconPlay,
   IconSearch,
+  IconSpeaker,
   IconTrash
 } from './Icons.jsx';
 import { EvidencePanel, ModelAnswers, cleanAnswerReferences } from './SharedWidgets.jsx';
+
+function formatBytes(n) {
+  if (!n) return '0 KB';
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(n / 1024))} KB`;
+}
+
+function formatDuration(sec) {
+  const s = Math.max(0, Math.round(sec || 0));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
+}
+
+function DualTrackAudioPlayer({ sessionId }) {
+  const [takes, setTakes] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [activeKey, setActiveKey] = useState('');
+  const [audioUrl, setAudioUrl] = useState('');
+  const [speed, setSpeed] = useState(1);
+  const audioElRef = useRef(null);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setError('');
+    void window.mc.listRecordings?.(sessionId)
+      .then((res) => { if (alive) setTakes(res?.takes || []); })
+      .catch((e) => { if (alive) setError(e.message || '读取录音失败'); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [sessionId]);
+
+  useEffect(() => () => {
+    if (audioUrl) URL.revokeObjectURL(audioUrl);
+  }, [audioUrl]);
+
+  useEffect(() => {
+    if (audioElRef.current) audioElRef.current.playbackRate = speed;
+  }, [speed, audioUrl]);
+
+  const loadTrack = async (takeId, channel) => {
+    const key = `${takeId}:${channel}`;
+    setError('');
+    try {
+      const res = await window.mc.readRecordingTrack({ sessionId, takeId, channel });
+      const blob = new Blob([res.data], { type: res.mime || 'audio/wav' });
+      const url = URL.createObjectURL(blob);
+      setAudioUrl(prev => { if (prev) URL.revokeObjectURL(prev); return url; });
+      setActiveKey(key);
+    } catch (e) {
+      setError(`加载音轨失败：${e.message}`);
+    }
+  };
+
+  if (loading) return <div className="mc-alert">正在扫描本场录音文件…</div>;
+  if (!takes.length) {
+    return (
+      <div className="mc-card">
+        <div className="mc-card-body">
+          <div className="mc-field-hint">
+            本场面试暂无 WAV 录音文件。在工作台顶栏点击「录制」按钮即可随时开启双轨整场录音（对方轨 + 本人轨）。
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span className="mc-field-hint">共 {takes.length} 段 WAV 录音（独立存于应用录音目录，不占知识库 Git）</span>
+        <button type="button" className="mc-btn mc-btn-sm" onClick={() => void window.mc.openRecordingFolder?.(sessionId)}>
+          <IconFolder size={13} /> 打开本场录音目录
+        </button>
+      </div>
+      {error && <div className="mc-alert mc-alert-err">{error}</div>}
+      {audioUrl && (
+        <div className="mc-card">
+          <div className="mc-card-body" style={{ gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <strong style={{ fontSize: 12.5 }}>正在播放：{activeKey.endsWith(':me') ? '本人声道 (me.wav)' : '对方声道 (them.wav)'}</strong>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {[0.75, 1, 1.25, 1.5, 2].map(r => (
+                  <button
+                    key={r}
+                    type="button"
+                    className={`mc-btn mc-btn-sm ${speed === r ? 'mc-btn-primary' : 'mc-btn-ghost'}`}
+                    style={{ height: 22, padding: '0 7px', fontSize: 11 }}
+                    onClick={() => setSpeed(r)}
+                  >
+                    {r}x
+                  </button>
+                ))}
+              </div>
+            </div>
+            <audio ref={audioElRef} controls autoPlay src={audioUrl} style={{ width: '100%', height: 36 }} />
+          </div>
+        </div>
+      )}
+      {takes.map((take, idx) => (
+        <div key={take.takeId} className="mc-card">
+          <div className="mc-card-head">
+            <strong style={{ fontSize: 13 }}>录音分段 #{idx + 1} · 时长 {formatDuration(take.durationSec)}</strong>
+            <span className="mc-field-hint">{formatDateTime(take.startedAt)}</span>
+          </div>
+          <div className="mc-card-body" style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            {take.tracks.map(tr => {
+              const key = `${take.takeId}:${tr.channel}`;
+              const isPlaying = activeKey === key;
+              return (
+                <button
+                  key={tr.channel}
+                  type="button"
+                  className={`mc-btn mc-btn-sm ${isPlaying ? 'mc-btn-primary' : ''}`}
+                  onClick={() => void loadTrack(take.takeId, tr.channel)}
+                >
+                  <IconSpeaker size={12} />
+                  {tr.channel === 'me' ? '播放本人轨 (me.wav)' : '播放对方轨 (them.wav)'}
+                  <span style={{ opacity: 0.75 }}>· {formatDuration(tr.durationSec)} · {formatBytes(tr.bytes)}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function formatDateTime(ts) {
   if (!ts) return '—';
@@ -138,6 +270,9 @@ export function RecordsView({
           <button type="button" className={`mc-tab-btn${detailTab === 'transcript' ? ' is-active' : ''}`} onClick={() => setDetailTab('transcript')}>
             实时转写 ({segments.length})
           </button>
+          <button type="button" className={`mc-tab-btn${detailTab === 'audio' ? ' is-active' : ''}`} onClick={() => setDetailTab('audio')}>
+            双轨录音
+          </button>
           <span className="mc-field-hint" style={{ marginLeft: 'auto' }}>
             创建于 {formatDateTime(selected.createdAt)} · {selected.audioSource === 'mic' ? '麦克风' : '系统音频'}
             {selected.role ? ` · 岗位：${selected.role}` : ''}
@@ -152,7 +287,9 @@ export function RecordsView({
               </div>
             )}
 
-            {detailTab === 'qa' ? (
+            {detailTab === 'audio' ? (
+              <DualTrackAudioPlayer sessionId={selected.id} />
+            ) : detailTab === 'qa' ? (
               questions.length > 0 ? (
                 questions.map((q) => {
                   const attempt = getActiveAttempt(q);

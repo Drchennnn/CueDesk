@@ -14,9 +14,9 @@ import {
 } from '@mc/runtime';
 import { buildSettingsDiffPatch } from '../core/settingsPatch.js';
 import { EyeContactSettings } from './EyeContactSettings.jsx';
-import { IconFolder, IconShield } from './Icons.jsx';
+import { WorkbenchShortcutsModal } from './GearPopover.jsx';
+import { IconFolder, IconKeyboard, IconMic, IconShield } from './Icons.jsx';
 import {
-  ScreenshotBatchPanel,
   ShortcutRecorder,
   Switch,
   renderProviderConnectionResult,
@@ -25,14 +25,31 @@ import {
   useKeySlot
 } from './SharedWidgets.jsx';
 
-const TABS = [
-  { id: 'models', title: '模型接口', desc: '配置文本大模型与截图多模态接口，各自独立保存。' },
-  { id: 'audio', title: '语音与音频', desc: '选择语音识别后端、连接测试与本地音频输入设备。' },
-  { id: 'interview', title: '面试资料', desc: '管理本地面试资料库目录、岗位与备用面试 Prompt。' },
-  { id: 'shortcuts', title: '快捷键与窗口', desc: '全局热键、窗口移动缩放、多图暂存与笔试小窗设置。' },
-  { id: 'general', title: '通用与安全', desc: '主题、字号、安全模式、防截屏环境检测与诊断入口。' },
-  { id: 'camera', title: '摄像头与眼神矫正', desc: '输入摄像头、NVIDIA Maxine 眼神矫正预览与诊断。' }
+const NAV_GROUPS = [
+  {
+    label: '核心能力',
+    items: [
+      { id: 'models', title: '模型接口', desc: '配置文本大模型与截图多模态接口（BYOK，密钥加密存于本机）。' },
+      { id: 'audio', title: '语音与录制', desc: '配置语音识别引擎、麦克风电平测试与整场 WAV 录音目录。' },
+      { id: 'camera', title: '摄像头与眼神矫正', desc: '输入摄像头、NVIDIA Maxine 眼神矫正预览与状态。' }
+    ]
+  },
+  {
+    label: '安全与控制',
+    items: [
+      { id: 'security', title: '安全模式', desc: '防截屏隐身、启动自动开启、安全模式虚拟光标与环境检测。' },
+      { id: 'shortcuts', title: '快捷键', desc: '点击直接录制全局快捷键、窗口控制热键与会中工作台热键。' }
+    ]
+  },
+  {
+    label: '偏好',
+    items: [
+      { id: 'general', title: '通用偏好', desc: '外观主题、字号阅读偏好、语言与会话保存策略。' }
+    ]
+  }
 ];
+
+const ALL_TABS = NAV_GROUPS.flatMap(g => g.items);
 
 const TEST_RESULT_COPY = {
   locale: 'zh-CN',
@@ -58,6 +75,82 @@ function publicSlot(settings, slot) {
   }
 }
 
+/* SuiSi-style live microphone volume meter test */
+function MicLevelTester({ deviceId }) {
+  const [testing, setTesting] = useState(false);
+  const [level, setLevel] = useState(0);
+  const [error, setError] = useState('');
+  const cleanupRef = useRef(null);
+
+  const stop = useCallback(() => {
+    cleanupRef.current?.();
+    cleanupRef.current = null;
+    setTesting(false);
+    setLevel(0);
+  }, []);
+
+  useEffect(() => stop, [stop, deviceId]);
+
+  const start = async () => {
+    setError('');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: deviceId ? { deviceId: { exact: deviceId } } : true,
+        video: false
+      });
+      const ctx = new AudioContext();
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      source.connect(analyser);
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      let rafId = 0;
+      const tick = () => {
+        analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) {
+          const v = (data[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / data.length);
+        setLevel(Math.min(100, Math.round(rms * 280)));
+        rafId = requestAnimationFrame(tick);
+      };
+      rafId = requestAnimationFrame(tick);
+      cleanupRef.current = () => {
+        cancelAnimationFrame(rafId);
+        try { source.disconnect(); } catch {}
+        try { ctx.close(); } catch {}
+        for (const t of stream.getTracks()) t.stop();
+      };
+      setTesting(true);
+    } catch (e) {
+      setError(`麦克风不可用：${e?.message || e}`);
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, width: '100%' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <button
+          type="button"
+          className={`mc-btn mc-btn-sm ${testing ? 'mc-btn-danger' : ''}`}
+          onClick={() => (testing ? stop() : void start())}
+        >
+          <IconMic size={12} /> {testing ? '停止检测' : '麦克风实时测试'}
+        </button>
+        <div className="mc-mic-meter" aria-label="麦克风输入电平">
+          <div className="mc-mic-meter-fill" style={{ width: `${level}%` }} />
+        </div>
+        <span className="mc-field-hint" style={{ minWidth: 34, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+          {testing ? `${level}%` : '未测'}
+        </span>
+      </div>
+      {error && <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>{error}</div>}
+    </div>
+  );
+}
+
 function WindowControlsCard() {
   const [draft, setDraft] = useState(null);
   const [error, setError] = useState('');
@@ -73,17 +166,23 @@ function WindowControlsCard() {
     (value) => window.mc.setWindowControls(value)
   );
 
-  const labels = {
-    left: '窗口左移', right: '窗口右移', up: '窗口上移', down: '窗口下移',
-    grow: '放大窗口', shrink: '缩小窗口', toggleBatch: '多图开关', sendBatch: '发送多图'
-  };
+  const labels = [
+    ['left', '窗口左移', '键盘控制悬浮窗向左微移'],
+    ['right', '窗口右移', '键盘控制悬浮窗向右微移'],
+    ['up', '窗口上移', '键盘控制悬浮窗向上微移'],
+    ['down', '窗口下移', '键盘控制悬浮窗向下微移'],
+    ['grow', '放大窗口', '等比放大悬浮窗与字号'],
+    ['shrink', '缩小窗口', '等比缩小悬浮窗与字号'],
+    ['toggleBatch', '多图暂存开关', '笔试模式开启/关闭多图连拍暂存'],
+    ['sendBatch', '发送暂存多图', '一键提交全部暂存截图给视觉模型']
+  ];
 
   return (
     <section className="mc-card">
       <div className="mc-card-head">
         <div>
           <h3 className="mc-card-title">窗口移动、缩放与多图快捷键</h3>
-          <p className="mc-card-desc">清空对应快捷键即可禁用；冲突时自动回滚并提示。</p>
+          <p className="mc-card-desc">点击「录制」后直接按下组合键或鼠标侧键；Delete / Backspace 清除绑定，冲突自动回滚。</p>
         </div>
         <span className="mc-field-hint" role="status">
           {auto.error || (auto.status === 'saved' ? '已自动保存' : auto.status === 'saving' ? '保存中…' : '待保存…')}
@@ -94,7 +193,7 @@ function WindowControlsCard() {
           <div className="mc-srow">
             <div>
               <div className="mc-srow-label">全局窗口总不透明度 ({Math.round(draft.opacity * 100)}%)</div>
-              <div className="mc-srow-desc">在工作台中也可通过齿轮菜单分层调节背景/文字/悬停透明度</div>
+              <div className="mc-srow-desc">在工作台中也可通过齿轮菜单分层调节背景 / 文字 / 悬停透明度</div>
             </div>
             <div className="mc-srow-control">
               <input
@@ -119,19 +218,14 @@ function WindowControlsCard() {
               />
             </div>
           </div>
-          {Object.entries(labels).map(([key, label]) => (
-            <div key={key} className="mc-srow mc-srow-compact">
-              <div><div className="mc-srow-label">{label}</div></div>
-              <div className="mc-srow-control">
-                <input
-                  className="mc-input"
-                  value={draft.bindings?.[key] || ''}
-                  spellCheck={false}
-                  placeholder="如 Control+Alt+Left"
-                  onChange={e => setDraft({ ...draft, bindings: { ...draft.bindings, [key]: e.target.value } })}
-                />
-              </div>
-            </div>
+          {labels.map(([key, label, desc]) => (
+            <ShortcutRecorder
+              key={key}
+              label={label}
+              description={desc}
+              value={draft.bindings?.[key] || ''}
+              onChange={(val) => setDraft({ ...draft, bindings: { ...draft.bindings, [key]: val } })}
+            />
           ))}
           {draft.errors?.length > 0 && (
             <div className="mc-card-body"><div className="mc-alert mc-alert-err">{draft.errors.join('；')}</div></div>
@@ -139,82 +233,6 @@ function WindowControlsCard() {
         </>
       ) : (
         <div className="mc-card-body"><span className="mc-field-hint">{error || '正在读取窗口控制设置…'}</span></div>
-      )}
-    </section>
-  );
-}
-
-function QuickLibraryCard({ onOpenKnowledgePage }) {
-  const [state, setState] = useState(null);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    window.mc.getInterviewLibrary().then(setState).catch(e => setError(e.message));
-  }, []);
-
-  const auto = useAutoSaveValue(
-    state && { enabled: !!state.enabled, root: state.root || '', role: state.role || '' },
-    (value) => window.mc.setInterviewLibrary(value),
-    (res) => {
-      setState(res);
-      window.dispatchEvent(new Event('mc-library-updated'));
-    }
-  );
-
-  const pickRoot = async () => {
-    try {
-      const folder = await window.mc.pickInterviewLibraryRoot();
-      if (folder) setState(prev => ({ ...(prev || {}), root: folder, role: '' }));
-    } catch (e) { setError(e.message); }
-  };
-
-  return (
-    <section className="mc-card">
-      <div className="mc-card-head">
-        <div>
-          <h3 className="mc-card-title">本地面试资料库（文件夹 V2）</h3>
-          <p className="mc-card-desc">启用后优先基于目录内的项目事实、简历与技术参考作答，并展示原文引用证据。</p>
-        </div>
-        <button type="button" className="mc-btn mc-btn-sm" onClick={onOpenKnowledgePage}>
-          打开完整知识库页 →
-        </button>
-      </div>
-      {state ? (
-        <>
-          <div className="mc-srow mc-srow-compact">
-            <div><div className="mc-srow-label">启用面试资料库</div></div>
-            <div className="mc-srow-control is-inline">
-              <Switch checked={!!state.enabled} onChange={v => setState({ ...state, enabled: v })} />
-            </div>
-          </div>
-          <div className="mc-srow">
-            <div>
-              <div className="mc-srow-label">资料库目录</div>
-              <div className="mc-srow-desc">当前可检索 {state.files?.length || 0} 份有效资料</div>
-            </div>
-            <div className="mc-srow-control">
-              <div style={{ display: 'flex', gap: 6 }}>
-                <input className="mc-input" value={state.root || ''} onChange={e => setState({ ...state, root: e.target.value, role: '' })} placeholder="选择本地文件夹" />
-                <button type="button" className="mc-btn" onClick={() => void pickRoot()}><IconFolder size={14} /></button>
-              </div>
-            </div>
-          </div>
-          <div className="mc-srow mc-srow-compact">
-            <div><div className="mc-srow-label">默认岗位目录</div></div>
-            <div className="mc-srow-control">
-              <select className="mc-select" value={state.role || ''} onChange={e => setState({ ...state, role: e.target.value })}>
-                <option value="">通用（不指定岗位）</option>
-                {(state.roles || []).map(r => <option key={r} value={r}>{r}</option>)}
-              </select>
-            </div>
-          </div>
-          <div className="mc-card-body" style={{ paddingTop: 0 }}>
-            <span className="mc-field-hint" role="status">{auto.error || (auto.status === 'saved' ? '已自动保存' : '自动保存中…')}</span>
-            {state.warning && <div className="mc-alert mc-alert-warn">{state.warning}</div>}
-          </div>
-        </>
-      ) : (
-        <div className="mc-card-body"><span className="mc-field-hint">{error || '正在读取资料库状态…'}</span></div>
       )}
     </section>
   );
@@ -229,21 +247,16 @@ export function SettingsView({
   onUpdateWorkbenchPrefs,
   onToggleSecurity,
   onSetSecurityPrefs,
-  onNavigate,
-  onOpenHealth,
-  onOpenDiagnostics,
-  onOpenHelp,
-  onEnterWrittenCompact,
-  closeRef,
-  batch,
-  batchController
+  closeRef
 }) {
-  const [activeTab, setActiveTab] = useState(TABS.some(t => t.id === initialTab) ? initialTab : 'models');
+  const normalizedInitial = ALL_TABS.some(t => t.id === initialTab) ? initialTab : 'models';
+  const [activeTab, setActiveTab] = useState(normalizedInitial);
+  const [wbShortcutsOpen, setWbShortcutsOpen] = useState(false);
   const rootRef = useRef(null);
   const scrollRef = useRef(null);
 
   useEffect(() => {
-    if (initialTab && TABS.some(t => t.id === initialTab)) setActiveTab(initialTab);
+    if (initialTab && ALL_TABS.some(t => t.id === initialTab)) setActiveTab(initialTab);
   }, [initialTab]);
 
   // Form states mirrored from settings
@@ -251,9 +264,9 @@ export function SettingsView({
   const [baseUrl, setBaseUrl] = useState(settings.llm.baseUrl || '');
   const [model, setModel] = useState(settings.llm.model || '');
   const [answerLang, setAnswerLang] = useState(settings.llm.answerLang || 'chinese');
-  const [visionBaseUrl, setVisionBaseUrl] = useState(settings.vision?.baseUrl || '');
-  const [visionModel, setVisionModel] = useState(settings.vision?.model || '');
-  const [visionProxy, setVisionProxy] = useState(settings.vision?.proxyUrl || '');
+  const [visionBaseUrl] = useState(settings.vision?.baseUrl || '');
+  const [visionModel] = useState(settings.vision?.model || '');
+  const [visionProxy] = useState(settings.vision?.proxyUrl || '');
   const [mmConfig, setMmConfig] = useState(settings.multimodal);
 
   const [asrBackend, setAsrBackend] = useState(settings.asr.backend || 'cloud-realtime');
@@ -266,6 +279,7 @@ export function SettingsView({
   const [themDeviceId, setThemDeviceId] = useState(settings.audio?.themDeviceId || '');
   const [micDeviceId, setMicDeviceId] = useState(settings.audio?.micDeviceId || '');
   const [devices, setDevices] = useState([]);
+  const [recDirInfo, setRecDirInfo] = useState('');
 
   const [hotkey, setHotkey] = useState(settings.ui.hotkeyToggle || 'Control+B');
   const [hotkeyShot, setHotkeyShot] = useState(settings.ui.hotkeyShot || 'Control+Shift+S');
@@ -275,7 +289,6 @@ export function SettingsView({
   const [fontScale, setFontScale] = useState(settings.ui.fontScale || 'medium');
   const [uiLang, setUiLang] = useState(settings.ui.lang || 'zh');
   const [autoLaunch, setAutoLaunch] = useState(!!settings.ui.autoLaunch);
-  const [interviewPrompt, setInterviewPrompt] = useState(settings.modelPrompts?.interview || '');
 
   const llmKey = useKeySlot();
   const visionKey = useKeySlot();
@@ -292,7 +305,8 @@ export function SettingsView({
 
   useEffect(() => {
     void listMics().then(setDevices).catch(() => setDevices([]));
-  }, []);
+    void window.mc.getRecordingStatus?.().then(st => { if (st?.recordingDir) setRecDirInfo(st.recordingDir); }).catch(() => {});
+  }, [workbenchPrefs?.recordingDir]);
 
   const snapshotFromSettings = useCallback((s) => ({
     baseUrl: s.llm.baseUrl || '',
@@ -338,12 +352,13 @@ export function SettingsView({
         : '',
     themDeviceId, micDeviceId,
     hotkey, hotkeyShot, hotkeyRegion,
-    theme, fontScale, uiLang, autoLaunch, interviewPrompt
+    theme, fontScale, uiLang, autoLaunch,
+    interviewPrompt: baselineRef.current.interviewPrompt
   }), [
     baseUrl, model, answerLang, visionBaseUrl, visionModel, visionProxy, mmConfig,
     asrBackend, language, cloudBaseUrl, cloudModel, rtBaseUrl, rtModel, rtLocalModel,
     themDeviceId, micDeviceId, hotkey, hotkeyShot, hotkeyRegion,
-    theme, fontScale, uiLang, autoLaunch, interviewPrompt
+    theme, fontScale, uiLang, autoLaunch
   ]);
 
   const diffPatch = useMemo(() => buildSettingsDiffPatch(baselineRef.current, currentDraft, {
@@ -390,7 +405,6 @@ export function SettingsView({
     }
   }, [llmKey, visionKey, cloudKey, rtKey, onSaved, snapshotFromSettings]);
 
-  // 600ms debounced auto-save
   useEffect(() => {
     if (!dirty || saving || attemptedSigRef.current === draftSignature) return;
     const timer = setTimeout(() => {
@@ -539,7 +553,7 @@ export function SettingsView({
     }
   };
 
-  const activeTabMeta = TABS.find(t => t.id === activeTab) || TABS[0];
+  const activeTabMeta = ALL_TABS.find(t => t.id === activeTab) || ALL_TABS[0];
 
   return (
     <div className="mc-settings-root" ref={rootRef}>
@@ -561,27 +575,24 @@ export function SettingsView({
 
       <div className="mc-settings-body">
         <nav className="mc-settings-nav" role="tablist" aria-orientation="vertical" aria-label="设置分类">
-          {TABS.map((tab, idx) => (
-            <button
-              key={tab.id}
-              type="button"
-              role="tab"
-              id={`settings-tab-${tab.id}`}
-              aria-selected={activeTab === tab.id}
-              tabIndex={activeTab === tab.id ? 0 : -1}
-              className="mc-settings-tab"
-              onClick={() => { setActiveTab(tab.id); scrollRef.current?.scrollTo(0, 0); }}
-              onKeyDown={(e) => {
-                if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
-                  e.preventDefault();
-                  const nextIdx = e.key === 'Home' ? 0 : e.key === 'End' ? TABS.length - 1 : (idx + (e.key === 'ArrowDown' ? 1 : -1) + TABS.length) % TABS.length;
-                  setActiveTab(TABS[nextIdx].id);
-                  rootRef.current?.querySelector(`#settings-tab-${TABS[nextIdx].id}`)?.focus();
-                }
-              }}
-            >
-              {tab.title}
-            </button>
+          {NAV_GROUPS.map((group) => (
+            <div key={group.label} className="mc-settings-nav-group">
+              <div className="mc-settings-nav-label">{group.label}</div>
+              {group.items.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  id={`settings-tab-${tab.id}`}
+                  aria-selected={activeTab === tab.id}
+                  tabIndex={activeTab === tab.id ? 0 : -1}
+                  className="mc-settings-tab"
+                  onClick={() => { setActiveTab(tab.id); scrollRef.current?.scrollTo(0, 0); }}
+                >
+                  {tab.title}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
 
@@ -596,7 +607,7 @@ export function SettingsView({
               <div className="mc-alert mc-alert-err" role="alert">{saveError || live.capture.registrationError}</div>
             )}
 
-            {/* 1. MODELS TAB */}
+            {/* 1. MODELS */}
             <div hidden={activeTab !== 'models'} style={{ display: activeTab === 'models' ? 'flex' : 'none', flexDirection: 'column', gap: 20 }}>
               <section className="mc-card">
                 <div className="mc-card-head">
@@ -643,8 +654,8 @@ export function SettingsView({
                 <section className="mc-card">
                   <div className="mc-card-head">
                     <div>
-                      <h3 className="mc-card-title">截图多模态模型（支持多接口回退 / 笔试并行回答）</h3>
-                      <p className="mc-card-desc">支持 OpenAI 兼容图片接口；面试模式按顺序回退，笔试模式可开启多模型同时作答。</p>
+                      <h3 className="mc-card-title">截图多模态模型（多接口回退 / 笔试并行）</h3>
+                      <p className="mc-card-desc">OpenAI 兼容图片接口；面试按序回退，笔试可多模型同时作答。</p>
                     </div>
                     <button
                       type="button"
@@ -766,10 +777,10 @@ export function SettingsView({
               )}
             </div>
 
-            {/* 2. AUDIO TAB */}
+            {/* 2. AUDIO & RECORDING */}
             <div hidden={activeTab !== 'audio'} style={{ display: activeTab === 'audio' ? 'flex' : 'none', flexDirection: 'column', gap: 20 }}>
               <section className="mc-card">
-                <div className="mc-card-head"><h3 className="mc-card-title">语音识别后端（ASR）</h3></div>
+                <div className="mc-card-head"><h3 className="mc-card-title">语音识别引擎（ASR）</h3></div>
                 <div className="mc-srow">
                   <div><div className="mc-srow-label">识别引擎</div></div>
                   <div className="mc-srow-control">
@@ -859,19 +870,28 @@ export function SettingsView({
 
               <section className="mc-card">
                 <div className="mc-card-head">
-                  <div><h3 className="mc-card-title">音频输入设备</h3></div>
+                  <div><h3 className="mc-card-title">音频输入与麦克风实时检测</h3></div>
                   <button type="button" className="mc-btn mc-btn-sm" onClick={() => void listMics().then(setDevices).catch(() => {})}>刷新设备</button>
                 </div>
                 <div className="mc-srow">
                   <div>
                     <div className="mc-srow-label">麦克风设备</div>
-                    <div className="mc-srow-desc">用于「麦克风模式」主收音或「系统音频模式」下的本人发言采集</div>
+                    <div className="mc-srow-desc">用于「麦克风模式」主收音及「双轨录音」下的本人轨采集</div>
                   </div>
                   <div className="mc-srow-control">
                     <select className="mc-select" value={micDeviceId} onChange={e => setMicDeviceId(e.target.value)}>
                       <option value="">系统默认麦克风</option>
                       {devices.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || d.deviceId}</option>)}
                     </select>
+                  </div>
+                </div>
+                <div className="mc-srow">
+                  <div>
+                    <div className="mc-srow-label">实时电平检测</div>
+                    <div className="mc-srow-desc">对着麦克风讲话，确认输入电平随声音波动</div>
+                  </div>
+                  <div className="mc-srow-control">
+                    <MicLevelTester deviceId={micDeviceId} />
                   </div>
                 </div>
                 {window.mc.platform === 'darwin' && (
@@ -886,77 +906,133 @@ export function SettingsView({
                   </div>
                 )}
               </section>
-            </div>
 
-            {/* 3. INTERVIEW MATERIALS TAB */}
-            <div hidden={activeTab !== 'interview'} style={{ display: activeTab === 'interview' ? 'flex' : 'none', flexDirection: 'column', gap: 20 }}>
-              <QuickLibraryCard onOpenKnowledgePage={() => void flushAndLeave(() => onNavigate('knowledge'))} />
               <section className="mc-card">
                 <div className="mc-card-head">
                   <div>
-                    <h3 className="mc-card-title">备用面试 Prompt</h3>
-                    <p className="mc-card-desc">未启用本地资料库 V2 时，文本模型将使用此系统提示词作答。</p>
+                    <h3 className="mc-card-title">整场双轨 WAV 录音</h3>
+                    <p className="mc-card-desc">默认手动在工作台顶栏点击开启；独立录制对方轨与本人轨（16kHz PCM WAV），防崩溃损坏且不写入知识库目录。</p>
                   </div>
-                  {settings.modelPrompts?.defaultInterview && (
-                    <button type="button" className="mc-btn mc-btn-sm" onClick={() => setInterviewPrompt(settings.modelPrompts.defaultInterview)}>恢复默认</button>
-                  )}
+                  <button type="button" className="mc-btn mc-btn-sm" onClick={() => void window.mc.openRecordingFolder?.()}>
+                    <IconFolder size={13} /> 打开录音目录
+                  </button>
                 </div>
-                <div className="mc-card-body">
-                  <textarea
-                    className="mc-textarea"
-                    rows={9}
-                    maxLength={64000}
-                    spellCheck={false}
-                    style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}
-                    value={interviewPrompt}
-                    onChange={e => setInterviewPrompt(e.target.value)}
-                  />
-                  <div className="mc-field-hint">{interviewPrompt.length} / 64000</div>
+                <div className="mc-srow">
+                  <div>
+                    <div className="mc-srow-label">录音存储路径</div>
+                    <div className="mc-srow-desc" style={{ wordBreak: 'break-all' }}>
+                      当前：{workbenchPrefs?.recordingDir || recDirInfo || '默认应用数据目录/recordings'}
+                    </div>
+                  </div>
+                  <div className="mc-srow-control is-inline" style={{ gap: 6 }}>
+                    <button
+                      type="button"
+                      className="mc-btn mc-btn-sm"
+                      onClick={async () => {
+                        const picked = await window.mc.pickRecordingDir?.();
+                        if (picked) void onUpdateWorkbenchPrefs({ recordingDir: picked });
+                      }}
+                    >
+                      更改目录
+                    </button>
+                    {workbenchPrefs?.recordingDir && (
+                      <button type="button" className="mc-btn mc-btn-sm mc-btn-ghost" onClick={() => void onUpdateWorkbenchPrefs({ recordingDir: '' })}>
+                        恢复默认
+                      </button>
+                    )}
+                  </div>
                 </div>
               </section>
             </div>
 
-            {/* 4. SHORTCUTS & WINDOW TAB */}
+            {/* 3. CAMERA & EYE CONTACT */}
+            <div hidden={activeTab !== 'camera'} style={{ display: activeTab === 'camera' ? 'flex' : 'none', flexDirection: 'column', gap: 20 }}>
+              <EyeContactSettings active={activeTab === 'camera'} />
+            </div>
+
+            {/* 4. SECURITY MODE */}
+            <div hidden={activeTab !== 'security'} style={{ display: activeTab === 'security' ? 'flex' : 'none', flexDirection: 'column', gap: 20 }}>
+              <section className="mc-card">
+                <div className="mc-card-head">
+                  <div>
+                    <h3 className="mc-card-title">安全模式（防截屏 + 不抢焦点）</h3>
+                    <p className="mc-card-desc">开启后强制禁止窗口出现在系统截屏/共享屏幕中，并在进入工作台时自动屏蔽焦点抢占。</p>
+                  </div>
+                  <Switch
+                    checked={Boolean(windowState?.securityMode?.enabled)}
+                    success
+                    onChange={(next) => onToggleSecurity(next)}
+                    aria-label="全局安全模式开关"
+                  />
+                </div>
+                <div className="mc-srow mc-srow-compact">
+                  <div>
+                    <div className="mc-srow-label">启动时自动开启安全模式</div>
+                    <div className="mc-srow-desc">每次打开 MeetingCopilot 自动进入隐身保护状态</div>
+                  </div>
+                  <div className="mc-srow-control is-inline">
+                    <Switch
+                      checked={Boolean(workbenchPrefs?.securityMode?.autoEnableOnLaunch)}
+                      onChange={(next) => onSetSecurityPrefs({ autoEnableOnLaunch: next })}
+                    />
+                  </div>
+                </div>
+                <div className="mc-srow mc-srow-compact">
+                  <div>
+                    <div className="mc-srow-label">隐藏真实鼠标（启用浮窗内虚拟光标）</div>
+                    <div className="mc-srow-desc">开启安全模式时，工作台内隐藏系统光标并在防截屏保护层内渲染替代 SVG 光标</div>
+                  </div>
+                  <div className="mc-srow-control is-inline">
+                    <Switch
+                      checked={workbenchPrefs?.securityMode?.hideCursor !== false}
+                      onChange={(next) => onSetSecurityPrefs({ hideCursor: next })}
+                    />
+                  </div>
+                </div>
+                <div className="mc-card-body" style={{ borderTop: '1px solid var(--border)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <button type="button" className="mc-btn mc-btn-sm" disabled={envChecking} onClick={() => void runEnvCheck()}>
+                      <IconShield size={13} /> {envChecking ? '正在检测…' : '检测本机防截屏与录屏软件'}
+                    </button>
+                    <span className="mc-field-hint">只读本地检查，不改变当前保护状态</span>
+                  </div>
+                  {envCheck && (
+                    <div className={`mc-alert ${envCheck.ok ? 'mc-alert-ok' : 'mc-alert-warn'}`}>
+                      <div><strong>防截屏接口：</strong>{envCheck.contentProtectionSupported ? '系统支持 SetWindowDisplayAffinity' : '不可用'} · 当前{envCheck.contentProtectionActive ? '已隐藏保护' : '允许截屏'}</div>
+                      {envCheck.screenRecorders?.length > 0 && (
+                        <div><strong>检测到录屏软件：</strong>{envCheck.screenRecorders.join('、')}</div>
+                      )}
+                      {envCheck.meetingApps?.length > 0 && (
+                        <div><strong>检测到会议软件：</strong>{envCheck.meetingApps.join('、')}</div>
+                      )}
+                      {(envCheck.warnings || []).map((w, i) => <div key={i}>• {w}</div>)}
+                    </div>
+                  )}
+                </div>
+              </section>
+            </div>
+
+            {/* 5. SHORTCUTS */}
             <div hidden={activeTab !== 'shortcuts'} style={{ display: activeTab === 'shortcuts' ? 'flex' : 'none', flexDirection: 'column', gap: 20 }}>
               <section className="mc-card">
-                <div className="mc-card-head"><h3 className="mc-card-title">核心全局快捷键</h3></div>
+                <div className="mc-card-head">
+                  <div>
+                    <h3 className="mc-card-title">核心全局快捷键</h3>
+                    <p className="mc-card-desc">点击按钮直接按下按键组合、F1–F24 或鼠标侧键（Mouse4 / Mouse5）完成绑定。</p>
+                  </div>
+                  <button type="button" className="mc-btn mc-btn-sm" onClick={() => setWbShortcutsOpen(true)}>
+                    <IconKeyboard size={13} /> 配置会中工作台快捷键
+                  </button>
+                </div>
                 <ShortcutRecorder label="隐藏 / 显示主窗口" description="在任意应用中一键切换窗口显示状态" value={hotkey} onChange={setHotkey} />
                 <ShortcutRecorder label="静默全屏截图识题" description="支持组合键、F1–F24 或鼠标侧键 Mouse4 / Mouse5" value={hotkeyShot} onChange={setHotkeyShot} />
                 <ShortcutRecorder label="框选区域截图识题" description="拖动选取屏幕局部区域并发送到视觉模型" value={hotkeyRegion} onChange={setHotkeyRegion} />
-                <div className="mc-srow">
-                  <div>
-                    <div className="mc-srow-label">工作台防干扰快捷键</div>
-                    <div className="mc-srow-desc">可在工作台「齿轮 → 快捷键」中自定义全部按键或鼠标侧键</div>
-                  </div>
-                  <div className="mc-srow-control" style={{ gap: 6 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, flexWrap: 'wrap' }}>
-                      <span className="mc-kbd">{(windowState?.workbenchHotkeys?.togglePreventFocus || 'Control+Shift+8').replace(/Control/g, 'Ctrl')}</span>
-                      <span className="mc-field-hint" style={{ whiteSpace: 'nowrap' }}>不抢焦点</span>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, flexWrap: 'wrap' }}>
-                      <span className="mc-kbd">{(windowState?.workbenchHotkeys?.toggleClickThrough || 'Control+Shift+9').replace(/Control/g, 'Ctrl')}</span>
-                      <span className="mc-field-hint" style={{ whiteSpace: 'nowrap' }}>鼠标穿透</span>
-                    </div>
-                  </div>
-                </div>
               </section>
 
               <WindowControlsCard />
-
-              <section className="mc-card">
-                <div className="mc-card-head">
-                  <div><h3 className="mc-card-title">多图暂存与笔试小窗</h3></div>
-                  <button type="button" className="mc-btn mc-btn-sm mc-btn-primary" onClick={() => void flushAndLeave(onEnterWrittenCompact)}>
-                    进入笔试小窗
-                  </button>
-                </div>
-                <div className="mc-card-body">
-                  <ScreenshotBatchPanel batch={batch} controller={batchController} management />
-                </div>
-              </section>
             </div>
 
-            {/* 5. GENERAL & SECURITY TAB */}
+            {/* 6. GENERAL PREFERENCES */}
             <div hidden={activeTab !== 'general'} style={{ display: activeTab === 'general' ? 'flex' : 'none', flexDirection: 'column', gap: 20 }}>
               <section className="mc-card">
                 <div className="mc-card-head"><h3 className="mc-card-title">外观与阅读体验</h3></div>
@@ -1009,6 +1085,15 @@ export function SettingsView({
                   </div>
                 </div>
                 <div className="mc-srow mc-srow-compact">
+                  <div><div className="mc-srow-label">结束面试时默认自动保存记录</div></div>
+                  <div className="mc-srow-control is-inline">
+                    <Switch
+                      checked={workbenchPrefs?.autoSaveOnClose !== false}
+                      onChange={v => void onUpdateWorkbenchPrefs({ autoSaveOnClose: v })}
+                    />
+                  </div>
+                </div>
+                <div className="mc-srow mc-srow-compact">
                   <div><div className="mc-srow-label">开机自动启动</div></div>
                   <div className="mc-srow-control is-inline">
                     <Switch checked={autoLaunch} onChange={setAutoLaunch} />
@@ -1016,84 +1101,28 @@ export function SettingsView({
                 </div>
               </section>
 
-              <section className="mc-card">
-                <div className="mc-card-head">
-                  <div>
-                    <h3 className="mc-card-title">安全模式与本机防截屏检测</h3>
-                    <p className="mc-card-desc">开启安全模式后强制禁用截屏捕获并开启「不抢焦点」，关闭后自动恢复原偏好。</p>
-                  </div>
-                  <Switch
-                    checked={Boolean(windowState?.securityMode?.enabled)}
-                    success
-                    onChange={(next) => onToggleSecurity(next)}
-                    aria-label="全局安全模式开关"
-                  />
-                </div>
-                <div className="mc-srow mc-srow-compact">
-                  <div>
-                    <div className="mc-srow-label">启动时自动开启安全模式</div>
-                    <div className="mc-srow-desc">每次打开 MeetingCopilot 自动进入防截屏 + 不抢焦点状态</div>
-                  </div>
-                  <div className="mc-srow-control is-inline">
-                    <Switch
-                      checked={Boolean(workbenchPrefs?.securityMode?.autoEnableOnLaunch)}
-                      onChange={(next) => onSetSecurityPrefs({ autoEnableOnLaunch: next })}
-                    />
-                  </div>
-                </div>
-                <div className="mc-srow mc-srow-compact">
-                  <div>
-                    <div className="mc-srow-label">安全模式下隐藏真实鼠标（启用浮窗虚拟光标）</div>
-                    <div className="mc-srow-desc">开启安全模式时，工作台内隐藏系统光标并渲染防截屏保护层内的 SVG 替代光标</div>
-                  </div>
-                  <div className="mc-srow-control is-inline">
-                    <Switch
-                      checked={workbenchPrefs?.securityMode?.hideCursor !== false}
-                      onChange={(next) => onSetSecurityPrefs({ hideCursor: next })}
-                    />
-                  </div>
-                </div>
-                <div className="mc-card-body" style={{ borderTop: '1px solid var(--border)' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <button type="button" className="mc-btn mc-btn-sm" disabled={envChecking} onClick={() => void runEnvCheck()}>
-                      <IconShield size={13} /> {envChecking ? '正在检测…' : '检查本机防截屏与录屏环境'}
-                    </button>
-                    <span className="mc-field-hint">只读本地检查，不修改当前窗口保护状态</span>
-                  </div>
-                  {envCheck && (
-                    <div className={`mc-alert ${envCheck.ok ? 'mc-alert-ok' : 'mc-alert-warn'}`}>
-                      <div><strong>防截屏接口：</strong>{envCheck.contentProtectionSupported ? '系统支持 SetWindowDisplayAffinity' : '不可用'} · 当前{envCheck.contentProtectionActive ? '已隐藏保护' : '允许截屏'}</div>
-                      {envCheck.screenRecorders?.length > 0 && (
-                        <div><strong>检测到录屏软件：</strong>{envCheck.screenRecorders.join('、')}</div>
-                      )}
-                      {envCheck.meetingApps?.length > 0 && (
-                        <div><strong>检测到会议软件：</strong>{envCheck.meetingApps.join('、')}</div>
-                      )}
-                      {(envCheck.warnings || []).map((w, i) => <div key={i}>• {w}</div>)}
-                    </div>
-                  )}
-                </div>
-              </section>
-
-              <section className="mc-card">
-                <div className="mc-card-head"><h3 className="mc-card-title">系统工具与支持</h3></div>
-                <div className="mc-card-body" style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                  <button type="button" className="mc-btn mc-btn-sm" onClick={() => void flushAndLeave(onOpenHealth)}>服务健康检查</button>
-                  <button type="button" className="mc-btn mc-btn-sm" onClick={() => void flushAndLeave(onOpenDiagnostics)}>查看诊断报告</button>
-                  <button type="button" className="mc-btn mc-btn-sm" onClick={() => void flushAndLeave(onOpenHelp)}>帮助与配置指南</button>
-                  <button type="button" className="mc-btn mc-btn-sm" onClick={() => void window.mc.openLogsFolder()}>打开本地数据目录</button>
-                  <button type="button" className="mc-btn mc-btn-sm" onClick={() => void flushAndLeave(() => void window.mc.rerunOnboarding())}>重新运行配置向导</button>
-                </div>
-              </section>
-            </div>
-
-            {/* 6. CAMERA & EYE CONTACT TAB (mounted via hidden, stops preview when active=false) */}
-            <div hidden={activeTab !== 'camera'} style={{ display: activeTab === 'camera' ? 'flex' : 'none', flexDirection: 'column', gap: 20 }}>
-              <EyeContactSettings active={activeTab === 'camera'} />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '0 4px' }}>
+                <button
+                  type="button"
+                  className="mc-link-subtle"
+                  onClick={() => void window.mc.openLogsFolder()}
+                >
+                  打开本地数据目录
+                </button>
+              </div>
             </div>
           </div>
         </div>
       </div>
+
+      {wbShortcutsOpen && (
+        <WorkbenchShortcutsModal
+          settings={live}
+          windowState={windowState}
+          onSettingsUpdated={(next) => { setLive(next); onSaved?.(next); }}
+          onClose={() => setWbShortcutsOpen(false)}
+        />
+      )}
     </div>
   );
 }

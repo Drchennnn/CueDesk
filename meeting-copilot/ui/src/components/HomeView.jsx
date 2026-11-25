@@ -200,6 +200,7 @@ function PreSessionModal({
   const [autoSaveOnClose, setAutoSaveOnClose] = useState(workbenchPrefs?.autoSaveOnClose !== false);
   const [enableSessionSecurity, setEnableSessionSecurity] = useState(Boolean(windowState?.securityMode?.enabled));
   const [autoStartCapture, setAutoStartCapture] = useState(true);
+  const [startAudioRecording, setStartAudioRecording] = useState(false);
 
   const health = computeServiceHealth(settings, asr, library);
   const blockers = [];
@@ -322,8 +323,15 @@ function PreSessionModal({
               </div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div>
+                  <div style={{ fontSize: 12.5, fontWeight: 500 }}>进入后开启整场双轨 WAV 录音</div>
+                  <div className="mc-field-hint">默认关闭；也可随时在工作台顶栏点击录音按钮手动启停</div>
+                </div>
+                <Switch checked={startAudioRecording} onChange={setStartAudioRecording} aria-label="进入后开启整场录音" />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
                   <div style={{ fontSize: 12.5, fontWeight: 500 }}>结束会话时自动保存到本地记录</div>
-                  <div className="mc-field-hint">随时可在左侧「面试记录」中回看与导出</div>
+                  <div className="mc-field-hint">随时可在左侧「记忆与记录」中回看、听录音与复盘归档</div>
                 </div>
                 <Switch checked={autoSaveOnClose} onChange={setAutoSaveOnClose} aria-label="结束会话时自动保存" />
               </div>
@@ -360,7 +368,8 @@ function PreSessionModal({
               jdName,
               autoSaveOnClose,
               enableSessionSecurity,
-              autoStartCapture: autoStartCapture && health.asr.ready
+              autoStartCapture: autoStartCapture && health.asr.ready,
+              startAudioRecording
             })}
           >
             <IconPlay size={12} /> 进入实时面试

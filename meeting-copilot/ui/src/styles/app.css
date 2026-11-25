@@ -1664,3 +1664,129 @@ html.mc-hide-real-cursor * {
   will-change: transform, opacity;
   transition: opacity 80ms ease;
 }
+
+
+/* =========================================================
+   V3 MAIN SHELL, SETTINGS GROUPS, MIC METER & WAV RECORDER
+   ========================================================= */
+.mc-sidebar-status-pill {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 7px 10px;
+  margin-bottom: 6px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.mc-sidebar-status-pill:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+.mc-sidebar-status-meta {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.mc-settings-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 12px;
+}
+.mc-settings-nav-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-faint);
+  padding: 4px 10px 3px;
+  letter-spacing: 0.02em;
+}
+
+.mc-mic-meter {
+  flex: 1;
+  height: 8px;
+  border-radius: 99px;
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  min-width: 110px;
+}
+.mc-mic-meter-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--success) 0%, #f59e0b 75%, var(--danger) 100%);
+  transition: width 60ms linear;
+}
+
+.mc-link-subtle {
+  border: 0;
+  background: transparent;
+  padding: 4px 6px;
+  font-size: 12px;
+  color: var(--text-faint);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.mc-link-subtle:hover {
+  color: var(--text-muted);
+}
+
+.mc-rec-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 99px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.mc-rec-pill:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.mc-rec-pill.is-recording {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.45);
+  color: #dc2626;
+}
+[data-theme="dark"] .mc-rec-pill.is-recording {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+}
+.mc-rec-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid #ef4444;
+  background: transparent;
+  flex-shrink: 0;
+}
+.mc-rec-pill.is-recording .mc-rec-dot {
+  background: #ef4444;
+  animation: mc-rec-pulse 1.2s ease-in-out infinite;
+}
+.mc-rec-label {
+  font-variant-numeric: tabular-nums;
+}
+@keyframes mc-rec-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.85); }
+}

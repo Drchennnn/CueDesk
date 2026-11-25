@@ -105,6 +105,7 @@ export function WorkbenchView({
   hud,
   capturing,
   secondaryMicActive,
+  recordingState,
   partials,
   manualDraft,
   workbenchPrefs,
@@ -112,6 +113,7 @@ export function WorkbenchView({
   hoverInside,
   onBackHome,
   onToggleCapture,
+  onToggleRecording,
   onSwitchAudioSource,
   onToggleSecondaryMic,
   onCaptureScreen,
@@ -661,6 +663,23 @@ export function WorkbenchView({
                     : (capturing ? <IconSpeaker size={15} /> : <IconSpeakerOff size={15} />)}
                 </button>
               </div>
+
+              {/* SuiSi-style compact manual dual-track WAV recording control */}
+              <button
+                type="button"
+                className={`mc-rec-pill${recordingState?.active ? ' is-recording' : ''}`}
+                title={recordingState?.active
+                  ? `正在录制整场 WAV（对方+本人双轨）· 点击停止并保存`
+                  : '手动开启整场双轨 WAV 录音（仅存本机，不写入知识库）'}
+                aria-label={recordingState?.active ? '停止整场录音' : '开始整场录音'}
+                aria-pressed={Boolean(recordingState?.active)}
+                onClick={onToggleRecording}
+              >
+                <span className="mc-rec-dot" />
+                <span className="mc-rec-label">
+                  {recordingState?.active ? formatTimer(recordingState.durationSec || 0) : '录制'}
+                </span>
+              </button>
 
               {/* Screenshot capture + quick mode menu */}
               <button

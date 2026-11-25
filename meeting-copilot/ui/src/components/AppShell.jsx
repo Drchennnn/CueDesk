@@ -1,8 +1,6 @@
 import React from 'react';
 import {
-  IconActivity,
   IconBook,
-  IconHelp,
   IconHistory,
   IconHome,
   IconMaximize,
@@ -17,15 +15,18 @@ import { Switch, computeServiceHealth } from './SharedWidgets.jsx';
 const NAV_ITEMS = [
   { id: 'home', label: '首页', icon: IconHome },
   { id: 'knowledge', label: '知识库', icon: IconBook },
-  { id: 'records', label: '面试记录', icon: IconHistory },
+  { id: 'records', label: '记忆与记录', icon: IconHistory },
   { id: 'settings', label: '高级设置', icon: IconSettings }
 ];
 
-function dotClass(state) {
-  if (state === 'ok') return 'mc-dot mc-dot-ok';
-  if (state === 'warn') return 'mc-dot mc-dot-warn';
-  if (state === 'err') return 'mc-dot mc-dot-err';
-  return 'mc-dot mc-dot-idle';
+function overallStatus(health) {
+  if (health.llm.state === 'err' || health.asr.state === 'err') {
+    return { cls: 'mc-dot-err', label: '服务异常' };
+  }
+  if (health.llm.ready && health.asr.ready) {
+    return { cls: 'mc-dot-ok', label: '服务就绪' };
+  }
+  return { cls: 'mc-dot-warn', label: '待配置接口' };
 }
 
 export function AppShell({
@@ -39,14 +40,13 @@ export function AppShell({
   onResumeWorkbench,
   onToggleSecurity,
   onOpenHealth,
-  onOpenDiagnostics,
-  onOpenHelp,
   onMinimize,
   onToggleMaximize,
   onQuit,
   children
 }) {
   const health = computeServiceHealth(settings, asr, library);
+  const status = overallStatus(health);
   const securityOn = Boolean(windowState?.securityMode?.enabled);
   const maximized = Boolean(windowState?.maximized);
 
@@ -85,28 +85,15 @@ export function AppShell({
         <aside className="mc-sidebar" aria-label="主导航">
           <button
             type="button"
-            className="mc-health-card mc-hide-narrow"
+            className="mc-sidebar-status-pill mc-hide-narrow"
             onClick={onOpenHealth}
-            title="查看或测试本地模型、语音识别与资料库状态"
+            title={`模型：${health.llm.ready ? '已就绪' : '待配置'} · 语音：${health.asr.label} · 资料库：${health.kb.label}（点击查看详情）`}
           >
-            <div className="mc-health-card-head">
-              <span>本地服务状态</span>
-              <IconActivity size={12} />
-            </div>
-            <div className="mc-health-row-mini">
-              <span><i className={dotClass(health.llm.state)} /> 文本模型</span>
-              <span style={{ maxWidth: 62, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-muted)' }}>
-                {health.llm.ready ? '已就绪' : '待配置'}
-              </span>
-            </div>
-            <div className="mc-health-row-mini">
-              <span><i className={dotClass(health.asr.state)} /> 语音识别</span>
-              <span style={{ color: 'var(--text-muted)' }}>{health.asr.label}</span>
-            </div>
-            <div className="mc-health-row-mini">
-              <span><i className={dotClass(health.kb.state)} /> 资料库</span>
-              <span style={{ color: 'var(--text-muted)' }}>{health.kb.label}</span>
-            </div>
+            <i className={`mc-dot ${status.cls}`} />
+            <span>{status.label}</span>
+            <span className="mc-sidebar-status-meta">
+              {library?.enabled ? `${library?.files?.length || 0} 份` : '未开库'}
+            </span>
           </button>
 
           <nav className="mc-nav-list">
@@ -139,17 +126,6 @@ export function AppShell({
                 aria-label="切换安全模式"
                 onChange={(next) => onToggleSecurity(next)}
               />
-            </div>
-
-            <div style={{ display: 'flex', gap: 4, justifyContent: 'space-between' }}>
-              <button type="button" className="mc-btn mc-btn-ghost mc-btn-sm" style={{ flex: 1 }} onClick={onOpenHelp} title="帮助与配置指南">
-                <IconHelp size={14} />
-                <span className="mc-hide-narrow">帮助</span>
-              </button>
-              <button type="button" className="mc-btn mc-btn-ghost mc-btn-sm" style={{ flex: 1 }} onClick={onOpenDiagnostics} title="本地诊断报告">
-                <IconActivity size={14} />
-                <span className="mc-hide-narrow">诊断</span>
-              </button>
             </div>
           </div>
         </aside>
