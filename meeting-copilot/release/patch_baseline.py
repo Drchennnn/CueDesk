@@ -235,6 +235,64 @@ def patch_main(raw: bytes) -> bytes:
     electron.ipcMain.handle("interview-library:rag-status", async (event) => {
       assertLibrarySender(event);
       return interviewLibrary.getRagStatus();
+    });
+    const { createKbWorkspace } = require(path.join(process.resourcesPath, "tools", "kb-workspace.cjs"));
+    const kbWorkspace = createKbWorkspace({
+      getRoot: () => interviewLibrary.root,
+      trashItem: (p) => electron.shell.trashItem(p)
+    });
+    electron.ipcMain.handle("kb:write-doc", async (event, payload) => {
+      assertLibrarySender(event);
+      const res = kbWorkspace.writeDocument(payload);
+      const lib = await interviewLibrary.getPublic();
+      return { ...res, library: lib };
+    });
+    electron.ipcMain.handle("kb:trash-doc", async (event, payload) => {
+      assertLibrarySender(event);
+      const res = await kbWorkspace.trashDocument(payload);
+      const lib = await interviewLibrary.getPublic();
+      return { ...res, library: lib };
+    });
+    electron.ipcMain.handle("kb:create-role", async (event, payload) => {
+      assertLibrarySender(event);
+      const res = kbWorkspace.createRolePackage(payload);
+      const lib = await interviewLibrary.getPublic();
+      return { ...res, library: lib };
+    });
+    electron.ipcMain.handle("kb:update-role-status", async (event, payload) => {
+      assertLibrarySender(event);
+      const res = kbWorkspace.updateRoleStatus(payload);
+      const lib = await interviewLibrary.getPublic();
+      return { ...res, library: lib };
+    });
+    electron.ipcMain.handle("kb:import-files", async (event, payload) => {
+      assertLibrarySender(event);
+      const res = kbWorkspace.importFiles(payload);
+      const lib = await interviewLibrary.getPublic();
+      return { ...res, library: lib };
+    });
+    electron.ipcMain.handle("kb:pick-import-files", async (event) => {
+      assertLibrarySender(event);
+      const r = await electron.dialog.showOpenDialog(win ?? undefined, {
+        title: "选择要导入到资料库的文件",
+        properties: ["openFile", "multiSelections"],
+        filters: [{ name: "文档与图片", extensions: ["md", "txt", "pdf", "png", "jpg", "jpeg", "webp"] }]
+      });
+      return r.canceled ? [] : r.filePaths;
+    });
+    electron.ipcMain.handle("kb:read-persona", (event) => {
+      assertLibrarySender(event);
+      return kbWorkspace.readPersona();
+    });
+    electron.ipcMain.handle("kb:save-persona", async (event, payload) => {
+      assertLibrarySender(event);
+      const res = kbWorkspace.savePersona(payload);
+      const lib = await interviewLibrary.getPublic();
+      return { ...res, library: lib };
+    });
+    electron.ipcMain.handle("kb:list-intro", (event) => {
+      assertLibrarySender(event);
+      return kbWorkspace.listIntroHeadings();
     });''',
         "interview-library pick-root + read-doc IPC",
     )
@@ -570,6 +628,15 @@ def patch_preload(raw: bytes) -> bytes:
   openInterviewDocument: (ref) => electron.ipcRenderer.invoke("interview-library:open-doc", ref),
   readInterviewChunks: (ref) => electron.ipcRenderer.invoke("interview-library:read-chunks", ref),
   getRagStatus: () => electron.ipcRenderer.invoke("interview-library:rag-status"),
+  kbWriteDoc: (payload) => electron.ipcRenderer.invoke("kb:write-doc", payload),
+  kbTrashDoc: (payload) => electron.ipcRenderer.invoke("kb:trash-doc", payload),
+  kbCreateRole: (payload) => electron.ipcRenderer.invoke("kb:create-role", payload),
+  kbUpdateRoleStatus: (payload) => electron.ipcRenderer.invoke("kb:update-role-status", payload),
+  kbImportFiles: (payload) => electron.ipcRenderer.invoke("kb:import-files", payload),
+  kbPickImportFiles: () => electron.ipcRenderer.invoke("kb:pick-import-files"),
+  kbReadPersona: () => electron.ipcRenderer.invoke("kb:read-persona"),
+  kbSavePersona: (payload) => electron.ipcRenderer.invoke("kb:save-persona", payload),
+  kbListIntro: () => electron.ipcRenderer.invoke("kb:list-intro"),
   startRecording: (opts) => electron.ipcRenderer.invoke("recording:start", opts),
   stopRecording: () => electron.ipcRenderer.invoke("recording:stop"),
   getRecordingStatus: () => electron.ipcRenderer.invoke("recording:status"),

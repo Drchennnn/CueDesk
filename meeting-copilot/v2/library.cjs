@@ -271,6 +271,6 @@ function createInterviewLibrary({file,parsePdf}){
   const health=await vectorClient.health(config.vector_rag);
   return {...health,endpoint:config.vector_rag?.endpoint||'',source_root:config.vector_rag?.source_root||'',replaced_directory:config.vector_rag?.replaced_directory||'',snapshot_sha256:config.vector_rag?.snapshot_sha256||''};
  }
- return {getPublic,save,build,locate,readDocument,readChunks,getRagStatus,get enabled(){return config.enabled;}};
+ return {getPublic,save,build,locate,readDocument,readChunks,getRagStatus,get enabled(){return config.enabled;},get root(){return config.root;}};
 }
 module.exports={createInterviewLibrary,intent,terms,SYSTEM};
