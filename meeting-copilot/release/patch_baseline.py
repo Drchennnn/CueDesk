@@ -53,12 +53,15 @@ function formatCodingDirective(codingPrefs) {
   if (extra) parts.push(`补充要求：${extra.slice(0, 500)}`);
   return parts.join("\n");
 }
-function appendCodingDirective(messages, codingPrefs, dialogueThinking = false) {
+function appendCodingDirective(messages, codingPrefs, dialogueThinking = false, writtenFollowup = false) {
   const parts = [];
   const directive = formatCodingDirective(codingPrefs);
   if (directive) parts.push(directive);
   if (dialogueThinking) {
     parts.push("【对话思考模式】请结合前序多轮对话上下文做更深入、结构化的思考与拆解，指出关键权衡点与潜在追问方向。");
+  }
+  if (writtenFollowup) {
+    parts.push("【笔试对话追问模式】请结合此前题图与历史解答上下文直接回应当前追问（如改写代码、排查样例报错、补充边界或解释推导），优先给出准确结论与可直接使用的完整代码。");
   }
   const combined = parts.join("\n\n");
   if (!combined || !Array.isArray(messages) || !messages.length) return messages;
@@ -360,6 +363,12 @@ def patch_main(raw: bytes) -> bytes:
       const err = await electron.shell.openPath(target);
       if (err) throw new Error(err);
       return { ok: true };
+    });
+    electron.ipcMain.handle("memory:init-rulebook", async (event) => {
+      assertLibrarySender(event);
+      const res = memoryStore.ensureReviewRulebook();
+      await interviewLibrary.getPublic().catch(() => {});
+      return res;
     });''',
         "interview-library pick-root + read-doc IPC",
     )
@@ -609,10 +618,28 @@ def patch_main(raw: bytes) -> bytes:
 
     text = replace_once(
         text,
-        '''        const imgP = (Array.isArray(payload.imageDataUrls) && payload.imageDataUrls.length ? Promise.resolve(payload.imageDataUrls) : payload.imageDataUrl ? Promise.resolve([payload.imageDataUrl]) : captureQuietScreenshot().then(dataUrl => dataUrl ? [dataUrl] : null)).then((dataUrls) => {''',
+        '''        const imgP = (Array.isArray(payload.imageDataUrls) && payload.imageDataUrls.length ? Promise.resolve(payload.imageDataUrls) : payload.imageDataUrl ? Promise.resolve([payload.imageDataUrl]) : captureQuietScreenshot().then(dataUrl => dataUrl ? [dataUrl] : null)).then((dataUrls) => {
+          if (!dataUrls?.length) throw Object.assign(new Error("已取消截图"), { captureCancelled: true });
+          if (dataUrls.length > 12 || dataUrls.some(url => typeof url !== "string" || !/^data:image\/(?:png|jpeg|webp);base64,/.test(url))) throw new Error("截图数据无效或数量超限");
+          return dataUrls;
+        });''',
         '''        const resolvedRect = workbenchWindow?.resolveCaptureRect(payload.displayId)?.rect ?? null;
-        const imgP = (Array.isArray(payload.imageDataUrls) && payload.imageDataUrls.length ? Promise.resolve(payload.imageDataUrls) : payload.imageDataUrl ? Promise.resolve([payload.imageDataUrl]) : captureQuietScreenshot("full", resolvedRect).then(dataUrl => dataUrl ? [dataUrl] : null)).then((dataUrls) => {''',
-        "shotAsk display rect",
+        const allowEmptyImages = payload.textOnly === true;
+        const imgP = (
+          Array.isArray(payload.imageDataUrls) && payload.imageDataUrls.length
+            ? Promise.resolve(payload.imageDataUrls)
+            : payload.imageDataUrl
+              ? Promise.resolve([payload.imageDataUrl])
+              : allowEmptyImages
+                ? Promise.resolve([])
+                : captureQuietScreenshot("full", resolvedRect).then(dataUrl => dataUrl ? [dataUrl] : null)
+        ).then((dataUrls) => {
+          if (!allowEmptyImages && !dataUrls?.length) throw Object.assign(new Error("已取消截图"), { captureCancelled: true });
+          const safeList = Array.isArray(dataUrls) ? dataUrls : [];
+          if (safeList.length > 12 || safeList.some(url => typeof url !== "string" || !/^data:image\/(?:png|jpeg|webp);base64,/.test(url))) throw new Error("截图数据无效或数量超限");
+          return safeList;
+        });''',
+        "shotAsk display rect + textOnly followup support",
     )
 
     text = replace_once(
@@ -638,21 +665,89 @@ def patch_main(raw: bytes) -> bytes:
               shotAnswerPolicy = messages.answerPolicy;
               return messages;
             })() : multimodalRouter.buildMessages({
-              ...payload, imageDataUrls: dataUrls, imageDataUrl: dataUrls[0], answerLang: effectiveLang, background: payload.background || knowledge.text,
-              originalMessages: buildVisionMessages(payload.question || "", dataUrls[0], payload.background || knowledge.text),
-              originalPersona: buildVisionMessages("", dataUrls[0], "")[0].content
-            }, "shot");
-            if (payload.codingPrefs?.mode === "coding") appendCodingDirective(built, payload.codingPrefs);
+              ...payload,
+              scene: effectiveMode,
+              imageDataUrls: dataUrls,
+              imageDataUrl: dataUrls[0],
+              history: Array.isArray(payload.history) ? payload.history : [],
+              writtenPrompt: payload.writtenPrompt || "",
+              answerLang: effectiveLang,
+              background: payload.background || knowledge.text,
+              originalMessages: dataUrls[0] ? buildVisionMessages(payload.question || "", dataUrls[0], payload.background || knowledge.text) : undefined,
+              originalPersona: dataUrls[0] ? buildVisionMessages("", dataUrls[0], "")[0].content : undefined
+            }, dataUrls.length ? "shot" : "answer");
+            if (payload.codingPrefs?.mode === "coding" || payload.writtenMode === "followup") {
+              appendCodingDirective(built, payload.codingPrefs, false, payload.writtenMode === "followup");
+            }
+            const effectiveSim = typeof payload.simultaneousAnswers === "boolean"
+              ? payload.simultaneousAnswers
+              : (effectiveMode === "written" && multimodalRouter.getPublic().simultaneousAnswers);
+            const baseOpts = shotEvidence ? {} : {
+              ...unifiedResults(sendEv, payload.requestId),
+              simultaneousAnswers: effectiveSim,
+              ...(payload.endpointId ? { endpointId: payload.endpointId } : {})
+            };
             return multimodalRouter.chat(
               built,
-              ac.signal, unifiedProgress(sendEv, payload.requestId), shotEvidence ? {} : unifiedResults(sendEv, payload.requestId)
+              ac.signal,
+              unifiedProgress(sendEv, payload.requestId),
+              baseOpts
             );
           }
         )''',
-        "shotAsk codingPrefs + options fix",
+        "shotAsk codingPrefs + written followup + primary vision routing",
     )
 
-    # 11. Dispose workbenchWindow & audioRecorder cleanly on before-quit
+    # 11. Withdraw legacy setup.html wizard: route startup & onboarding:rerun to main V3 in-app Quick-Start Guide (M21)
+    text = replace_once(
+        text,
+        '''    electron.ipcMain.handle(IPC.onboardingRerun, () => {
+      openSetupWindow(true);
+      return true;
+    });''',
+        '''    electron.ipcMain.handle(IPC.onboardingRerun, () => {
+      if (!win || win.isDestroyed()) {
+        startMainApp();
+      } else {
+        if (win.isMinimized()) win.restore();
+        win.show();
+        win.focus();
+      }
+      if (win && !win.isDestroyed()) {
+        if (win.webContents.isLoading()) {
+          win.webContents.once("did-finish-load", () => {
+            if (win && !win.isDestroyed()) win.webContents.send(IPC.trayCommand, { command: "open-quickstart" });
+          });
+        } else {
+          win.webContents.send(IPC.trayCommand, { command: "open-quickstart" });
+        }
+      }
+      return true;
+    });''',
+        "withdraw legacy onboardingRerun setup window",
+    )
+
+    text = replace_once(
+        text,
+        '''    if (process.env.MC_FORCE_ONBOARDING === "1" || !settings.data.onboarding.completed) {
+      openSetupWindow();
+    } else {
+      startMainApp();
+    }''',
+        '''    const shouldShowQuickStart = process.env.MC_FORCE_ONBOARDING === "1" || !settings.data.onboarding.completed;
+    if (!settings.data.onboarding.completed) {
+      settings.completeOnboarding({ skipped: true });
+    }
+    startMainApp();
+    if (shouldShowQuickStart && win && !win.isDestroyed()) {
+      win.webContents.once("did-finish-load", () => {
+        if (win && !win.isDestroyed()) win.webContents.send(IPC.trayCommand, { command: "open-quickstart" });
+      });
+    }''',
+        "withdraw legacy startup setup window",
+    )
+
+    # 12. Dispose workbenchWindow & audioRecorder cleanly on before-quit
     text = replace_once(
         text,
         '''    writtenWindow?.flush();
@@ -713,6 +808,7 @@ def patch_preload(raw: bytes) -> bytes:
   memoryOpenDir: () => electron.ipcRenderer.invoke("memory:open-dir"),
   memoryArchiveSession: (payload) => electron.ipcRenderer.invoke("memory:archive-session", payload),
   memoryOpenPath: (targetPath) => electron.ipcRenderer.invoke("memory:open-path", targetPath),
+  memoryInitRulebook: () => electron.ipcRenderer.invoke("memory:init-rulebook"),
   startRecording: (opts) => electron.ipcRenderer.invoke("recording:start", opts),
   stopRecording: () => electron.ipcRenderer.invoke("recording:stop"),
   getRecordingStatus: () => electron.ipcRenderer.invoke("recording:status"),

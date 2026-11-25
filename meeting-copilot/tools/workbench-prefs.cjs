@@ -10,6 +10,8 @@ const CODING_FORMATS = ['auto', 'acm', 'core'];
 const CODING_EXPLAIN_MODES = ['concise', 'detailed', 'code-only'];
 const TRANSLATION_LANGUAGES = ['zh-CN', 'en', 'ja', 'ko'];
 const SECURITY_SCOPES = ['session', 'persistent'];
+const WRITTEN_MODES = ['fast', 'followup'];
+const WRITTEN_SIMULTANEOUS_MODES = ['inherit', 'parallel', 'single'];
 
 const WORKBENCH_HOTKEY_ACTIONS = Object.freeze([
   'questionPrev',
@@ -95,8 +97,21 @@ const DEFAULT_PREFS = Object.freeze({
     togglePreventFocus: 'Control+Shift+8',
     toggleClickThrough: 'Control+Shift+9'
   }),
+  writtenConfig: Object.freeze({
+    mode: 'fast',
+    compactMini: false,
+    systemPrompt: '',
+    skipPreCheck: false,
+    preferredEndpointId: '',
+    simultaneousMode: 'inherit',
+    autoSecurity: false,
+    miniFontSize: 24,
+    showModelNames: true
+  }),
   homeBounds: null,
-  workbenchBounds: null
+  workbenchBounds: null,
+  writtenBounds: null,
+  writtenMiniBounds: null
 });
 
 function clampInt(value, min, max, fallback) {
@@ -179,6 +194,22 @@ function normalizeSidePaneTabs(raw, activeTab, base = DEFAULT_PREFS.sidePaneTabs
   return deduped;
 }
 
+function normalizeWrittenConfig(raw, base = DEFAULT_PREFS.writtenConfig) {
+  const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const fb = base || DEFAULT_PREFS.writtenConfig;
+  return {
+    mode: WRITTEN_MODES.includes(src.mode) ? src.mode : fb.mode,
+    compactMini: typeof src.compactMini === 'boolean' ? src.compactMini : Boolean(fb.compactMini),
+    systemPrompt: src.systemPrompt !== undefined ? String(src.systemPrompt || '').slice(0, 2000) : (fb.systemPrompt || ''),
+    skipPreCheck: typeof src.skipPreCheck === 'boolean' ? src.skipPreCheck : Boolean(fb.skipPreCheck),
+    preferredEndpointId: src.preferredEndpointId !== undefined ? String(src.preferredEndpointId || '').trim().slice(0, 80) : (fb.preferredEndpointId || ''),
+    simultaneousMode: WRITTEN_SIMULTANEOUS_MODES.includes(src.simultaneousMode) ? src.simultaneousMode : (fb.simultaneousMode || 'inherit'),
+    autoSecurity: typeof src.autoSecurity === 'boolean' ? src.autoSecurity : Boolean(fb.autoSecurity),
+    miniFontSize: clampInt(src.miniFontSize, 12, 64, fb.miniFontSize ?? 24),
+    showModelNames: typeof src.showModelNames === 'boolean' ? src.showModelNames : (fb.showModelNames !== false)
+  };
+}
+
 function clonePrefs(state) {
   return {
     ...state,
@@ -187,8 +218,11 @@ function clonePrefs(state) {
     codingPrefs: { ...state.codingPrefs },
     securityMode: { ...state.securityMode },
     hotkeys: { ...state.hotkeys },
+    writtenConfig: { ...(state.writtenConfig || DEFAULT_PREFS.writtenConfig) },
     homeBounds: state.homeBounds ? { ...state.homeBounds } : null,
-    workbenchBounds: state.workbenchBounds ? { ...state.workbenchBounds } : null
+    workbenchBounds: state.workbenchBounds ? { ...state.workbenchBounds } : null,
+    writtenBounds: state.writtenBounds ? { ...state.writtenBounds } : null,
+    writtenMiniBounds: state.writtenMiniBounds ? { ...state.writtenMiniBounds } : null
   };
 }
 
@@ -231,8 +265,11 @@ function normalizePrefs(raw, base = DEFAULT_PREFS) {
       togglePreventFocus: wbHotkeys.togglePreventFocus,
       toggleClickThrough: wbHotkeys.toggleClickThrough
     },
+    writtenConfig: normalizeWrittenConfig(src.writtenConfig, base.writtenConfig),
     homeBounds: src.homeBounds === null ? null : (src.homeBounds !== undefined ? normalizeBounds(src.homeBounds) : base.homeBounds),
-    workbenchBounds: src.workbenchBounds === null ? null : (src.workbenchBounds !== undefined ? normalizeBounds(src.workbenchBounds) : base.workbenchBounds)
+    workbenchBounds: src.workbenchBounds === null ? null : (src.workbenchBounds !== undefined ? normalizeBounds(src.workbenchBounds) : base.workbenchBounds),
+    writtenBounds: src.writtenBounds === null ? null : (src.writtenBounds !== undefined ? normalizeBounds(src.writtenBounds) : base.writtenBounds),
+    writtenMiniBounds: src.writtenMiniBounds === null ? null : (src.writtenMiniBounds !== undefined ? normalizeBounds(src.writtenMiniBounds) : base.writtenMiniBounds)
   };
 }
 

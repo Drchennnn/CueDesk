@@ -105,7 +105,7 @@ test('region shortcut supports combinations, either side button, clearing and pe
   const file = path.join(root, 'capture.json');
   const store = createCaptureSettings({ file, shortcuts: api });
   const current = { hotkeyToggle: 'Control+B', hotkeyShot: 'Mouse5' };
-  assert.equal(store.getPublic().hotkeyRegion, 'Control+Shift+A');
+  assert.equal(store.getPublic().hotkeyRegion, 'Control+Alt+A');
   store.applyPatch({ hotkeyRegion: 'Alt+Shift+R' }, current);
   assert.equal(api.active.size, 0, 'preflight registration must be removed');
   const reload = createCaptureSettings({ file, shortcuts: api });

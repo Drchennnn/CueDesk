@@ -30,6 +30,14 @@ MAIN = "out/main/index.js"
 PRELOAD = "out/preload/index.js"
 RENDERER_JS = "out/renderer/assets/index-hyFYaQxP.js"
 RENDERER_CSS = "out/renderer/assets/index-BJg-OUFD.css"
+LEGACY_SETUP_HTML = "out/renderer/setup.html"
+
+RETIRED_SETUP_HTML = b"""<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>MeetingCopilot</title></head>
+<body><p>Legacy setup wizard withdrawn; onboarding is unified inside main renderer (index.html).</p></body>
+</html>
+"""
 
 
 def sha256_file(file: Path) -> str:
@@ -130,12 +138,18 @@ def verify_build(destination: Path) -> dict:
         if any(marker in content for marker in private_markers):
             raise ValueError(f"Local personal path found in packaged member: {name}")
 
+    main_bytes = bp.asar.read_member(raw, header, offset, MAIN).decode("utf-8")
+    if "openSetupWindow(" in main_bytes.split("electron.ipcMain.handle(IPC.onboardingRerun", 1)[1]:
+        raise ValueError("Legacy openSetupWindow() is still invoked by main onboarding paths")
+
     return {
         "asar_sha256": sha256_file(asar_path),
         "archive_members": len(list(bp.members(header))),
         "blank_profile": True,
         "syntax_check": "passed",
         "archive_readback": "passed",
+        "loaded_renderer_entry": "out/renderer/index.html",
+        "legacy_setup_window": "withdrawn (routed to in-app V3 QuickStartModal)",
     }
 
 
@@ -170,7 +184,7 @@ def main() -> None:
 
     baseline = args.baseline.resolve()
     destination = args.output.resolve()
-    archive = destination.with_suffix(".zip")
+    archive = destination.parent / f"{destination.name}.zip"
 
     if destination.exists():
         raise ValueError(f"Output directory already exists: {destination}")
@@ -197,6 +211,7 @@ def main() -> None:
         PRELOAD: preload_patched,
         RENDERER_JS: args.ui_js.read_bytes(),
         RENDERER_CSS: args.ui_css.read_bytes(),
+        LEGACY_SETUP_HTML: RETIRED_SETUP_HTML,
     }
     (destination / "app/resources/app.asar").write_bytes(bp.compact_archive(original, replacements))
 

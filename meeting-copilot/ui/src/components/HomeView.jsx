@@ -1,24 +1,33 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   IconArrowRight,
+  IconCamera,
   IconChevronDown,
   IconChevronRight,
+  IconCode,
   IconEdit,
   IconFolder,
   IconFolderPlus,
   IconGrip,
+  IconKeyboard,
+  IconMessageSquare,
   IconMic,
   IconMore,
   IconPlay,
   IconPlus,
   IconScan,
   IconSearch,
+  IconSettings,
   IconSpeaker,
   IconStar,
   IconTrash,
-  IconX
+  IconX,
+  IconZap
 } from './Icons.jsx';
 import { ScreenshotBatchPanel, Switch, computeServiceHealth } from './SharedWidgets.jsx';
+import { CustomSelect } from './CustomSelect.jsx';
+import { WorkbenchShortcutsModal } from './WorkbenchShortcutsModal.jsx';
+import { formatCodingSummary } from '../core/codingPrefs.js';
 
 const MAX_NAME = 100;
 const MAX_DESC = 2000;
@@ -102,46 +111,80 @@ function TemplateModal({ template, groups, roles, onClose, onSave }) {
           <div className="mc-grid-2">
             <div className="mc-field">
               <label className="mc-field-label">所属分组</label>
-              <select className="mc-select" value={groupId} onChange={e => setGroupId(e.target.value)}>
-                {groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
-              </select>
+              <CustomSelect
+                className="mc-select"
+                ariaLabel="所属分组"
+                value={groupId}
+                onChange={setGroupId}
+                options={groups.map(g => ({ value: g.id, label: g.name }))}
+              />
             </div>
             <div className="mc-field">
               <label className="mc-field-label">音频来源</label>
-              <select className="mc-select" value={audioSource} onChange={e => setAudioSource(e.target.value)}>
-                <option value="system">系统音频（扬声器/会议软件）</option>
-                <option value="mic">麦克风（线下/外放收音）</option>
-              </select>
+              <CustomSelect
+                className="mc-select"
+                ariaLabel="音频来源"
+                value={audioSource}
+                onChange={setAudioSource}
+                options={[
+                  { value: 'system', label: '系统音频（扬声器/会议软件）' },
+                  { value: 'mic', label: '麦克风（线下/外放收音）' }
+                ]}
+              />
             </div>
             <div className="mc-field">
               <label className="mc-field-label">回答语言</label>
-              <select className="mc-select" value={answerLang} onChange={e => setAnswerLang(e.target.value)}>
-                <option value="chinese">中文回答</option>
-                <option value="english">英文回答</option>
-              </select>
+              <CustomSelect
+                className="mc-select"
+                ariaLabel="回答语言"
+                value={answerLang}
+                onChange={setAnswerLang}
+                options={[
+                  { value: 'chinese', label: '中文回答' },
+                  { value: 'english', label: '英文回答' }
+                ]}
+              />
             </div>
             <div className="mc-field">
               <label className="mc-field-label">转写提问模式</label>
-              <select className="mc-select" value={transcriptionMode} onChange={e => setTranscriptionMode(e.target.value)}>
-                <option value="auto">自动识别提问并生成</option>
-                <option value="manual">手动累计后发送</option>
-                <option value="transcript-only">仅实时转写</option>
-              </select>
+              <CustomSelect
+                className="mc-select"
+                ariaLabel="转写提问模式"
+                value={transcriptionMode}
+                onChange={setTranscriptionMode}
+                options={[
+                  { value: 'auto', label: '自动识别提问并生成' },
+                  { value: 'manual', label: '手动累计后发送' },
+                  { value: 'transcript-only', label: '仅实时转写' }
+                ]}
+              />
             </div>
             <div className="mc-field">
               <label className="mc-field-label">本地资料库 V2</label>
-              <select className="mc-select" value={libraryEnabled} onChange={e => setLibraryEnabled(e.target.value)}>
-                <option value="inherit">跟随全局设置</option>
-                <option value="on">本模板强制启用</option>
-                <option value="off">本模板临时关闭</option>
-              </select>
+              <CustomSelect
+                className="mc-select"
+                ariaLabel="本地资料库开关"
+                value={libraryEnabled}
+                onChange={setLibraryEnabled}
+                options={[
+                  { value: 'inherit', label: '跟随全局设置' },
+                  { value: 'on', label: '本模板强制启用' },
+                  { value: 'off', label: '本模板临时关闭' }
+                ]}
+              />
             </div>
             <div className="mc-field">
               <label className="mc-field-label">绑定岗位目录</label>
-              <select className="mc-select" value={role} onChange={e => setRole(e.target.value)}>
-                <option value="">跟随全局默认岗位</option>
-                {(roles || []).map(r => <option key={r} value={r}>{r}</option>)}
-              </select>
+              <CustomSelect
+                className="mc-select"
+                ariaLabel="绑定岗位目录"
+                value={role}
+                onChange={setRole}
+                options={[
+                  { value: '', label: '跟随全局默认岗位' },
+                  ...(roles || []).map(r => ({ value: r, label: r }))
+                ]}
+              />
             </div>
           </div>
 
@@ -180,7 +223,7 @@ function PreSessionModal({
   workbenchPrefs,
   windowState,
   onClose,
-  onOpenSettings,
+  onNavigateCapability,
   onConfirmStart
 }) {
   const [sessionName, setSessionName] = useState(
@@ -203,20 +246,6 @@ function PreSessionModal({
   const [startAudioRecording, setStartAudioRecording] = useState(false);
 
   const health = computeServiceHealth(settings, asr, library);
-  const blockers = [];
-  const warnings = [];
-  if (!health.llm.ready && !health.asr.ready) {
-    blockers.push('文本大模型和语音识别均未配置，建议先在「高级设置」配置 API Key 后再开始。');
-  } else {
-    if (!health.llm.ready) warnings.push('文本模型未配置 API Key：可先记录转写，但无法生成 AI 回答。');
-    if (!health.asr.ready) warnings.push(`语音识别当前为「${health.asr.label}」：进入后仍可手动输入或截图提问。`);
-  }
-  if (libraryEnabled && !library?.root) {
-    warnings.push('已勾选启用本地资料库 V2，但尚未选择资料目录（可在知识库页面设置）。');
-  }
-  if (!health.vision.ready) {
-    warnings.push('截图多模态接口未启用（可选，不影响语音与文本问答）。');
-  }
 
   const pickDoc = async (slot) => {
     const picked = await window.mc.pickKnowledge(slot).catch(() => null);
@@ -233,25 +262,68 @@ function PreSessionModal({
             <h3 className="mc-modal-title">准备进入实时面试</h3>
             <div className="mc-field-hint">基于模板「{template.name}」创建新会话，临时调整不会改写全局默认设置</div>
           </div>
-          <button type="button" className="mc-icon-btn" onClick={onClose}><IconX /></button>
+          <button type="button" className="mc-icon-btn" aria-label="关闭弹窗" onClick={onClose}><IconX /></button>
         </div>
 
         <div className="mc-modal-body">
-          {blockers.length > 0 && (
-            <div className="mc-alert mc-alert-err" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <strong>启动前提醒</strong>
-              {blockers.map((b, i) => <div key={i}>{b}</div>)}
-              <div>
-                <button type="button" className="mc-btn mc-btn-sm" onClick={() => { onClose(); onOpenSettings('models'); }}>
-                  前往高级设置
+          {/* Capability-oriented readiness summary (fixes M06 / M21) */}
+          {!health.llm.ready ? (
+            <div className="mc-alert mc-alert-warn" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <strong style={{ color: 'var(--text)' }}>当前能力说明</strong>
+              <div>• <strong>可先浏览工作台</strong>，但提问前需先配置回答模型（仅需 1 个 Key 即可手动打字问答）。</div>
+              <div>• <strong>语音识别：</strong>{health.asr.ready ? '已就绪，可先记录转写' : `尚不可用（${health.asr.label}），不阻碍先配文本模型手动试问`}。</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', paddingTop: 2 }}>
+                <button
+                  type="button"
+                  className="mc-btn mc-btn-sm mc-btn-primary"
+                  onClick={() => { onClose(); onNavigateCapability?.('text-llm'); }}
+                >
+                  先配置回答模型 →
                 </button>
+                {!health.asr.ready && (
+                  <button
+                    type="button"
+                    className="mc-btn mc-btn-sm"
+                    onClick={() => { onClose(); onNavigateCapability?.('asr'); }}
+                  >
+                    配置语音识别
+                  </button>
+                )}
               </div>
+            </div>
+          ) : health.asr.ready ? (
+            <div className="mc-alert mc-alert-ok" style={{ padding: '8px 12px' }}>
+              <strong>手动打字问答与实时语音转写均已就绪</strong>（当前模型：{settings?.llm?.model}）
+            </div>
+          ) : (
+            <div className="mc-alert mc-alert-ok" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '8px 12px' }}>
+              <div>
+                <strong>手动打字问答已可用</strong>（{settings?.llm?.model}）
+                <div style={{ fontSize: 11.5, marginTop: 2, color: 'var(--text-secondary)' }}>
+                  语音识别当前为「{health.asr.label}」，进入后可直接手动输入提问，随时可再补配语音。
+                </div>
+              </div>
+              <button
+                type="button"
+                className="mc-btn mc-btn-sm"
+                style={{ flexShrink: 0 }}
+                onClick={() => { onClose(); onNavigateCapability?.('asr'); }}
+              >
+                去配语音
+              </button>
             </div>
           )}
 
-          {warnings.length > 0 && (
-            <div className="mc-alert mc-alert-warn" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {warnings.map((w, i) => <div key={i}>• {w}</div>)}
+          {libraryEnabled && !library?.root && (
+            <div className="mc-alert mc-alert-warn" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '8px 12px' }}>
+              <span>已开启本场资料库，但尚未绑定资料文件夹。</span>
+              <button
+                type="button"
+                className="mc-btn mc-btn-sm"
+                onClick={() => { onClose(); onNavigateCapability?.('kb'); }}
+              >
+                选择资料文件夹
+              </button>
             </div>
           )}
 
@@ -263,32 +335,57 @@ function PreSessionModal({
           <div className="mc-grid-2">
             <div className="mc-field">
               <label className="mc-field-label">音频捕获源</label>
-              <select className="mc-select" value={audioSource} onChange={e => setAudioSource(e.target.value)}>
-                <option value="system">系统音频（会议扬声器/耳机）</option>
-                <option value="mic">本地麦克风（外放/线下）</option>
-              </select>
+              <CustomSelect
+                className="mc-select"
+                ariaLabel="音频捕获源"
+                value={audioSource}
+                onChange={setAudioSource}
+                options={[
+                  { value: 'system', label: '系统音频（会议扬声器/耳机）' },
+                  { value: 'mic', label: '本地麦克风（外放/线下）' }
+                ]}
+              />
             </div>
             <div className="mc-field">
               <label className="mc-field-label">回答语言</label>
-              <select className="mc-select" value={answerLang} onChange={e => setAnswerLang(e.target.value)}>
-                <option value="chinese">中文</option>
-                <option value="english">English</option>
-              </select>
+              <CustomSelect
+                className="mc-select"
+                ariaLabel="回答语言"
+                value={answerLang}
+                onChange={setAnswerLang}
+                options={[
+                  { value: 'chinese', label: '中文' },
+                  { value: 'english', label: 'English' }
+                ]}
+              />
             </div>
             <div className="mc-field">
               <label className="mc-field-label">转写提问策略</label>
-              <select className="mc-select" value={transcriptionMode} onChange={e => setTranscriptionMode(e.target.value)}>
-                <option value="auto">自动提问</option>
-                <option value="manual">手动累计后发送</option>
-                <option value="transcript-only">仅转写</option>
-              </select>
+              <CustomSelect
+                className="mc-select"
+                ariaLabel="转写提问策略"
+                value={transcriptionMode}
+                onChange={setTranscriptionMode}
+                options={[
+                  { value: 'auto', label: '自动提问' },
+                  { value: 'manual', label: '手动累计后发送' },
+                  { value: 'transcript-only', label: '仅转写' }
+                ]}
+              />
             </div>
             <div className="mc-field">
               <label className="mc-field-label">资料库岗位</label>
-              <select className="mc-select" value={role} disabled={!libraryEnabled} onChange={e => setRole(e.target.value)}>
-                <option value="">通用（不限定岗位）</option>
-                {(library?.roles || []).map(r => <option key={r} value={r}>{r}</option>)}
-              </select>
+              <CustomSelect
+                className="mc-select"
+                ariaLabel="资料库岗位"
+                value={role}
+                disabled={!libraryEnabled}
+                onChange={setRole}
+                options={[
+                  { value: '', label: '通用（不限定岗位）' },
+                  ...(library?.roles || []).map(r => ({ value: r, label: r }))
+                ]}
+              />
             </div>
           </div>
 
@@ -380,7 +477,146 @@ function PreSessionModal({
   );
 }
 
+function formatShortcutBadge(acc) {
+  if (!acc) return '未设置';
+  return String(acc)
+    .replace(/CommandOrControl/gi, 'Ctrl')
+    .replace(/Control/gi, 'Ctrl')
+    .replace(/\+/g, ' + ');
+}
+
+function PreWrittenModal({
+  settings,
+  workbenchPrefs,
+  windowState,
+  onClose,
+  onNavigateCapability,
+  onConfirmStart
+}) {
+  const wCfg = workbenchPrefs?.writtenConfig || {};
+  const enabledEndpoints = (settings?.multimodal?.endpoints || []).filter(e => e.enabled && e.baseUrl && e.model);
+  const visionReady = Boolean(settings?.multimodal?.enabled && enabledEndpoints.length > 0);
+  const [name, setName] = useState(`笔试 · ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`);
+  const [mode, setMode] = useState(wCfg.mode === 'followup' ? 'followup' : 'fast');
+  const [compactMini, setCompactMini] = useState(Boolean(wCfg.compactMini));
+  const [autoSecurity, setAutoSecurity] = useState(Boolean(wCfg.autoSecurity || windowState?.securityMode?.enabled));
+  const [skipNext, setSkipNext] = useState(Boolean(wCfg.skipPreCheck));
+
+  return (
+    <div className="mc-modal-backdrop" onClick={onClose}>
+      <div className="mc-modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="笔试前准备">
+        <div className="mc-modal-header">
+          <div>
+            <h3 className="mc-modal-title">笔试前准备</h3>
+            <div className="mc-field-hint">确认视觉模型与浮窗形态；笔试浮窗内置五大窗口防干扰控制</div>
+          </div>
+          <button type="button" className="mc-icon-btn" aria-label="关闭弹窗" onClick={onClose}><IconX /></button>
+        </div>
+
+        <div className="mc-modal-body">
+          {visionReady ? (
+            <div className="mc-alert mc-alert-ok" style={{ padding: '8px 12px' }}>
+              <strong>视觉识题已就绪</strong>（已启用 {enabledEndpoints.length} 个接口 · 首选视觉：{enabledEndpoints[0]?.model || enabledEndpoints[0]?.name}）
+            </div>
+          ) : (
+            <div className="mc-alert mc-alert-warn" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <div>
+                <strong>尚未配置视觉模型接口</strong>
+                <div style={{ fontSize: 12, marginTop: 2 }}>可以先进入笔试浮窗熟悉操作，截题前需配置至少一个多模态视觉模型。</div>
+              </div>
+              <button
+                type="button"
+                className="mc-btn mc-btn-sm mc-btn-primary"
+                style={{ flexShrink: 0 }}
+                onClick={() => { onClose(); onNavigateCapability?.('vision'); }}
+              >
+                去配置视觉模型 →
+              </button>
+            </div>
+          )}
+
+          <div className="mc-field">
+            <label className="mc-field-label">本次笔试名称</label>
+            <input className="mc-input" value={name} onChange={e => setName(e.target.value)} maxLength={80} placeholder="例如：算法机考 / 后端笔试" />
+          </div>
+
+          <div className="mc-grid-2">
+            <div className="mc-field">
+              <label className="mc-field-label">默认作答模式</label>
+              <div className="mc-segmented" style={{ width: '100%' }}>
+                <button type="button" className={`mc-seg-btn${mode === 'fast' ? ' is-active' : ''}`} style={{ flex: 1 }} onClick={() => setMode('fast')}>
+                  <IconZap size={11} /> 极速识题
+                </button>
+                <button type="button" className={`mc-seg-btn${mode === 'followup' ? ' is-active' : ''}`} style={{ flex: 1 }} onClick={() => setMode('followup')}>
+                  <IconMessageSquare size={11} /> 对话追问
+                </button>
+              </div>
+              <span className="mc-field-hint">
+                {mode === 'fast' ? '截屏直出答案，支持多模型并行交叉验证' : '由首选视觉模型承接多轮追问与改代码'}
+              </span>
+            </div>
+
+            <div className="mc-field">
+              <label className="mc-field-label">默认窗口形态</label>
+              <div className="mc-segmented" style={{ width: '100%' }}>
+                <button type="button" className={`mc-seg-btn${!compactMini ? ' is-active' : ''}`} style={{ flex: 1 }} onClick={() => setCompactMini(false)}>
+                  标准浮窗
+                </button>
+                <button type="button" className={`mc-seg-btn${compactMini ? ' is-active' : ''}`} style={{ flex: 1 }} onClick={() => setCompactMini(true)}>
+                  极简选项条
+                </button>
+              </div>
+              <span className="mc-field-hint">进入后随时可在顶栏一键互切</span>
+            </div>
+          </div>
+
+          <div className="mc-card" style={{ padding: '10px 12px', background: 'var(--bg-subtle)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 12.5, fontWeight: 500 }}>本场开启安全模式（防截屏 + 不抢焦点）</div>
+                <div className="mc-field-hint">退出笔试浮窗时自动恢复原状态；当前 Coding 偏好：{formatCodingSummary(workbenchPrefs?.codingPrefs)}</div>
+              </div>
+              <Switch
+                checked={autoSecurity}
+                success
+                disabled={windowState?.securityMode?.enabled && windowState?.securityMode?.scope === 'persistent'}
+                aria-label="笔试开启安全模式"
+                onChange={setAutoSecurity}
+              />
+            </div>
+          </div>
+
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer' }}>
+            <input type="checkbox" checked={skipNext} onChange={e => setSkipNext(e.target.checked)} />
+            <span>以后点击「开始笔试」直接启动浮窗，不再弹出此确认框</span>
+          </label>
+        </div>
+
+        <div className="mc-modal-footer">
+          <button type="button" className="mc-btn" onClick={onClose}>取消</button>
+          <button
+            type="button"
+            className="mc-btn mc-btn-primary"
+            onClick={() => onConfirmStart({
+              fresh: true,
+              name: name.trim(),
+              mode,
+              compactMini,
+              autoSecurity,
+              skipPreCheck: skipNext
+            })}
+          >
+            <IconPlay size={12} /> 启动笔试浮窗
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function HomeView({
+  homeTab: controlledHomeTab,
+  onChangeHomeTab,
   templatesStore,
   onSaveTemplates,
   settings,
@@ -389,21 +625,33 @@ export function HomeView({
   workbenchPrefs,
   windowState,
   activeSession,
+  activeWrittenSession,
   onStartSession,
   onResumeWorkbench,
   onEndActiveSession,
+  onNavigateCapability,
   onOpenSettings,
   onEnterWrittenCompact,
+  onEndWrittenSession,
   onQuickCaptureWritten,
+  onUpdateWorkbenchPrefs,
+  onSettingsUpdated,
   batch,
   batchController
 }) {
-  const [homeTab, setHomeTab] = useState('interview');
+  const [localHomeTab, setLocalHomeTab] = useState('interview');
+  const homeTab = controlledHomeTab ?? localHomeTab;
+  const setHomeTab = onChangeHomeTab ?? setLocalHomeTab;
   const [search, setSearch] = useState('');
   const [audioFilter, setAudioFilter] = useState('all');
   const [sortBy, setSortBy] = useState('custom');
   const [editingTemplate, setEditingTemplate] = useState(null);
   const [prepTemplate, setPrepTemplate] = useState(null);
+  const [prepWrittenOpen, setPrepWrittenOpen] = useState(false);
+  const [writtenShortcutsOpen, setWrittenShortcutsOpen] = useState(false);
+  const [writtenPromptDraft, setWrittenPromptDraft] = useState(workbenchPrefs?.writtenConfig?.systemPrompt || '');
+  const [writtenPromptSavedAt, setWrittenPromptSavedAt] = useState(0);
+  const [windowControlsInfo, setWindowControlsInfo] = useState(null);
   const [newGroupOpen, setNewGroupOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [rowMenu, setRowMenu] = useState(null);
@@ -412,6 +660,17 @@ export function HomeView({
   const hoverTimerRef = useRef(null);
   const closePreviewTimerRef = useRef(null);
   const dragPressTimerRef = useRef(null);
+  const dismissedPreviewTplIdRef = useRef(null);
+  const promptSaveTimerRef = useRef(null);
+
+  useEffect(() => {
+    setWrittenPromptDraft(workbenchPrefs?.writtenConfig?.systemPrompt || '');
+  }, [workbenchPrefs?.writtenConfig?.systemPrompt]);
+
+  useEffect(() => {
+    if (homeTab !== 'written') return;
+    window.mc?.getWindowControls?.().then(setWindowControlsInfo).catch(() => {});
+  }, [homeTab, writtenShortcutsOpen]);
 
   const groups = useMemo(
     () => [...(templatesStore?.groups || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
@@ -427,6 +686,7 @@ export function HomeView({
       clearTimeout(hoverTimerRef.current);
       clearTimeout(closePreviewTimerRef.current);
       clearTimeout(dragPressTimerRef.current);
+      clearTimeout(promptSaveTimerRef.current);
     };
   }, []);
 
@@ -545,21 +805,41 @@ export function HomeView({
     });
   };
 
+  // Dismiss template hover preview immediately on Escape and suppress reopen on same row until pointer leaves (M17)
+  useEffect(() => {
+    if (!preview) return;
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        clearTimeout(hoverTimerRef.current);
+        clearTimeout(closePreviewTimerRef.current);
+        dismissedPreviewTplIdRef.current = preview.tpl.id;
+        setPreview(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [preview]);
+
   const schedulePreview = (tpl, event) => {
     if (event.pointerType === 'touch') return;
-    if (event.target.closest?.('button,input,select,[data-template-preview-exclude="true"]')) return;
+    if (dismissedPreviewTplIdRef.current === tpl.id) return;
+    if (event.target.closest?.('button,input,select,[role="combobox"],[data-template-preview-exclude="true"]')) return;
     clearTimeout(closePreviewTimerRef.current);
     clearTimeout(hoverTimerRef.current);
     const rect = event.currentTarget.getBoundingClientRect();
     hoverTimerRef.current = setTimeout(() => {
-      const left = Math.max(12, Math.min(rect.left + 20, window.innerWidth - 332));
-      const top = rect.bottom + 8 + 150 > window.innerHeight ? Math.max(12, rect.top - 150) : rect.bottom + 8;
+      const left = Math.max(12, Math.min(rect.left + 20, window.innerWidth - 316));
+      const top = rect.bottom + 8 + 168 > window.innerHeight ? Math.max(12, rect.top - 168) : rect.bottom + 8;
       setPreview({ tpl, left, top });
     }, 200);
   };
 
-  const cancelPreviewSoon = () => {
+  const cancelPreviewSoon = (tplId) => {
     clearTimeout(hoverTimerRef.current);
+    if (tplId && dismissedPreviewTplIdRef.current === tplId) {
+      dismissedPreviewTplIdRef.current = null;
+    }
     closePreviewTimerRef.current = setTimeout(() => setPreview(null), 120);
   };
 
@@ -567,19 +847,12 @@ export function HomeView({
     settings?.multimodal?.enabled &&
     (settings?.multimodal?.endpoints || []).some(e => e.enabled && e.baseUrl && e.model)
   );
+  const health = computeServiceHealth(settings, asr, library);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, minWidth: 0 }}>
       <header className="mc-page-header">
         <h1 className="mc-page-title">首页</h1>
-        {activeSession && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span className="mc-badge mc-badge-ok">活动会话：{activeSession.name}</span>
-            <button type="button" className="mc-btn mc-btn-sm mc-btn-success" onClick={onResumeWorkbench}>
-              继续 <IconArrowRight size={13} />
-            </button>
-          </div>
-        )}
       </header>
 
       <div className="mc-tabs-row" role="tablist">
@@ -623,17 +896,31 @@ export function HomeView({
                 )}
               </div>
 
-              <select className="mc-filter-select" value={audioFilter} onChange={e => setAudioFilter(e.target.value)} aria-label="按音频源筛选">
-                <option value="all">全部音频源</option>
-                <option value="system">系统音频</option>
-                <option value="mic">麦克风</option>
-              </select>
+              <CustomSelect
+                className="mc-filter-select"
+                ariaLabel="按音频源筛选"
+                value={audioFilter}
+                onChange={setAudioFilter}
+                style={{ minWidth: 108 }}
+                options={[
+                  { value: 'all', label: '全部音频源' },
+                  { value: 'system', label: '系统音频' },
+                  { value: 'mic', label: '麦克风' }
+                ]}
+              />
 
-              <select className="mc-filter-select" value={sortBy} onChange={e => setSortBy(e.target.value)} aria-label="排序方式">
-                <option value="custom">自定义顺序</option>
-                <option value="recent">最近编辑</option>
-                <option value="name">按名称</option>
-              </select>
+              <CustomSelect
+                className="mc-filter-select"
+                ariaLabel="排序方式"
+                value={sortBy}
+                onChange={setSortBy}
+                style={{ minWidth: 108 }}
+                options={[
+                  { value: 'custom', label: '自定义顺序' },
+                  { value: 'recent', label: '最近编辑' },
+                  { value: 'name', label: '按名称' }
+                ]}
+              />
 
               {activeSession && !activeTemplateVisible && (
                 <button type="button" className="mc-btn mc-btn-sm mc-btn-success" onClick={onResumeWorkbench}>
@@ -701,7 +988,7 @@ export function HomeView({
                             key={tpl.id}
                             className={`mc-template-grid mc-template-row${isDragging ? ' is-dragging' : ''}${isDropTarget ? ' is-drop-target' : ''}`}
                             onMouseEnter={(e) => schedulePreview(tpl, e)}
-                            onMouseLeave={cancelPreviewSoon}
+                            onMouseLeave={() => cancelPreviewSoon(tpl.id)}
                             onMouseMove={() => {
                               if (dragState && dragState.groupId === tpl.groupId && dragState.targetId !== tpl.id) {
                                 setDragState(prev => prev ? { ...prev, targetId: tpl.id } : null);
@@ -831,50 +1118,224 @@ export function HomeView({
       ) : (
         <div className="mc-page-scroll">
           <div className="mc-page-inner">
-            <div className="mc-card">
-              <div className="mc-card-head">
-                <div>
-                  <h3 className="mc-card-title">笔试小窗与多模型并行识题</h3>
-                  <p className="mc-card-desc">静默截取题目屏幕或框选区域，支持多图暂存与多视觉模型同时作答。</p>
-                </div>
-                <span className={`mc-badge ${visionReady ? 'mc-badge-ok' : 'mc-badge-warn'}`}>
-                  {visionReady ? '截图视觉模型已就绪' : '视觉模型待配置'}
-                </span>
-              </div>
-              <div className="mc-card-body">
-                {!visionReady && (
-                  <div className="mc-alert mc-alert-warn">
-                    尚未启用或配置完整的视觉模型接口，请先在「高级设置 → 模型接口」中启用截图问答并填写至少一个视觉接口。
-                  </div>
-                )}
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  <button type="button" className="mc-btn mc-btn-primary" onClick={onEnterWrittenCompact}>
-                    <IconPlay size={12} /> 启动笔试小窗
-                  </button>
-                  <button type="button" className="mc-btn" disabled={!visionReady} onClick={() => onQuickCaptureWritten('full')}>
-                    <IconScan size={14} /> 静默全屏截图识题
-                  </button>
-                  <button type="button" className="mc-btn" disabled={!visionReady} onClick={() => onQuickCaptureWritten('region')}>
-                    框选截图识题
-                  </button>
-                  <button type="button" className="mc-btn" onClick={() => onOpenSettings('models')}>
-                    配置视觉接口
-                  </button>
-                </div>
-              </div>
-            </div>
+            {(() => {
+              const wCfg = workbenchPrefs?.writtenConfig || {};
+              const enabledVision = (settings?.multimodal?.endpoints || []).filter(e => e.enabled && e.baseUrl && e.model);
+              const patchW = (delta) => void onUpdateWorkbenchPrefs?.({ writtenConfig: { ...wCfg, ...delta } });
+              const handleStartWrittenClick = () => {
+                if (wCfg.skipPreCheck) {
+                  onEnterWrittenCompact({
+                    fresh: true,
+                    mode: wCfg.mode || 'fast',
+                    compactMini: Boolean(wCfg.compactMini),
+                    autoSecurity: Boolean(wCfg.autoSecurity)
+                  });
+                } else {
+                  setPrepWrittenOpen(true);
+                }
+              };
+              const handlePromptChange = (val) => {
+                setWrittenPromptDraft(val);
+                clearTimeout(promptSaveTimerRef.current);
+                promptSaveTimerRef.current = setTimeout(() => {
+                  patchW({ systemPrompt: val });
+                  setWrittenPromptSavedAt(Date.now());
+                }, 420);
+              };
 
-            <div className="mc-card">
-              <div className="mc-card-head">
-                <div>
-                  <h3 className="mc-card-title">多图暂存队列</h3>
-                  <p className="mc-card-desc">适用于一道笔试题跨多屏展示的情况：开启多图后逐张截图，最后一次性提交。</p>
-                </div>
-              </div>
-              <div className="mc-card-body">
-                <ScreenshotBatchPanel batch={batch} controller={batchController} management />
-              </div>
-            </div>
+              return (
+                <>
+                  {/* Main launch & readiness card */}
+                  <div className="mc-card">
+                    <div className="mc-card-head">
+                      <div>
+                        <h3 className="mc-card-title">笔试助手（本机静默截题 + 多模态追问）</h3>
+                        <p className="mc-card-desc">
+                          参考随思轻量浮窗交互，完整接入五大窗口防干扰控制，同时保留多视觉模型并行对比与鼠标侧键截题。
+                        </p>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                        <span className={`mc-badge ${visionReady ? 'mc-badge-ok' : 'mc-badge-warn'}`}>
+                          {visionReady ? `已就绪 · ${enabledVision.length} 个视觉模型` : '视觉模型待配置'}
+                        </span>
+                        <button type="button" className="mc-btn mc-btn-primary" onClick={handleStartWrittenClick}>
+                          <IconPlay size={12} /> {activeWrittenSession?.questions?.length ? '启动全新笔试小窗' : '开始笔试'}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="mc-card-body">
+                      {!visionReady && (
+                        <div className="mc-alert mc-alert-warn" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                          <span>尚未启用或配置完整的视觉模型接口，请先配置至少一个 OpenAI 兼容多模态模型后再截题。</span>
+                          <button type="button" className="mc-btn mc-btn-sm mc-btn-primary" style={{ flexShrink: 0 }} onClick={() => (onNavigateCapability ? onNavigateCapability('vision') : onOpenSettings('models'))}>
+                            配置视觉接口 →
+                          </button>
+                        </div>
+                      )}
+                      {activeWrittenSession && (activeWrittenSession.questions?.length || 0) > 0 && (
+                        <div className="mc-alert mc-alert-ok" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                          <div>
+                            <strong>当前笔试：{activeWrittenSession.name}</strong>
+                            <span style={{ marginLeft: 8, fontSize: 12 }}>已作答 {activeWrittenSession.questions.length} 题</span>
+                          </div>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button type="button" className="mc-btn mc-btn-sm mc-btn-success" onClick={() => onEnterWrittenCompact({ fresh: false })}>
+                              继续本次笔试浮窗 →
+                            </button>
+                            <button type="button" className="mc-btn mc-btn-sm" onClick={onEndWrittenSession}>
+                              结束本次笔试
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                        <button type="button" className="mc-btn" disabled={!visionReady} onClick={() => onQuickCaptureWritten('region')}>
+                          <IconScan size={14} /> 框选截图识题
+                        </button>
+                        <button type="button" className="mc-btn" disabled={!visionReady} onClick={() => onQuickCaptureWritten('full')}>
+                          <IconCamera size={14} /> 静默全屏截题
+                        </button>
+                        <button type="button" className="mc-btn" onClick={() => (onNavigateCapability ? onNavigateCapability('vision') : onOpenSettings('models'))}>
+                          <IconSettings size={14} /> 配置视觉接口
+                        </button>
+                        {wCfg.skipPreCheck && (
+                          <button
+                            type="button"
+                            className="mc-btn mc-btn-ghost mc-btn-sm"
+                            style={{ marginLeft: 'auto' }}
+                            onClick={() => patchW({ skipPreCheck: false })}
+                          >
+                            恢复显示「笔试前准备」弹窗
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Two-column quick configuration grid (Model Strategy + Hotkeys) */}
+                  <div className="mc-written-home-grid">
+                    <div className="mc-card">
+                      <div className="mc-card-head">
+                        <div>
+                          <h3 className="mc-card-title">视觉模型与作答策略</h3>
+                          <p className="mc-card-desc">极速识题支持多模型并行；对话追问默认由首选视觉模型承接。</p>
+                        </div>
+                      </div>
+                      <div className="mc-card-body" style={{ gap: 10 }}>
+                        <div className="mc-field">
+                          <label className="mc-field-label">极速识题并行策略</label>
+                          <div className="mc-segmented" style={{ width: '100%' }}>
+                            {[
+                              ['inherit', '跟随全局'],
+                              ['parallel', '多模型并行'],
+                              ['single', '首选单模型']
+                            ].map(([id, label]) => (
+                              <button
+                                key={id}
+                                type="button"
+                                className={`mc-seg-btn${(wCfg.simultaneousMode || 'inherit') === id ? ' is-active' : ''}`}
+                                style={{ flex: 1 }}
+                                onClick={() => patchW({ simultaneousMode: id })}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="mc-field">
+                          <label className="mc-field-label">追问 / 单模型首选视觉接口</label>
+                          {enabledVision.length > 0 ? (
+                            <CustomSelect
+                              className="mc-select"
+                              ariaLabel="笔试首选视觉模型"
+                              value={wCfg.preferredEndpointId || ''}
+                              onChange={(val) => patchW({ preferredEndpointId: val })}
+                              options={[
+                                { value: '', label: `默认首选（${enabledVision[0]?.name || enabledVision[0]?.model}）` },
+                                ...enabledVision.map(ep => ({ value: ep.id, label: `${ep.name || ep.model} · ${ep.model}` }))
+                              ]}
+                            />
+                          ) : (
+                            <div className="mc-field-hint">暂未启用任何视觉接口，请先前往视觉设置添加。</div>
+                          )}
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, color: 'var(--text-secondary)' }}>
+                          <span>当前 Coding 偏好：{formatCodingSummary(workbenchPrefs?.codingPrefs)}</span>
+                          <span className="mc-field-hint">可在浮窗底栏随时切换</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mc-card">
+                      <div className="mc-card-head">
+                        <div>
+                          <h3 className="mc-card-title">截屏与多图快捷键</h3>
+                          <p className="mc-card-desc">全屏与框选均支持键盘组合键、F 键或 Mouse4 / Mouse5 鼠标侧键。</p>
+                        </div>
+                        <button type="button" className="mc-btn mc-btn-sm" onClick={() => setWrittenShortcutsOpen(true)}>
+                          <IconKeyboard size={13} /> 编辑快捷键
+                        </button>
+                      </div>
+                      <div className="mc-card-body" style={{ gap: 2 }}>
+                        <div className="mc-written-hotkey-row">
+                          <span>静默全屏截题</span>
+                          <span className="mc-kbd">{formatShortcutBadge(settings?.ui?.hotkeyShot)}</span>
+                        </div>
+                        <div className="mc-written-hotkey-row">
+                          <span>框选区域截题</span>
+                          <span className="mc-kbd">{formatShortcutBadge(settings?.capture?.hotkeyRegion)}</span>
+                        </div>
+                        <div className="mc-written-hotkey-row">
+                          <span>开关多图暂存</span>
+                          <span className="mc-kbd">{formatShortcutBadge(windowControlsInfo?.bindings?.toggleBatch || 'Control+Alt+M')}</span>
+                        </div>
+                        <div className="mc-written-hotkey-row">
+                          <span>发送全部暂存多图</span>
+                          <span className="mc-kbd">{formatShortcutBadge(windowControlsInfo?.bindings?.sendBatch || 'Control+Alt+S')}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Custom Written Exam System Prompt */}
+                  <div className="mc-card">
+                    <div className="mc-card-head">
+                      <div>
+                        <h3 className="mc-card-title">笔试模型提示词（自定义附加要求）</h3>
+                        <p className="mc-card-desc">会自动附加到本机笔试极速识题与对话追问请求中，实时保存。</p>
+                      </div>
+                      {writtenPromptSavedAt > 0 && (
+                        <span className="mc-field-hint" role="status">已自动保存</span>
+                      )}
+                    </div>
+                    <div className="mc-card-body">
+                      <textarea
+                        className="mc-textarea"
+                        rows={3}
+                        value={writtenPromptDraft}
+                        onChange={e => handlePromptChange(e.target.value)}
+                        placeholder="例如：选择题请先直接给出正确选项字母，再附一句核心依据；编程题默认使用 C++ ACM 模式，避免多余寒暄。"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Multi-image batch queue management */}
+                  <div className="mc-card">
+                    <div className="mc-card-head">
+                      <div>
+                        <h3 className="mc-card-title">多图暂存队列</h3>
+                        <p className="mc-card-desc">长题目跨多屏时，可开启多图连续截取（最多 12 张），浮窗内支持内联缩略图预览与一键发题。</p>
+                      </div>
+                    </div>
+                    <div className="mc-card-body">
+                      <ScreenshotBatchPanel batch={batch} controller={batchController} management />
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -884,17 +1345,37 @@ export function HomeView({
           className="mc-preview-card"
           style={{ left: preview.left, top: preview.top }}
           onMouseEnter={() => clearTimeout(closePreviewTimerRef.current)}
-          onMouseLeave={cancelPreviewSoon}
+          onMouseLeave={() => cancelPreviewSoon(preview.tpl.id)}
         >
-          <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text)', marginBottom: 4 }}>{preview.tpl.name}</div>
-          <div style={{ marginBottom: 8 }}>{preview.tpl.description || '无说明'}</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            <span className="mc-badge">{preview.tpl.audioSource === 'mic' ? '麦克风' : '系统音频'}</span>
-            <span className="mc-badge">{preview.tpl.answerLang === 'english' ? '英文' : '中文'}</span>
-            <span className="mc-badge">
-              {preview.tpl.transcriptionMode === 'manual' ? '手动发送' : preview.tpl.transcriptionMode === 'transcript-only' ? '仅转写' : '自动提问'}
-            </span>
-            {preview.tpl.role && <span className="mc-badge mc-badge-info">岗位：{preview.tpl.role}</span>}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+            <strong style={{ fontSize: 12.5, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {preview.tpl.name}
+            </strong>
+            <span className="mc-kbd" title="按 Esc 收起预览卡">Esc</span>
+          </div>
+          <div className="mc-preview-kv">
+            <span>采集方式</span>
+            <strong>{preview.tpl.audioSource === 'mic' ? '本地麦克风' : '系统音频'}</strong>
+            <span>回答语言</span>
+            <strong>{preview.tpl.answerLang === 'english' ? 'English' : '中文'}</strong>
+            <span>转写策略</span>
+            <strong>
+              {preview.tpl.transcriptionMode === 'manual' ? '手动累计发送' : preview.tpl.transcriptionMode === 'transcript-only' ? '仅实时转写' : '自动识别提问'}
+            </strong>
+            <span>文本模型</span>
+            <strong>{settings?.llm?.model || '未配置'}</strong>
+            <span>本地资料库</span>
+            <strong>
+              {preview.tpl.libraryEnabled === false
+                ? '本模板关闭'
+                : preview.tpl.role || (library?.enabled ? (library?.role || '通用资料库') : '未启用')}
+            </strong>
+            {(preview.tpl.resumeName || preview.tpl.jdName) && (
+              <>
+                <span>模板附件</span>
+                <strong>{[preview.tpl.resumeName, preview.tpl.jdName].filter(Boolean).join(' · ')}</strong>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -964,11 +1445,49 @@ export function HomeView({
           workbenchPrefs={workbenchPrefs}
           windowState={windowState}
           onClose={() => setPrepTemplate(null)}
-          onOpenSettings={onOpenSettings}
+          onNavigateCapability={onNavigateCapability || ((cap) => onOpenSettings(cap === 'asr' ? 'audio' : 'models'))}
           onConfirmStart={(payload) => {
             setPrepTemplate(null);
             onStartSession(payload);
           }}
+        />
+      )}
+
+      {prepWrittenOpen && (
+        <PreWrittenModal
+          settings={settings}
+          workbenchPrefs={workbenchPrefs}
+          windowState={windowState}
+          onClose={() => setPrepWrittenOpen(false)}
+          onNavigateCapability={onNavigateCapability || (() => onOpenSettings('models'))}
+          onConfirmStart={(payload) => {
+            setPrepWrittenOpen(false);
+            const wCfg = workbenchPrefs?.writtenConfig || {};
+            void onUpdateWorkbenchPrefs?.({
+              writtenConfig: {
+                ...wCfg,
+                mode: payload.mode,
+                compactMini: payload.compactMini,
+                autoSecurity: payload.autoSecurity,
+                skipPreCheck: payload.skipPreCheck
+              }
+            });
+            onEnterWrittenCompact(payload);
+          }}
+        />
+      )}
+
+      {writtenShortcutsOpen && (
+        <WorkbenchShortcutsModal
+          settings={settings}
+          windowState={windowState}
+          onSettingsUpdated={onSettingsUpdated}
+          onOpenFullSettings={() => {
+            setWrittenShortcutsOpen(false);
+            if (onNavigateCapability) onNavigateCapability('shortcuts');
+            else onOpenSettings('shortcuts');
+          }}
+          onClose={() => setWrittenShortcutsOpen(false)}
         />
       )}
     </div>

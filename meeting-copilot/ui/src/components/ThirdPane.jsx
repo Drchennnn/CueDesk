@@ -17,6 +17,7 @@ import {
   IconX
 } from './Icons.jsx';
 import { EvidencePanel, cleanAnswerReferences, parseAnswerBlocks } from './SharedWidgets.jsx';
+import { CustomSelect } from './CustomSelect.jsx';
 
 const TOOL_CATALOG = [
   { id: 'knowledge', label: '打开知识库', desc: '浏览并阅读本地资料库文档，免切换窗口', icon: IconBookOpen },
@@ -510,15 +511,14 @@ export function ThirdPane({
       {activeTab === 'translate' && (
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: 10, gap: 10, overflowY: 'auto' }} data-scrollable="true">
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, flexWrap: 'wrap' }} data-interactive="true">
-            <select
+            <CustomSelect
               className="mc-filter-select"
-              style={{ height: 24, fontSize: 11.5 }}
+              style={{ height: 26, fontSize: 11.5, minWidth: 96 }}
               value={targetLang}
-              onChange={e => onChangeTargetLang?.(e.target.value)}
-              aria-label="翻译目标语言"
-            >
-              {TARGET_LANGS.map(l => <option key={l.id} value={l.id}>{l.label}</option>)}
-            </select>
+              onChange={val => onChangeTargetLang?.(val)}
+              ariaLabel="翻译目标语言"
+              options={TARGET_LANGS.map(l => ({ value: l.id, label: l.label }))}
+            />
             <button
               type="button"
               className="mc-btn mc-btn-sm mc-btn-primary"

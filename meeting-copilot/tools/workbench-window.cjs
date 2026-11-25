@@ -6,6 +6,12 @@ const HOME_DEFAULT = Object.freeze({ width: 1120, height: 760 });
 const HOME_MIN = Object.freeze([380, 440]);
 const WORKBENCH_DEFAULT = Object.freeze({ width: 920, height: 464 });
 const WORKBENCH_MIN = Object.freeze([220, 224]);
+const WRITTEN_DEFAULT = Object.freeze({ width: 440, height: 560 });
+const WRITTEN_MIN = Object.freeze([320, 200]);
+const WRITTEN_MINI_DEFAULT = Object.freeze({ width: 280, height: 188 });
+const WRITTEN_MINI_MIN = Object.freeze([210, 108]);
+const FLOATING_MODES = new Set(['workbench', 'written', 'written-mini']);
+const ALL_WINDOW_MODES = new Set(['home', 'workbench', 'written', 'written-mini']);
 
 const SCREEN_RECORDER_PROCESSES = new Set([
   'obs64.exe',
@@ -107,13 +113,17 @@ function createWorkbenchWindow({
     return !!prefs.getPublic().securityMode.enabled;
   }
 
-  // Prevent-focus policy is ONLY applied in Workbench mode (never locks Home on startup or return).
-  function effectivePreventFocus() {
-    const p = prefs.getPublic();
-    return mode === 'workbench' && (!!p.securityMode.enabled || !!p.preventFocus);
+  function isFloatingMode(m = mode) {
+    return FLOATING_MODES.has(m);
   }
 
-  // Match SuiSi: only hide taskbar icon during security mode or written compact mode so OS focus & interaction stay reliable.
+  // Prevent-focus policy is ONLY applied in floating modes (workbench / written / written-mini; never locks Home on startup or return).
+  function effectivePreventFocus() {
+    const p = prefs.getPublic();
+    return isFloatingMode() && (!!p.securityMode.enabled || !!p.preventFocus);
+  }
+
+  // Match SuiSi: only hide taskbar icon during security mode or legacy written compact mode so OS focus & interaction stay reliable.
   function shouldSkipTaskbar() {
     return isWrittenCompact() || isSecurityActive();
   }
@@ -152,7 +162,7 @@ function createWorkbenchWindow({
     const w = activeWin();
     if (!w || isWrittenCompact()) return;
     const p = prefs.getPublic();
-    const topmost = mode === 'workbench' ? !!p.alwaysOnTop : isSecurityActive();
+    const topmost = isFloatingMode() ? !!p.alwaysOnTop : isSecurityActive();
     try {
       if (topmost) w.setAlwaysOnTop(true, 'screen-saver');
       else w.setAlwaysOnTop(false);
@@ -163,7 +173,7 @@ function createWorkbenchWindow({
     const w = activeWin();
     if (!w || isWrittenCompact()) return;
     // Home mode is ALWAYS focusable so restart/return never locks the main UI.
-    const focusable = mode !== 'workbench'
+    const focusable = !isFloatingMode()
       ? true
       : (tempFocus || (!effectivePreventFocus() && !clickThrough));
     try {
@@ -185,7 +195,7 @@ function createWorkbenchWindow({
   function syncMousePassthrough() {
     const w = activeWin();
     if (!w || isWrittenCompact()) return;
-    const shouldIgnore = mode === 'workbench' && (hoverHidden || (clickThrough && !mouseInteractive));
+    const shouldIgnore = isFloatingMode() && (hoverHidden || (clickThrough && !mouseInteractive));
     try {
       if (shouldIgnore) w.setIgnoreMouseEvents(true, { forward: true });
       else w.setIgnoreMouseEvents(false);
@@ -193,7 +203,7 @@ function createWorkbenchWindow({
   }
 
   function setHoverHiddenNative(nextHidden) {
-    const next = !!nextHidden && mode === 'workbench' && !hoverBlocked;
+    const next = !!nextHidden && isFloatingMode() && !hoverBlocked;
     if (next === hoverHidden) return;
     hoverHidden = next;
     syncMousePassthrough();
@@ -226,7 +236,7 @@ function createWorkbenchWindow({
   function syncHoverPolling() {
     const w = activeWin();
     const p = prefs.getPublic();
-    const wantPoll = !disposed && !!w && mode === 'workbench' && !isWrittenCompact() &&
+    const wantPoll = !disposed && !!w && isFloatingMode() && !isWrittenCompact() &&
       !hoverBlocked &&
       (p.hoverReveal || p.autoCollapseChrome) &&
       (w.isVisible ? w.isVisible() : true) &&
@@ -330,12 +340,19 @@ function createWorkbenchWindow({
     return true;
   }
 
+  function modeBoundsSpec(targetMode) {
+    if (targetMode === 'home') return { key: 'homeBounds', def: HOME_DEFAULT, min: HOME_MIN };
+    if (targetMode === 'written') return { key: 'writtenBounds', def: WRITTEN_DEFAULT, min: WRITTEN_MIN };
+    if (targetMode === 'written-mini') return { key: 'writtenMiniBounds', def: WRITTEN_MINI_DEFAULT, min: WRITTEN_MINI_MIN };
+    return { key: 'workbenchBounds', def: WORKBENCH_DEFAULT, min: WORKBENCH_MIN };
+  }
+
   function saveCurrentModeBounds() {
     const w = activeWin();
     if (!w || applyingBounds || isWrittenCompact() || w.isMinimized?.()) return;
     const raw = w.getNormalBounds ? w.getNormalBounds() : w.getBounds();
     if (!raw || raw.width < 120 || raw.height < 80) return;
-    const key = mode === 'home' ? 'homeBounds' : 'workbenchBounds';
+    const { key } = modeBoundsSpec(mode);
     try {
       prefs.applyPatch({ [key]: { x: raw.x, y: raw.y, width: raw.width, height: raw.height } }, { silent: true });
     } catch {}
@@ -353,9 +370,9 @@ function createWorkbenchWindow({
 
   function targetBoundsFor(targetMode) {
     const p = prefs.getPublic();
-    const saved = targetMode === 'home' ? p.homeBounds : p.workbenchBounds;
-    const def = targetMode === 'home' ? HOME_DEFAULT : WORKBENCH_DEFAULT;
-    const [minW, minH] = targetMode === 'home' ? HOME_MIN : WORKBENCH_MIN;
+    const { key, def, min } = modeBoundsSpec(targetMode);
+    const saved = p[key];
+    const [minW, minH] = min;
     const w = activeWin();
     let display;
     if (saved) {
@@ -371,6 +388,11 @@ function createWorkbenchWindow({
     }
     const width = Math.min(work.width, def.width);
     const height = Math.min(work.height, def.height);
+    if (targetMode === 'written' || targetMode === 'written-mini') {
+      const x = work.x + Math.max(16, work.width - width - 36);
+      const y = work.y + Math.max(24, Math.round((work.height - height) * 0.14));
+      return { x, y, width, height };
+    }
     const x = work.x + Math.round((work.width - width) / 2);
     const y = targetMode === 'home'
       ? work.y + Math.round((work.height - height) / 2)
@@ -394,11 +416,11 @@ function createWorkbenchWindow({
   function applyModeLayout(targetMode) {
     const w = activeWin();
     if (!w || isWrittenCompact()) return;
-    const [minW, minH] = targetMode === 'home' ? HOME_MIN : WORKBENCH_MIN;
+    const { min: [minW, minH] } = modeBoundsSpec(targetMode);
     const bounds = targetBoundsFor(targetMode);
     applyingBounds = true;
     try {
-      if (targetMode === 'workbench' && w.isMaximized?.()) {
+      if (isFloatingMode(targetMode) && w.isMaximized?.()) {
         w.unmaximize();
       }
       w.setMinimumSize(minW, minH);
@@ -409,7 +431,7 @@ function createWorkbenchWindow({
   }
 
   function setMode(nextMode) {
-    if (nextMode !== 'home' && nextMode !== 'workbench') {
+    if (!ALL_WINDOW_MODES.has(nextMode)) {
       throw new Error('未知窗口模式：' + nextMode);
     }
     const changed = mode !== nextMode;
@@ -430,7 +452,8 @@ function createWorkbenchWindow({
       syncFocusAndTaskbar();
       syncMousePassthrough();
       if (changed && mode === 'home') {
-        try { w.focus(); } catch {}
+        const active = activeWin();
+        try { active?.focus(); } catch {}
       }
     }
     syncHoverPolling();
@@ -481,7 +504,7 @@ function createWorkbenchWindow({
   }
 
   function setClickThrough(on) {
-    const next = !!on && mode === 'workbench' && !isWrittenCompact();
+    const next = !!on && isFloatingMode() && !isWrittenCompact();
     if (next && !prefs.getPublic().alwaysOnTop) {
       prefs.applyPatch({ alwaysOnTop: true }, { silent: false });
     }
@@ -497,7 +520,7 @@ function createWorkbenchWindow({
   }
 
   function setMouseInteractive(interactive) {
-    if (!clickThrough || mode !== 'workbench' || isWrittenCompact()) return false;
+    if (!clickThrough || !isFloatingMode() || isWrittenCompact()) return false;
     const next = !!interactive;
     if (next === mouseInteractive) return mouseInteractive;
     mouseInteractive = next;
@@ -728,7 +751,7 @@ function createWorkbenchWindow({
     }
     if (action === 'toggleClickThrough') {
       if (clickThrough) setClickThrough(false);
-      else if (mode === 'workbench') setClickThrough(true);
+      else if (isFloatingMode()) setClickThrough(true);
       return;
     }
     if (action === 'toggleHotkeys') {
@@ -737,7 +760,7 @@ function createWorkbenchWindow({
       registerHotkeys();
       return;
     }
-    if (mode !== 'workbench') return;
+    if (!isFloatingMode()) return;
     if (action === 'toggleAlwaysOnTop') {
       setAlwaysOnTop(!prefs.getPublic().alwaysOnTop);
       return;
@@ -876,7 +899,7 @@ function createWorkbenchWindow({
         tempFocus = false;
         syncFocusAndTaskbar();
         emitState();
-      } else if (mode === 'workbench') {
+      } else if (isFloatingMode()) {
         syncAlwaysOnTop();
       }
     });
@@ -964,5 +987,9 @@ module.exports = {
   HOME_MIN,
   WORKBENCH_DEFAULT,
   WORKBENCH_MIN,
+  WRITTEN_DEFAULT,
+  WRITTEN_MIN,
+  WRITTEN_MINI_DEFAULT,
+  WRITTEN_MINI_MIN,
   parseWindowsTasklist
 };

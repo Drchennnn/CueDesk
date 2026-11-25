@@ -603,6 +603,55 @@ export function buildLlmHistory(session, { excludeQuestionId = null, maxTurns = 
   return pairs.slice(-maxTurns * 2);
 }
 
+/**
+ * Build multimodal conversation history for Written Exam follow-up mode.
+ * Preserves problem screenshots as image_url parts (prioritizing recent turns) so the
+ * primary vision model keeps full visual context when the user asks follow-ups.
+ */
+export function buildWrittenHistory(session, { excludeQuestionId = null, maxTurns = 6, maxImages = 4 } = {}) {
+  if (!session || !Array.isArray(session.questions)) return [];
+  const completed = [];
+  for (const q of session.questions) {
+    if (excludeQuestionId && q.id === excludeQuestionId) continue;
+    const active = getActiveAttempt(q);
+    if (!active || active.status !== 'done') continue;
+    // Prefer primary model's clean text when the turn was multi-model parallel.
+    const primaryModel = Array.isArray(active.modelResults)
+      ? active.modelResults.find(r => r && r.status === 'done' && String(r.text || '').trim())
+      : null;
+    const assistantText = (primaryModel ? String(primaryModel.text) : String(active.text || '')).trim();
+    if (!assistantText) continue;
+    const images = Array.isArray(active.images)
+      ? active.images.filter(u => typeof u === 'string' && /^data:image\/(?:png|jpeg|webp);base64,/.test(u))
+      : [];
+    completed.push({ prompt: q.prompt || '请解答截图中的题目', images, assistantText });
+  }
+  const recent = completed.slice(-maxTurns);
+  // Allocate image budget from newest turn backwards so current problem screenshots always stay attached.
+  let remainingImages = maxImages;
+  const keptImagesPerTurn = new Array(recent.length).fill(null).map(() => []);
+  for (let i = recent.length - 1; i >= 0 && remainingImages > 0; i--) {
+    const imgs = recent[i].images;
+    if (!imgs.length) continue;
+    const take = imgs.slice(0, remainingImages);
+    keptImagesPerTurn[i] = take;
+    remainingImages -= take.length;
+  }
+  const history = [];
+  for (let i = 0; i < recent.length; i++) {
+    const turn = recent[i];
+    const imgs = keptImagesPerTurn[i];
+    const userContent = imgs.length
+      ? [...imgs.map(url => ({ type: 'image_url', image_url: { url } })), { type: 'text', text: turn.prompt }]
+      : turn.prompt;
+    history.push(
+      { role: 'user', content: userContent },
+      { role: 'assistant', content: turn.assistantText }
+    );
+  }
+  return history;
+}
+
 export function projectLegacyTurns(session) {
   return (session.questions || []).map(q => {
     const active = getActiveAttempt(q);

@@ -65,7 +65,7 @@ function normalizeShortcut(value) {
   return String(value || '').trim().toLowerCase().replace(/ctrl|commandorcontrol|cmdorctrl/g, 'control').split('+').map(x => x.trim()).filter(Boolean).sort().join('+');
 }
 function createCaptureSettings({ file, shortcuts }) {
-  let state = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { hotkeyRegion: 'Control+Shift+A' };
+  let state = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { hotkeyRegion: 'Control+Alt+A' };
   let registrationError = '';
   const getPublic = () => ({ hotkeyRegion: String(state.hotkeyRegion || ''), registrationError });
   function validate(patch, existing) {

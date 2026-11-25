@@ -16,6 +16,8 @@ import {
   IconX
 } from './Icons.jsx';
 import { EvidencePanel, Switch, useAutoSaveValue } from './SharedWidgets.jsx';
+import { CustomSelect } from './CustomSelect.jsx';
+import { computeLineDiff } from '../core/lineDiff.js';
 
 const DOC_TYPE_LABELS = {
   resume: '① 个人简历',
@@ -26,7 +28,7 @@ const DOC_TYPE_LABELS = {
   interview_memory: '② 面试记忆',
   role_prep: '③ 岗位预测',
   interview_asked_qa: '④ 实战真题',
-  technical_reference: '④ 1326 向量库',
+  technical_reference: '④ 技术参考库',
   technical_note: '④ 技术笔记',
   design_proposal: '设计方案',
   guideline: '规则 / JD',
@@ -60,25 +62,6 @@ function docLayer(d) {
   return 'archive';
 }
 
-/* Simple, crisp line diff for save confirmation */
-function computeLineDiff(beforeText, afterText) {
-  const a = String(beforeText || '').split(/\r?\n/);
-  const b = String(afterText || '').split(/\r?\n/);
-  const rows = [];
-  const max = Math.max(a.length, b.length);
-  for (let i = 0; i < max; i++) {
-    const la = a[i];
-    const lb = b[i];
-    if (la === lb) {
-      rows.push({ kind: 'same', line: i + 1, text: la ?? '' });
-    } else {
-      if (la !== undefined) rows.push({ kind: 'del', line: i + 1, text: la });
-      if (lb !== undefined) rows.push({ kind: 'add', line: i + 1, text: lb });
-    }
-  }
-  return rows;
-}
-
 function renderInlineMd(text) {
   const parts = String(text || '').split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
   return parts.map((p, idx) => {
@@ -86,6 +69,72 @@ function renderInlineMd(text) {
     if (p.startsWith('`') && p.endsWith('`')) return <code key={idx} className="mc-inline-code">{p.slice(1, -1)}</code>;
     return <React.Fragment key={idx}>{p}</React.Fragment>;
   });
+}
+
+function splitTableRow(line) {
+  const trimmed = String(line || '').trim();
+  const stripped = trimmed.replace(/^\|/, '').replace(/\|$/, '');
+  return stripped.split('|').map(c => c.trim());
+}
+
+function isTableSeparator(line) {
+  const trimmed = String(line || '').trim();
+  if (!trimmed.includes('|') || !trimmed.includes('-')) return false;
+  const cells = splitTableRow(trimmed);
+  return cells.length >= 1 && cells.every(c => /^:?-{3,}:?$/.test(c));
+}
+
+function parseMdChunkLines(mdText) {
+  const lines = String(mdText || '').split(/\r?\n/);
+  const items = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      items.push({ kind: 'spacer' });
+      i++;
+      continue;
+    }
+    // GFM pipe table detection (fixes M10)
+    if (trimmed.includes('|') && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+      const headers = splitTableRow(line);
+      const sepCells = splitTableRow(lines[i + 1]);
+      const aligns = sepCells.map(c => (c.startsWith(':') && c.endsWith(':') ? 'center' : c.endsWith(':') ? 'right' : 'left'));
+      const rows = [];
+      i += 2;
+      while (i < lines.length) {
+        const rowLine = lines[i];
+        const rowTrim = rowLine.trim();
+        if (!rowTrim || !rowTrim.includes('|')) break;
+        const cells = splitTableRow(rowLine);
+        while (cells.length < headers.length) cells.push('');
+        rows.push(cells.slice(0, headers.length));
+        i++;
+      }
+      items.push({ kind: 'table', headers, aligns, rows });
+      continue;
+    }
+    const h = /^(#{1,4})\s+(.+)$/.exec(trimmed);
+    if (h) {
+      items.push({ kind: 'heading', level: h[1].length, text: h[2] });
+      i++;
+      continue;
+    }
+    if (trimmed.startsWith('> ')) {
+      items.push({ kind: 'quote', text: trimmed.slice(2) });
+      i++;
+      continue;
+    }
+    if (/^[-*]\s+/.test(trimmed)) {
+      items.push({ kind: 'bullet', text: trimmed.replace(/^[-*]\s+/, '') });
+      i++;
+      continue;
+    }
+    items.push({ kind: 'para', text: line });
+    i++;
+  }
+  return items;
 }
 
 function SimpleMarkdownPreview({ content }) {
@@ -96,11 +145,11 @@ function SimpleMarkdownPreview({ content }) {
     let last = 0;
     let m;
     while ((m = fence.exec(text))) {
-      if (m.index > last) out.push({ kind: 'md', text: text.slice(last, m.index) });
+      if (m.index > last) out.push({ kind: 'md', items: parseMdChunkLines(text.slice(last, m.index)) });
       out.push({ kind: 'code', lang: m[1].trim(), text: m[2] });
       last = fence.lastIndex;
     }
-    if (last < text.length) out.push({ kind: 'md', text: text.slice(last) });
+    if (last < text.length) out.push({ kind: 'md', items: parseMdChunkLines(text.slice(last)) });
     return out;
   }, [content]);
 
@@ -114,37 +163,70 @@ function SimpleMarkdownPreview({ content }) {
             </pre>
           );
         }
-        return blk.text.split(/\r?\n/).map((line, j) => {
-          const trimmed = line.trim();
-          if (!trimmed) return <div key={`${i}-${j}`} style={{ height: 6 }} />;
-          const h = /^(#{1,4})\s+(.+)$/.exec(trimmed);
-          if (h) {
-            const lvl = h[1].length;
-            const size = lvl === 1 ? 17 : lvl === 2 ? 15 : 13.5;
-            return <div key={`${i}-${j}`} style={{ fontSize: size, fontWeight: 700, marginTop: 10, marginBottom: 4 }}>{h[2]}</div>;
+        return blk.items.map((item, j) => {
+          const key = `${i}-${j}`;
+          if (item.kind === 'spacer') return <div key={key} style={{ height: 6 }} />;
+          if (item.kind === 'heading') {
+            const size = item.level === 1 ? 17 : item.level === 2 ? 15 : 13.5;
+            return <div key={key} style={{ fontSize: size, fontWeight: 700, marginTop: 10, marginBottom: 4 }}>{renderInlineMd(item.text)}</div>;
           }
-          if (trimmed.startsWith('> ')) {
-            return <blockquote key={`${i}-${j}`} className="mc-md-quote">{renderInlineMd(trimmed.slice(2))}</blockquote>;
+          if (item.kind === 'quote') {
+            return <blockquote key={key} className="mc-md-quote">{renderInlineMd(item.text)}</blockquote>;
           }
-          if (/^[-*]\s+/.test(trimmed)) {
-            return <div key={`${i}-${j}`} style={{ paddingLeft: 14, position: 'relative' }}><span style={{ position: 'absolute', left: 3 }}>•</span>{renderInlineMd(trimmed.replace(/^[-*]\s+/, ''))}</div>;
+          if (item.kind === 'bullet') {
+            return <div key={key} style={{ paddingLeft: 14, position: 'relative' }}><span style={{ position: 'absolute', left: 3 }}>•</span>{renderInlineMd(item.text)}</div>;
           }
-          return <p key={`${i}-${j}`} style={{ margin: '2px 0' }}>{renderInlineMd(line)}</p>;
+          if (item.kind === 'table') {
+            return (
+              <div key={key} className="mc-md-table-wrap">
+                <table className="mc-md-table">
+                  <thead>
+                    <tr>
+                      {item.headers.map((h, ci) => (
+                        <th key={ci} style={{ textAlign: item.aligns[ci] || 'left' }}>{renderInlineMd(h)}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {item.rows.map((row, ri) => (
+                      <tr key={ri}>
+                        {row.map((cell, ci) => (
+                          <td key={ci} style={{ textAlign: item.aligns[ci] || 'left' }}>{renderInlineMd(cell)}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          }
+          return <p key={key} style={{ margin: '2px 0' }}>{renderInlineMd(item.text)}</p>;
         });
       })}
     </div>
   );
 }
 
-function NewRoleModal({ onClose, onCreated }) {
+function NewRoleModal({ availableProjects = [], onClose, onCreated }) {
   const [company, setCompany] = useState('');
   const [roleName, setRoleName] = useState('');
   const [location, setLocation] = useState('');
   const [resumeRef, setResumeRef] = useState('简历.md');
-  const [priorityProjects, setPriorityProjects] = useState('SRAG, IOD');
+  const [priorityProjects, setPriorityProjects] = useState(''); // Empty by default — never inject imaginary projects (fixes M03)
   const [jdText, setJdText] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+
+  const selectedList = useMemo(
+    () => priorityProjects.split(/[,，\s]+/).map(s => s.trim()).filter(Boolean),
+    [priorityProjects]
+  );
+
+  const toggleProjectChip = (name) => {
+    const exists = selectedList.includes(name);
+    const next = exists ? selectedList.filter(p => p !== name) : [...selectedList, name];
+    setPriorityProjects(next.join(', '));
+  };
 
   const submit = async (e) => {
     e.preventDefault();
@@ -197,15 +279,43 @@ function NewRoleModal({ onClose, onCreated }) {
             </div>
             <div className="mc-field">
               <label className="mc-field-label">投递简历版本</label>
-              <select className="mc-select" value={resumeRef} onChange={e => setResumeRef(e.target.value)}>
-                <option value="简历.md">简历.md（中文主简历）</option>
-                <option value="英文简历.md">英文简历.md（英文 CV）</option>
-              </select>
+              <CustomSelect
+                className="mc-select"
+                ariaLabel="投递简历版本"
+                value={resumeRef}
+                onChange={setResumeRef}
+                options={[
+                  { value: '简历.md', label: '简历.md（中文主简历）' },
+                  { value: '英文简历.md', label: '英文简历.md（英文 CV）' }
+                ]}
+              />
             </div>
           </div>
           <div className="mc-field">
-            <label className="mc-field-label">重点关联项目（逗号分隔）</label>
-            <input className="mc-input" value={priorityProjects} onChange={e => setPriorityProjects(e.target.value)} placeholder="SRAG, IOD, 九寨沟" />
+            <label className="mc-field-label">重点关联项目（可选，未选则留空）</label>
+            <input
+              className="mc-input"
+              value={priorityProjects}
+              onChange={e => setPriorityProjects(e.target.value)}
+              placeholder="可选：从下方当前资料库点选，或手填项目名（逗号分隔）"
+            />
+            {availableProjects.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 4 }}>
+                {availableProjects.map(p => {
+                  const picked = selectedList.includes(p);
+                  return (
+                    <button
+                      key={p}
+                      type="button"
+                      className={`mc-btn mc-btn-sm ${picked ? 'mc-btn-primary' : ''}`}
+                      onClick={() => toggleProjectChip(p)}
+                    >
+                      {picked ? `${p} ✓` : `+ ${p}`}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
           <div className="mc-field">
             <label className="mc-field-label">岗位 JD 原文（可选，可稍后在线编辑）</label>
@@ -506,6 +616,42 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
 
   const ls = draft?.layer_summary || {};
   const rolesMeta = draft?.roles_meta || [];
+  const totalIndexedDocs = draft?.files?.length || 0;
+  const techRefCount = ls.technical_reference ?? 0;
+
+  // Derive real existing projects from this library for NewRoleModal (M03)
+  const availableProjects = useMemo(() => {
+    const names = new Set();
+    for (const d of draft?.documents || []) {
+      if (d.status === 'retired' || d.status === 'missing') continue;
+      if (d.document_type === 'project_fact') {
+        const stem = d.project_id || String(d.title || '').replace(/\.(md|txt|pdf)$/i, '').trim();
+        if (stem) names.add(stem);
+      }
+    }
+    return [...names];
+  }, [draft?.documents]);
+
+  // Dynamic sample queries based on actual library content (M09)
+  const labSamples = useMemo(() => {
+    const activeDocs = (draft?.documents || []).filter(
+      d => d.status !== 'retired' && d.status !== 'missing' && d.document_type !== 'technical_reference'
+    );
+    const out = [];
+    for (const d of activeDocs.slice(0, 2)) {
+      const cleanTitle = String(d.title || '').replace(/\.(md|txt|pdf)$/i, '').trim();
+      if (cleanTitle) out.push(`请结合「${cleanTitle}」说明核心要点`);
+    }
+    if (out.length < 3) out.push('请做一个两分钟的自我介绍');
+    if (out.length < 4 && techRefCount > 0) out.push('高并发场景下缓存穿透和雪崩如何处理？');
+    return out;
+  }, [draft?.documents, techRefCount]);
+
+  // LCS Diff calculation for edit mode (M05)
+  const docDiff = useMemo(
+    () => (showDiff ? computeLineDiff(docOriginal, docContent) : null),
+    [showDiff, docOriginal, docContent]
+  );
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
@@ -550,12 +696,30 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
       {subTab === 'overview' && (
         <div className="mc-page-scroll">
           <div className="mc-page-inner">
-            {draft?.material_status && (
-              <div className={`mc-alert ${draft.material_status.level === 'warning' ? 'mc-alert-warn' : 'mc-alert-ok'}`}>
-                {draft.material_status.message}
+            {!draft?.root ? (
+              <div className="mc-alert mc-alert-warn" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                <div>
+                  <strong>尚未绑定本地资料文件夹</strong>
+                  <div style={{ fontSize: 12, marginTop: 2 }}>
+                    选择一个存放简历、项目资料或笔记的文件夹，绑定后即可在此索引、阅读并启用面试防编造引用。
+                  </div>
+                </div>
+                <button type="button" className="mc-btn mc-btn-sm mc-btn-primary" onClick={() => void pickRootFolder()}>
+                  <IconFolder size={13} /> 选择资料文件夹
+                </button>
               </div>
+            ) : (
+              <>
+                {draft?.material_status && !/设置中/.test(draft.material_status.message || '') && (
+                  <div className={`mc-alert ${draft.material_status.level === 'warning' ? 'mc-alert-warn' : 'mc-alert-ok'}`}>
+                    {draft.material_status.message}
+                  </div>
+                )}
+                {draft?.warning && !/未配置/.test(draft.warning) && (
+                  <div className="mc-alert mc-alert-warn" style={{ whiteSpace: 'pre-wrap' }}>{draft.warning}</div>
+                )}
+              </>
             )}
-            {draft?.warning && <div className="mc-alert mc-alert-warn" style={{ whiteSpace: 'pre-wrap' }}>{draft.warning}</div>}
             {error && <div className="mc-alert mc-alert-err">{error}</div>}
 
             {/* 5-Layer Architecture Summary Cards */}
@@ -577,8 +741,10 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
               </div>
               <div className="mc-layer-card">
                 <div className="mc-layer-tag">④ 客观 & 实战真题</div>
-                <div className="mc-layer-num">{(ls.technical_reference ?? 0) + (ls.interview_asked_qa ?? 0)}</div>
-                <div className="mc-field-hint">Qdrant {ls.technical_reference ?? 0} 条 + 实战补充 {ls.interview_asked_qa ?? 0} 篇</div>
+                <div className="mc-layer-num">{techRefCount + (ls.interview_asked_qa ?? 0)}</div>
+                <div className="mc-field-hint">
+                  {techRefCount > 0 ? `参考库 ${techRefCount} 条 + ` : ''}实战补充 {ls.interview_asked_qa ?? 0} 篇
+                </div>
               </div>
             </div>
 
@@ -586,13 +752,24 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
               <div className="mc-card-head">
                 <div>
                   <h3 className="mc-card-title">目录绑定与当前面试岗位</h3>
-                  <p className="mc-card-desc">修改 Markdown 文件后下次提问自动生效；切换岗位仅变更 ③ 层预测范围与 JD 上下文。</p>
+                  <p className="mc-card-desc">
+                    {draft?.root
+                      ? `已索引 ${totalIndexedDocs} 篇有效文档 · 面试中使用：${draft?.enabled ? '开' : '关'}`
+                      : '绑定目录后，修改 Markdown 文件下次提问自动生效。'}
+                  </p>
                 </div>
-                <Switch
-                  checked={!!draft?.enabled}
-                  onChange={(v) => setDraft(prev => ({ ...(prev || {}), enabled: v }))}
-                  aria-label="启用本地面试资料库"
-                />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                  <span className={`mc-badge ${draft?.enabled && draft?.root ? 'mc-badge-ok' : ''}`}>
+                    {draft?.enabled && draft?.root ? '面试中使用：开' : '面试中使用：关'}
+                  </span>
+                  <Switch
+                    checked={!!draft?.enabled}
+                    disabled={!draft?.root}
+                    title={!draft?.root ? '请先选择资料文件夹后再开启' : (draft?.enabled ? '关闭面试中资料库检索' : '开启面试中资料库检索')}
+                    onChange={(v) => setDraft(prev => ({ ...(prev || {}), enabled: v }))}
+                    aria-label="面试中启用本地资料库"
+                  />
+                </div>
               </div>
               <div className="mc-srow">
                 <div>
@@ -608,7 +785,7 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
                       onChange={e => setDraft(prev => ({ ...(prev || {}), root: e.target.value, role: '' }))}
                     />
                     <button type="button" className="mc-btn" onClick={() => void pickRootFolder()}>
-                      <IconFolder size={14} /> 选择
+                      <IconFolder size={14} /> 选择资料文件夹
                     </button>
                   </div>
                 </div>
@@ -619,14 +796,16 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
                   <div className="mc-srow-desc">共发现 {rolesMeta.length} 个标准岗位档案</div>
                 </div>
                 <div className="mc-srow-control">
-                  <select
+                  <CustomSelect
                     className="mc-select"
+                    ariaLabel="当前默认面试岗位"
                     value={draft?.role || ''}
-                    onChange={e => setDraft(prev => ({ ...(prev || {}), role: e.target.value }))}
-                  >
-                    <option value="">通用（不限定岗位）</option>
-                    {(draft?.roles || []).map(r => <option key={r} value={r}>{r}</option>)}
-                  </select>
+                    onChange={val => setDraft(prev => ({ ...(prev || {}), role: val }))}
+                    options={[
+                      { value: '', label: '通用（不限定岗位）' },
+                      ...(draft?.roles || []).map(r => ({ value: r, label: r }))
+                    ]}
+                  />
                 </div>
               </div>
             </section>
@@ -635,8 +814,8 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
             <section className="mc-card">
               <div className="mc-card-head">
                 <div>
-                  <h3 className="mc-card-title">本地 Qdrant 向量 RAG 状态</h3>
-                  <p className="mc-card-desc">技术八股底座采用本地持久化 Qdrant（Dense + Sparse RRF + Rerank），首轮清晰客观题自动跳过改写降延迟。</p>
+                  <h3 className="mc-card-title">本地向量 RAG 状态（可选增强）</h3>
+                  <p className="mc-card-desc">配置本机 Qdrant 向量服务后，技术参考库支持 Dense + Sparse 混合召回；未启用时自动使用本地词项检索。</p>
                 </div>
                 <span className={`mc-badge ${ragStatus?.online ? 'mc-badge-ok' : draft?.vector_rag?.enabled ? 'mc-badge-warn' : ''}`}>
                   {ragStatus?.online ? '在线就绪' : draft?.vector_rag?.enabled ? '待唤醒 / 离线' : '未启用'}
@@ -644,28 +823,34 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
               </div>
               <div className="mc-card-body" style={{ gap: 8 }}>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  <span className="mc-badge">条目数：{ragStatus?.entries ?? ls.technical_reference ?? 0}</span>
+                  <span className="mc-badge">向量条目：{ragStatus?.entries ?? techRefCount}</span>
                   {ragStatus?.model && <span className="mc-badge">向量模型：{ragStatus.model}</span>}
                   {ragStatus?.endpoint && <span className="mc-badge">本地服务：{ragStatus.endpoint}</span>}
                   <span className="mc-badge">归档/练习隔离：{ls.archived_or_drill ?? 0} 份</span>
                 </div>
                 {ragStatus?.error && <div className="mc-field-hint">说明：{ragStatus.error}（首次提问时会自动拉起本地服务）</div>}
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, paddingTop: 4 }}>
-                  <button
-                    type="button"
-                    className="mc-btn mc-btn-sm"
-                    onClick={() => { setSubTab('workspace'); void openDocumentInPane('复盘与更新规则.md', 'preview'); }}
-                  >
-                    <IconFileText size={13} /> 查看《复盘与更新规则》
-                  </button>
-                  <button
-                    type="button"
-                    className="mc-btn mc-btn-sm"
-                    onClick={() => { setSubTab('workspace'); void openDocumentInPane('新增岗位与预测题规则.md', 'preview'); }}
-                  >
-                    <IconFileText size={13} /> 查看《新增岗位与预测题规则》
-                  </button>
-                </div>
+                {draft?.root && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, paddingTop: 4 }}>
+                    {(draft?.documents || []).some(d => d.file_path === '复盘与更新规则.md') && (
+                      <button
+                        type="button"
+                        className="mc-btn mc-btn-sm"
+                        onClick={() => { setSubTab('workspace'); void openDocumentInPane('复盘与更新规则.md', 'preview'); }}
+                      >
+                        <IconFileText size={13} /> 查看《复盘与更新规则》
+                      </button>
+                    )}
+                    {(draft?.documents || []).some(d => d.file_path === '新增岗位与预测题规则.md') && (
+                      <button
+                        type="button"
+                        className="mc-btn mc-btn-sm"
+                        onClick={() => { setSubTab('workspace'); void openDocumentInPane('新增岗位与预测题规则.md', 'preview'); }}
+                      >
+                        <IconFileText size={13} /> 查看《新增岗位与预测题规则》
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             </section>
 
@@ -704,17 +889,14 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
                             >
                               {isActive ? '当前岗位 ✓' : '设为当前'}
                             </button>
-                            <select
-                              className="mc-select"
-                              style={{ height: 24, fontSize: 11.5, padding: '0 6px', width: 'auto' }}
-                              aria-label={`${r.directory} 状态`}
+                            <CustomSelect
+                              className="mc-filter-select"
+                              style={{ height: 24, fontSize: 11.5, width: 92 }}
+                              ariaLabel={`${r.directory} 状态`}
                               value={r.status || 'preparing'}
-                              onChange={e => void handleUpdateRoleStatus(r.directory, e.target.value)}
-                            >
-                              {Object.entries(ROLE_STATUS_META).map(([k, v]) => (
-                                <option key={k} value={k}>{v.label}</option>
-                              ))}
-                            </select>
+                              onChange={val => void handleUpdateRoleStatus(r.directory, val)}
+                              options={Object.entries(ROLE_STATUS_META).map(([k, v]) => ({ value: k, label: v.label }))}
+                            />
                             <button
                               type="button"
                               className="mc-btn mc-btn-sm mc-btn-ghost"
@@ -759,7 +941,7 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
                   className="mc-search-input"
                   value={docSearch}
                   onChange={e => setDocSearch(e.target.value)}
-                  placeholder="搜索标题 / 路径（搜关键词可查1326库）"
+                  placeholder={techRefCount > 0 ? `按文件名/标题查找（共 ${totalIndexedDocs} 篇，搜词含 ${techRefCount} 条参考库）` : `按文件名 / 标题查找（共 ${totalIndexedDocs} 篇）`}
                 />
               </div>
             </div>
@@ -787,19 +969,22 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
 
             {/* Drag-drop / button file importer */}
             <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-              <select
-                className="mc-select"
-                style={{ height: 26, fontSize: 11.5, padding: '0 6px', flex: 1 }}
+              <CustomSelect
+                className="mc-filter-select"
+                style={{ height: 26, fontSize: 11.5, flex: 1 }}
+                ariaLabel="导入目标目录"
                 value={importTarget}
-                onChange={e => setImportTarget(e.target.value)}
-                aria-label="导入目标目录"
-              >
-                <option value="项目资料">导入到：项目资料/</option>
-                <option value="通用问答">导入到：通用问答/</option>
-                <option value="通用技术知识/实战真题补充">导入到：实战真题补充/</option>
-                {draft?.role && <option value={`岗位档案/${draft.role}/岗位准备`}>导入到：{draft.role}/岗位准备/</option>}
-                {draft?.role && <option value={`岗位档案/${draft.role}/外部面经`}>导入到：{draft.role}/外部面经/</option>}
-              </select>
+                onChange={setImportTarget}
+                options={[
+                  { value: '项目资料', label: '导入到：项目资料/' },
+                  { value: '通用问答', label: '导入到：通用问答/' },
+                  { value: '通用技术知识/实战真题补充', label: '导入到：实战真题补充/' },
+                  ...(draft?.role ? [
+                    { value: `岗位档案/${draft.role}/岗位准备`, label: `导入到：${draft.role}/岗位准备/` },
+                    { value: `岗位档案/${draft.role}/外部面经`, label: `导入到：${draft.role}/外部面经/` }
+                  ] : [])
+                ]}
+              />
               <button
                 type="button"
                 className="mc-btn mc-btn-sm"
@@ -893,7 +1078,7 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
                   <div className="mc-kb-right-scroll">
                     {isSelectedReadOnly && selectedDoc.document_type === 'technical_reference' && (
                       <div className="mc-alert" style={{ marginBottom: 12 }}>
-                        此条目属于本地 Qdrant 1,326 向量库只读真源，已锁定保护以防破坏向量索引；新增实战真题请写入 <code>通用技术知识/实战真题补充/</code>。
+                        此条目属于本地技术参考向量库只读真源（共 {techRefCount} 条），已锁定保护以防破坏索引；新增实战真题请写入 <code>通用技术知识/实战真题补充/</code>。
                       </div>
                     )}
                     <SimpleMarkdownPreview content={docContent} />
@@ -925,15 +1110,22 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
                       </button>
                     </div>
 
-                    {showDiff ? (
-                      <div className="mc-kb-diff-box">
-                        {computeLineDiff(docOriginal, docContent).map((row, idx) => (
-                          <div key={idx} className={`mc-kb-diff-line is-${row.kind}`}>
-                            <span className="mc-kb-diff-ln">{row.line}</span>
-                            <span className="mc-kb-diff-sign">{row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' '}</span>
-                            <span>{row.text}</span>
-                          </div>
-                        ))}
+                    {showDiff && docDiff ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, gap: 6 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                          <span className="mc-badge mc-badge-ok">+{docDiff.addedCount} 行新增</span>
+                          <span className="mc-badge mc-badge-err">-{docDiff.removedCount} 行删除</span>
+                          <span className="mc-field-hint">共 {docDiff.unchangedCount} 行未改动</span>
+                        </div>
+                        <div className="mc-kb-diff-box">
+                          {docDiff.rows.map((row, idx) => (
+                            <div key={idx} className={`mc-kb-diff-line is-${row.kind}`}>
+                              <span className="mc-kb-diff-ln">{row.newLine ?? row.oldLine ?? ''}</span>
+                              <span className="mc-kb-diff-sign">{row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' '}</span>
+                              <span>{row.text}</span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     ) : (
                       <textarea
@@ -1076,17 +1268,17 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
                               profile: { ...p.profile, skills: p.profile.skills.map((x, i) => i === idx ? { ...x, area: e.target.value } : x) }
                             }))}
                           />
-                          <select
+                          <CustomSelect
                             className="mc-select"
                             style={{ width: 200 }}
+                            ariaLabel="技能熟练度"
                             value={sk.level || 'ai_assisted_verified'}
-                            onChange={e => setPersonaData(p => ({
+                            onChange={val => setPersonaData(p => ({
                               ...p,
-                              profile: { ...p.profile, skills: p.profile.skills.map((x, i) => i === idx ? { ...x, level: e.target.value } : x) }
+                              profile: { ...p.profile, skills: p.profile.skills.map((x, i) => i === idx ? { ...x, level: val } : x) }
                             }))}
-                          >
-                            {SKILL_LEVELS.map(lv => <option key={lv.id} value={lv.id}>{lv.label}</option>)}
-                          </select>
+                            options={SKILL_LEVELS.map(lv => ({ value: lv.id, label: lv.label }))}
+                          />
                           <button
                             type="button"
                             className="mc-icon-btn is-danger"
@@ -1206,9 +1398,14 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
             <section className="mc-card">
               <div className="mc-card-head">
                 <div>
-                  <h3 className="mc-card-title">5 层交互式检索测试台</h3>
-                  <p className="mc-card-desc">直观检验个人真源、当前岗位预测、实战真题补充与 Qdrant 1,326 向量库的实际召回与防幻觉门禁。</p>
+                  <h3 className="mc-card-title">问答检索测试台（已索引 {totalIndexedDocs} 篇）</h3>
+                  <p className="mc-card-desc">
+                    用于测试<strong>面试问答时的分层召回与防幻觉门禁</strong>（区别于「资料工作台」的按文件名/路径查找）。
+                  </p>
                 </div>
+                <span className={`mc-badge ${draft?.enabled && draft?.root ? 'mc-badge-ok' : 'mc-badge-warn'}`}>
+                  {draft?.enabled && draft?.root ? `当前检索范围：${draft?.role || '通用'} · ${totalIndexedDocs} 篇` : '请先启用资料库'}
+                </span>
               </div>
               <div className="mc-card-body" style={{ gap: 10 }}>
                 <div style={{ display: 'flex', gap: 8 }}>
@@ -1217,10 +1414,10 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
                     value={testQuestion}
                     onChange={e => setTestQuestion(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) void runRetrievalTest(); }}
-                    placeholder="输入面试题测试 5 层召回，例如：Agent 的 Trace、Span 和 Evaluator 是怎么串联的？"
+                    placeholder="输入面试问题，测试当前资料库会命中哪些原文切片…"
                   />
                   <button type="button" className="mc-btn mc-btn-primary" disabled={testing || !draft?.enabled} onClick={() => void runRetrievalTest()}>
-                    <IconSparkles size={14} /> {testing ? '检索中…' : '测试召回'}
+                    <IconSparkles size={14} /> {testing ? '检索中…' : '测试问答检索'}
                   </button>
                   <button type="button" className="mc-btn" onClick={() => void loadLastSelection()}>
                     最近选材
@@ -1228,12 +1425,7 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
                 </div>
 
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  {[
-                    '介绍一下你在 SRAG 里负责的切块与检索评测',
-                    'Agent 的 tool_use 底层怎么触发代码执行？',
-                    'Trace、Span 和 Evaluator 如何串起来？',
-                    '高并发秒杀怎么防超卖和做幂等？'
-                  ].map(sample => (
+                  {labSamples.map(sample => (
                     <button
                       key={sample}
                       type="button"
@@ -1259,14 +1451,29 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
                         <span className="mc-badge mc-badge-ok">快速通道（跳过改写）</span>
                       )}
                     </div>
-                    <EvidencePanel
-                      inline
-                      attempt={{
-                        evidence: previewResult.evidence || [],
-                        diagnostics: previewResult.diagnostics || [],
-                        evidenceRefs: (previewResult.evidence || []).map(e => e.evidence_id)
-                      }}
-                    />
+                    {(previewResult.evidence || []).length === 0 ? (
+                      <div className="mc-alert" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <strong>本次问答召回未命中直接切片</strong>
+                        <div className="mc-field-hint">
+                          检索范围：已索引 {totalIndexedDocs} 篇（岗位：{draft?.role || '通用'} · 向量服务：{ragStatus?.online ? '在线' : '未启用，仅词项匹配'}）。
+                          注意：问答检索按<strong>正文语义与问题关键词</strong>评分，仅输入文件名可能不命中；若要按文件名查找文档，请前往「资料工作台」。
+                        </div>
+                        <div>
+                          <button type="button" className="mc-btn mc-btn-sm" onClick={() => setSubTab('workspace')}>
+                            返回资料工作台查看已索引文档 →
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <EvidencePanel
+                        inline
+                        attempt={{
+                          evidence: previewResult.evidence || [],
+                          diagnostics: previewResult.diagnostics || [],
+                          evidenceRefs: (previewResult.evidence || []).map(e => e.evidence_id)
+                        }}
+                      />
+                    )}
                   </div>
                 )}
               </div>
@@ -1277,6 +1484,7 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
 
       {newRoleOpen && (
         <NewRoleModal
+          availableProjects={availableProjects}
           onClose={() => setNewRoleOpen(false)}
           onCreated={(res) => {
             setNewRoleOpen(false);

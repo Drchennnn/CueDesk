@@ -205,8 +205,10 @@ function createRouter({ directory, defaultsDirectory, safeStorage, transport }) 
     ].join('\n\n');
   }
   function buildMessages(input, kind = 'answer') {
-    const mode = state.mode;
-    const system = loadPrompt(mode, kind);
+    const mode = ['auto', 'written', 'interview'].includes(input.scene) ? input.scene : state.mode;
+    const baseSystem = loadPrompt(mode, kind);
+    const customWritten = mode === 'written' ? String(input.writtenPrompt || '').trim().slice(0, 2000) : '';
+    const system = customWritten ? `${baseSystem}\n\n【用户自定义笔试要求】\n${customWritten}` : baseSystem;
     if (mode === 'interview' && Array.isArray(input.originalMessages)) {
       return input.originalMessages.map((message, index) => {
         if (index === 0 && message.role === 'system' && typeof message.content === 'string' && input.originalPersona && message.content.startsWith(input.originalPersona)) {
@@ -226,8 +228,23 @@ function createRouter({ directory, defaultsDirectory, safeStorage, transport }) 
       messages.push({ role: 'user', content: '以下是参考资料：\n' + refs });
       messages.push({ role: 'assistant', content: mode === 'written' ? '收到。' : '我会根据这些资料回答，并避免编造个人经历。' });
     }
+    let historyImagesLeft = 6;
     for (const m of (input.history || []).slice(-20)) {
-      if (['user', 'assistant'].includes(m.role) && typeof m.content === 'string') messages.push({ role: m.role, content: m.content.slice(0, 16000) });
+      if (!m || !['user', 'assistant'].includes(m.role)) continue;
+      if (typeof m.content === 'string') {
+        messages.push({ role: m.role, content: m.content.slice(0, 16000) });
+      } else if (m.role === 'user' && Array.isArray(m.content)) {
+        const parts = [];
+        for (const p of m.content) {
+          if (p && p.type === 'image_url' && typeof p.image_url?.url === 'string' && /^data:image\/(?:png|jpeg|webp);base64,/.test(p.image_url.url) && historyImagesLeft > 0) {
+            parts.push({ type: 'image_url', image_url: { url: p.image_url.url } });
+            historyImagesLeft--;
+          } else if (p && p.type === 'text' && typeof p.text === 'string' && p.text.trim()) {
+            parts.push({ type: 'text', text: p.text.slice(0, 16000) });
+          }
+        }
+        if (parts.length) messages.push({ role: 'user', content: parts });
+      }
     }
     const question = String(input.freeQuestion || input.question || '').trim() || (mode === 'written' ? (kind === 'shot' ? '请直接回答截图中的题目。' : '请直接回答最新题目。') : kind === 'shot'
       ? '请识别截图中的问题或内容，并按照当前场景给出答案和必要的依据。'
@@ -267,21 +284,36 @@ function createRouter({ directory, defaultsDirectory, safeStorage, transport }) 
   async function chat(messages, signal, onProgress = () => {}, options = {}) {
     if (signal?.aborted) throw abortError();
     // Snapshot candidates so a settings change cannot mix configurations mid-request.
-    const endpoints = state.endpoints.filter(e => e.enabled && e.baseUrl && e.model).map(e => ({ ...e }));
+    let endpoints = state.endpoints.filter(e => e.enabled && e.baseUrl && e.model).map(e => ({ ...e }));
     const retryOnRefusal = state.retryOnRefusal !== false;
     if (!endpoints.length) throw new Error('请在设置的“视觉模型”中配置至少一个接口');
-    if (options.answerMode && (options.simultaneousAnswers ?? state.simultaneousAnswers) === true) {
+    const simultaneous = Boolean(options.answerMode && (options.simultaneousAnswers ?? state.simultaneousAnswers) === true);
+    if (!simultaneous && options.endpointId) {
+      const preferredIdx = endpoints.findIndex(e => e.id === options.endpointId);
+      if (preferredIdx > 0) {
+        const [picked] = endpoints.splice(preferredIdx, 1);
+        endpoints = [picked, ...endpoints];
+      }
+    }
+    if (simultaneous) {
       const onResult = result => { if (!signal?.aborted) options.onResult?.(result); };
       let completed = 0;
       onProgress(`同时回答：0/${endpoints.length} 已完成`);
       // Publish all placeholders first, preserving configuration order regardless of completion order.
       endpoints.forEach((endpoint, index) => onResult({ id: endpoint.id, index, name: endpoint.name, model: endpoint.model, status: 'pending', text: '' }));
       const results = await Promise.all(endpoints.map(async (endpoint, index) => {
+        const startedAt = Date.now();
         const result = { id: endpoint.id, index, name: endpoint.name, model: endpoint.model };
-        try { result.text = await attempt(endpoint, messages, signal); result.status = 'done'; }
-        catch (error) {
+        try {
+          result.text = await attempt(endpoint, messages, signal);
+          result.status = 'done';
+          result.latencyMs = Date.now() - startedAt;
+        } catch (error) {
           if (signal?.aborted) throw abortError();
-          result.status = 'error'; result.error = errorLabel(error.code || 'NETWORK'); result.text = '';
+          result.status = 'error';
+          result.error = errorLabel(error.code || 'NETWORK');
+          result.text = '';
+          result.latencyMs = Date.now() - startedAt;
         }
         if (signal?.aborted) throw abortError();
         onResult(result);
@@ -297,10 +329,17 @@ function createRouter({ directory, defaultsDirectory, safeStorage, transport }) 
     for (let i = 0; i < endpoints.length; i++) {
       if (signal?.aborted) throw abortError();
       const endpoint = endpoints[i];
+      const startedAt = Date.now();
       onProgress(`正在请求 ${endpoint.name}（${i + 1}/${endpoints.length}）`);
       try {
         const text = await attempt(endpoint, messages, signal);
-        onProgress(`已由 ${endpoint.name} 回答`);
+        const latencyMs = Date.now() - startedAt;
+        onProgress(`已由 ${endpoint.name} 回答 (${latencyMs}ms)`);
+        if (options.onResult) {
+          try {
+            options.onResult({ id: endpoint.id, index: 0, name: endpoint.name, model: endpoint.model, status: 'done', text, latencyMs });
+          } catch {}
+        }
         return text;
       } catch (err) {
         if (signal?.aborted) throw abortError();

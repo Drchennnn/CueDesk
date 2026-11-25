@@ -24,6 +24,7 @@ import {
   useAutoSaveValue,
   useKeySlot
 } from './SharedWidgets.jsx';
+import { CustomSelect } from './CustomSelect.jsx';
 
 const NAV_GROUPS = [
   {
@@ -54,7 +55,7 @@ const ALL_TABS = NAV_GROUPS.flatMap(g => g.items);
 const TEST_RESULT_COPY = {
   locale: 'zh-CN',
   testing: '正在测试连接…',
-  success: '连接成功',
+  success: (ms) => (typeof ms === 'number' ? `连接成功 · ${ms} ms` : '连接成功'),
   failed: '连接失败',
   hintLabel: '建议',
   retryableNote: '可重试',
@@ -64,6 +65,44 @@ const TEST_RESULT_COPY = {
   detailRequestId: '请求 ID',
   detailTime: '时间'
 };
+
+function parseHotkeyConflict(rawError, bindings) {
+  const text = String(rawError || '').trim();
+  if (!text) return null;
+  const cleanDetail = text.replace(/请在设置中更换[。.]?/, '').replace(/[，,。.;；\s]+$/, '').trim();
+  const { hotkey, hotkeyShot, hotkeyRegion } = bindings || {};
+  const matches = (acc) => acc && text.toLowerCase().includes(String(acc).toLowerCase());
+  if (matches(hotkeyRegion) || /框选|region/i.test(text)) {
+    return {
+      feature: '框选区域截图识题',
+      buttonLabel: '更换框选快捷键',
+      targetSection: 'hotkeyRegion',
+      detail: cleanDetail
+    };
+  }
+  if (matches(hotkeyShot) || /全屏|shot/i.test(text)) {
+    return {
+      feature: '静默全屏截图识题',
+      buttonLabel: '更换全屏截图快捷键',
+      targetSection: 'hotkeyShot',
+      detail: cleanDetail
+    };
+  }
+  if (matches(hotkey) || /隐藏|显示|toggle/i.test(text)) {
+    return {
+      feature: '隐藏 / 显示主窗口',
+      buttonLabel: '更换显隐快捷键',
+      targetSection: 'hotkeyToggle',
+      detail: cleanDetail
+    };
+  }
+  return {
+    feature: '全局快捷键',
+    buttonLabel: '前往快捷键设置',
+    targetSection: 'shortcuts',
+    detail: cleanDetail
+  };
+}
 
 function publicSlot(settings, slot) {
   switch (slot) {
@@ -240,24 +279,51 @@ function WindowControlsCard() {
 
 export function SettingsView({
   initialTab = 'models',
+  focusRequest = null,
   settings,
   workbenchPrefs,
   windowState,
+  activeSession = null,
   onSaved,
   onUpdateWorkbenchPrefs,
   onToggleSecurity,
   onSetSecurityPrefs,
+  onResumeWorkbench,
+  onOpenQuickStart,
+  onOpenDiagnostics,
   closeRef
 }) {
   const normalizedInitial = ALL_TABS.some(t => t.id === initialTab) ? initialTab : 'models';
   const [activeTab, setActiveTab] = useState(normalizedInitial);
+  const [highlightedSection, setHighlightedSection] = useState('');
   const [wbShortcutsOpen, setWbShortcutsOpen] = useState(false);
   const rootRef = useRef(null);
   const scrollRef = useRef(null);
 
   useEffect(() => {
     if (initialTab && ALL_TABS.some(t => t.id === initialTab)) setActiveTab(initialTab);
-  }, [initialTab]);
+  }, [initialTab, focusRequest?.seq]);
+
+  const jumpToSection = useCallback((tabId, sectionId) => {
+    if (tabId && ALL_TABS.some(t => t.id === tabId)) setActiveTab(tabId);
+    if (!sectionId) return;
+    setHighlightedSection(sectionId);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = document.getElementById(`settings-section-${sectionId}`);
+        el?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+      });
+    });
+    const timer = setTimeout(() => {
+      setHighlightedSection(prev => (prev === sectionId ? '' : prev));
+    }, 2400);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!focusRequest?.section) return undefined;
+    return jumpToSection(null, focusRequest.section);
+  }, [focusRequest?.seq, focusRequest?.section, jumpToSection]);
 
   // Form states mirrored from settings
   const [live, setLive] = useState(settings);
@@ -283,7 +349,7 @@ export function SettingsView({
 
   const [hotkey, setHotkey] = useState(settings.ui.hotkeyToggle || 'Control+B');
   const [hotkeyShot, setHotkeyShot] = useState(settings.ui.hotkeyShot || 'Control+Shift+S');
-  const [hotkeyRegion, setHotkeyRegion] = useState(settings.capture?.hotkeyRegion ?? 'Control+Shift+A');
+  const [hotkeyRegion, setHotkeyRegion] = useState(settings.capture?.hotkeyRegion ?? 'Control+Alt+A');
 
   const [theme, setTheme] = useState(settings.ui.theme || 'light');
   const [fontScale, setFontScale] = useState(settings.ui.fontScale || 'medium');
@@ -329,7 +395,7 @@ export function SettingsView({
     micDeviceId: s.audio?.micDeviceId || '',
     hotkey: s.ui.hotkeyToggle || 'Control+B',
     hotkeyShot: s.ui.hotkeyShot || 'Control+Shift+S',
-    hotkeyRegion: s.capture?.hotkeyRegion ?? 'Control+Shift+A',
+    hotkeyRegion: s.capture?.hotkeyRegion ?? 'Control+Alt+A',
     theme: s.ui.theme || 'light',
     fontScale: s.ui.fontScale || 'medium',
     uiLang: s.ui.lang || 'zh',
@@ -450,18 +516,21 @@ export function SettingsView({
   const renderProviderSelect = (capability, curUrl, curModel, onPick) => {
     const presets = presetsForCapability(capability).filter(p => p.baseUrl && p.model);
     const current = findPresetByEndpoint(curUrl, curModel, capability);
+    const opts = [
+      ...(!current ? [{ value: '', label: '自定义服务商' }] : []),
+      ...presets.map(p => ({ value: p.id, label: p.nameZh || p.nameEn }))
+    ];
     return (
-      <select
+      <CustomSelect
         className="mc-select"
+        ariaLabel="服务商预设"
         value={current?.id ?? ''}
-        onChange={e => {
-          const p = findPresetById(e.target.value);
+        options={opts}
+        onChange={val => {
+          const p = findPresetById(val);
           if (p) onPick(p);
         }}
-      >
-        {!current && <option value="">自定义服务商</option>}
-        {presets.map(p => <option key={p.id} value={p.id}>{p.nameZh || p.nameEn}</option>)}
-      </select>
+      />
     );
   };
 
@@ -530,7 +599,7 @@ export function SettingsView({
               </span>
             )}
           </div>
-          {renderProviderConnectionResult(TEST_RESULT_COPY, st, keyUrl)}
+          {renderProviderConnectionResult(TEST_RESULT_COPY, st, keyUrl, onOpenDiagnostics)}
         </div>
       </div>
     );
@@ -554,6 +623,36 @@ export function SettingsView({
   };
 
   const activeTabMeta = ALL_TABS.find(t => t.id === activeTab) || ALL_TABS[0];
+  const hotkeyConflict = useMemo(
+    () => parseHotkeyConflict(live.capture?.registrationError, { hotkey, hotkeyShot, hotkeyRegion }),
+    [live.capture?.registrationError, hotkey, hotkeyShot, hotkeyRegion]
+  );
+  const recommendedHotkeyFix = useMemo(() => {
+    if (!hotkeyConflict) return null;
+    if (hotkeyConflict.targetSection === 'hotkeyRegion') {
+      const next = hotkeyRegion.toLowerCase() === 'control+alt+a' ? 'Alt+Shift+A' : 'Control+Alt+A';
+      return {
+        label: `一键改为 ${next.replace(/Control/g, 'Ctrl')}`,
+        apply: () => setHotkeyRegion(next)
+      };
+    }
+    if (hotkeyConflict.targetSection === 'hotkeyShot') {
+      const next = hotkeyShot.toLowerCase() === 'control+alt+s' ? 'Alt+Shift+S' : 'Control+Alt+S';
+      return {
+        label: `一键改为 ${next.replace(/Control/g, 'Ctrl')}`,
+        apply: () => setHotkeyShot(next)
+      };
+    }
+    if (hotkeyConflict.targetSection === 'hotkeyToggle') {
+      const next = hotkey.toLowerCase() === 'control+alt+b' ? 'Alt+Shift+B' : 'Control+Alt+B';
+      return {
+        label: `一键改为 ${next.replace(/Control/g, 'Ctrl')}`,
+        apply: () => setHotkey(next)
+      };
+    }
+    return null;
+  }, [hotkeyConflict, hotkey, hotkeyShot, hotkeyRegion]);
+  const llmReadyNow = Boolean(live?.llm?.baseUrl && live?.llm?.model && live?.llm?.apiKeySet);
 
   return (
     <div className="mc-settings-root" ref={rootRef}>
@@ -603,17 +702,55 @@ export function SettingsView({
               <p className="mc-settings-cat-desc">{activeTabMeta.desc}</p>
             </div>
 
-            {(saveError || live.capture?.registrationError) && (
-              <div className="mc-alert mc-alert-err" role="alert">{saveError || live.capture.registrationError}</div>
+            {saveError && (
+              <div className="mc-alert mc-alert-err" role="alert">{saveError}</div>
+            )}
+
+            {hotkeyConflict && (
+              <div className="mc-alert mc-alert-warn" role="alert" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                <div style={{ minWidth: 0 }}>
+                  <strong>「{hotkeyConflict.feature}」快捷键被占用</strong>
+                  <div style={{ fontSize: 12, marginTop: 2 }}>{hotkeyConflict.detail}（不影响模型或语音连接状态）</div>
+                </div>
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                  {recommendedHotkeyFix && (
+                    <button
+                      type="button"
+                      className="mc-btn mc-btn-sm mc-btn-primary"
+                      onClick={() => recommendedHotkeyFix.apply()}
+                    >
+                      {recommendedHotkeyFix.label}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="mc-btn mc-btn-sm"
+                    onClick={() => void jumpToSection('shortcuts', hotkeyConflict.targetSection)}
+                  >
+                    {hotkeyConflict.buttonLabel} →
+                  </button>
+                </div>
+              </div>
             )}
 
             {/* 1. MODELS */}
             <div hidden={activeTab !== 'models'} style={{ display: activeTab === 'models' ? 'flex' : 'none', flexDirection: 'column', gap: 20 }}>
-              <section className="mc-card">
+              {activeSession && llmReadyNow && onResumeWorkbench && (
+                <div className="mc-alert mc-alert-ok" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                  <div>
+                    <strong>回答模型已就绪</strong>
+                    <span style={{ marginLeft: 8, fontSize: 12 }}>可直接返回当前面试「{activeSession.name}」并重答原题。</span>
+                  </div>
+                  <button type="button" className="mc-btn mc-btn-sm mc-btn-success" onClick={() => void flushAndLeave(onResumeWorkbench)}>
+                    返回当前面试 →
+                  </button>
+                </div>
+              )}
+              <section id="settings-section-text-llm" className={`mc-card${highlightedSection === 'text-llm' ? ' is-highlight-flash' : ''}`}>
                 <div className="mc-card-head">
                   <div>
-                    <h3 className="mc-card-title">文本大模型</h3>
-                    <p className="mc-card-desc">用于实时面试问答、手动提问、翻译与滚动备忘维护。</p>
+                    <h3 className="mc-card-title">文本大模型（回答模型）</h3>
+                    <p className="mc-card-desc">用于实时面试问答、手动打字提问、翻译与滚动备忘；配好这一项即可直接提问。</p>
                   </div>
                 </div>
                 <div className="mc-srow">
@@ -642,16 +779,22 @@ export function SettingsView({
                 <div className="mc-srow mc-srow-compact">
                   <div><div className="mc-srow-label">默认回答语言</div></div>
                   <div className="mc-srow-control">
-                    <select className="mc-select" value={answerLang} onChange={e => setAnswerLang(e.target.value)}>
-                      <option value="chinese">中文</option>
-                      <option value="english">English</option>
-                    </select>
+                    <CustomSelect
+                      className="mc-select"
+                      ariaLabel="默认回答语言"
+                      value={answerLang}
+                      onChange={setAnswerLang}
+                      options={[
+                        { value: 'chinese', label: '中文' },
+                        { value: 'english', label: 'English' }
+                      ]}
+                    />
                   </div>
                 </div>
               </section>
 
               {mmConfig && (
-                <section className="mc-card">
+                <section id="settings-section-vision" className={`mc-card${highlightedSection === 'vision' ? ' is-highlight-flash' : ''}`}>
                   <div className="mc-card-head">
                     <div>
                       <h3 className="mc-card-title">截图多模态模型（多接口回退 / 笔试并行）</h3>
@@ -676,11 +819,17 @@ export function SettingsView({
                   <div className="mc-srow mc-srow-compact">
                     <div><div className="mc-srow-label">默认截图场景</div></div>
                     <div className="mc-srow-control">
-                      <select className="mc-select" value={mmConfig.mode} onChange={e => updateMm({ mode: e.target.value })}>
-                        <option value="auto">自动判断</option>
-                        <option value="interview">面试截图</option>
-                        <option value="written">笔试截图</option>
-                      </select>
+                      <CustomSelect
+                        className="mc-select"
+                        ariaLabel="默认截图场景"
+                        value={mmConfig.mode}
+                        onChange={val => updateMm({ mode: val })}
+                        options={[
+                          { value: 'auto', label: '自动判断' },
+                          { value: 'interview', label: '面试截图' },
+                          { value: 'written', label: '笔试截图' }
+                        ]}
+                      />
                     </div>
                   </div>
                   <div className="mc-srow mc-srow-compact">
@@ -779,21 +928,23 @@ export function SettingsView({
 
             {/* 2. AUDIO & RECORDING */}
             <div hidden={activeTab !== 'audio'} style={{ display: activeTab === 'audio' ? 'flex' : 'none', flexDirection: 'column', gap: 20 }}>
-              <section className="mc-card">
+              <section id="settings-section-asr" className={`mc-card${highlightedSection === 'asr' ? ' is-highlight-flash' : ''}`}>
                 <div className="mc-card-head"><h3 className="mc-card-title">语音识别引擎（ASR）</h3></div>
                 <div className="mc-srow">
                   <div><div className="mc-srow-label">识别引擎</div></div>
                   <div className="mc-srow-control">
-                    <select className="mc-select" value={asrBackend} onChange={e => setAsrBackend(e.target.value)}>
-                      <optgroup label="云端识别（低占用）">
-                        <option value="cloud-realtime">云端流式实时（WebSocket）</option>
-                        <option value="cloud">云端分段识别（HTTP）</option>
-                      </optgroup>
-                      <optgroup label="本地识别（离线）">
-                        <option value="local-realtime">本地流式（FunASR / MOSS Sidecar）</option>
-                        <option value="local">本地分段（Whisper ONNX）</option>
-                      </optgroup>
-                    </select>
+                    <CustomSelect
+                      className="mc-select"
+                      ariaLabel="识别引擎"
+                      value={asrBackend}
+                      onChange={setAsrBackend}
+                      options={[
+                        { value: 'cloud-realtime', label: '云端流式实时（WebSocket · 低占用）' },
+                        { value: 'cloud', label: '云端分段识别（HTTP）' },
+                        { value: 'local-realtime', label: '本地流式（FunASR / MOSS Sidecar）' },
+                        { value: 'local', label: '本地分段（Whisper ONNX）' }
+                      ]}
+                    />
                   </div>
                 </div>
 
@@ -801,9 +952,13 @@ export function SettingsView({
                   <div className="mc-srow">
                     <div><div className="mc-srow-label">本地实时模型</div></div>
                     <div className="mc-srow-control">
-                      <select className="mc-select" value={rtLocalModel} onChange={e => setRtLocalModel(e.target.value)}>
-                        {LOCAL_REALTIME_MODELS.map(m => <option key={m.value} value={m.value}>{m.nameZh || m.nameEn}</option>)}
-                      </select>
+                      <CustomSelect
+                        className="mc-select"
+                        ariaLabel="本地实时模型"
+                        value={rtLocalModel}
+                        onChange={setRtLocalModel}
+                        options={LOCAL_REALTIME_MODELS.map(m => ({ value: m.value, label: m.nameZh || m.nameEn }))}
+                      />
                     </div>
                   </div>
                 )}
@@ -859,11 +1014,17 @@ export function SettingsView({
                 <div className="mc-srow mc-srow-compact">
                   <div><div className="mc-srow-label">识别语言偏好</div></div>
                   <div className="mc-srow-control">
-                    <select className="mc-select" value={language} onChange={e => setLanguage(e.target.value)}>
-                      <option value="auto">自动检测（中/英）</option>
-                      <option value="chinese">中文为主</option>
-                      <option value="english">English</option>
-                    </select>
+                    <CustomSelect
+                      className="mc-select"
+                      ariaLabel="识别语言偏好"
+                      value={language}
+                      onChange={setLanguage}
+                      options={[
+                        { value: 'auto', label: '自动检测（中/英）' },
+                        { value: 'chinese', label: '中文为主' },
+                        { value: 'english', label: 'English' }
+                      ]}
+                    />
                   </div>
                 </div>
               </section>
@@ -879,10 +1040,16 @@ export function SettingsView({
                     <div className="mc-srow-desc">用于「麦克风模式」主收音及「双轨录音」下的本人轨采集</div>
                   </div>
                   <div className="mc-srow-control">
-                    <select className="mc-select" value={micDeviceId} onChange={e => setMicDeviceId(e.target.value)}>
-                      <option value="">系统默认麦克风</option>
-                      {devices.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || d.deviceId}</option>)}
-                    </select>
+                    <CustomSelect
+                      className="mc-select"
+                      ariaLabel="麦克风设备"
+                      value={micDeviceId}
+                      onChange={setMicDeviceId}
+                      options={[
+                        { value: '', label: '系统默认麦克风' },
+                        ...devices.map(d => ({ value: d.deviceId, label: d.label || d.deviceId }))
+                      ]}
+                    />
                   </div>
                 </div>
                 <div className="mc-srow">
@@ -898,10 +1065,16 @@ export function SettingsView({
                   <div className="mc-srow">
                     <div><div className="mc-srow-label">对方虚拟音频设备（BlackHole 等）</div></div>
                     <div className="mc-srow-control">
-                      <select className="mc-select" value={themDeviceId} onChange={e => setThemDeviceId(e.target.value)}>
-                        <option value="">系统默认输入</option>
-                        {devices.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || d.deviceId}</option>)}
-                      </select>
+                      <CustomSelect
+                        className="mc-select"
+                        ariaLabel="对方虚拟音频设备"
+                        value={themDeviceId}
+                        onChange={setThemDeviceId}
+                        options={[
+                          { value: '', label: '系统默认输入' },
+                          ...devices.map(d => ({ value: d.deviceId, label: d.label || d.deviceId }))
+                        ]}
+                      />
                     </div>
                   </div>
                 )}
@@ -1014,7 +1187,7 @@ export function SettingsView({
 
             {/* 5. SHORTCUTS */}
             <div hidden={activeTab !== 'shortcuts'} style={{ display: activeTab === 'shortcuts' ? 'flex' : 'none', flexDirection: 'column', gap: 20 }}>
-              <section className="mc-card">
+              <section id="settings-section-shortcuts" className="mc-card">
                 <div className="mc-card-head">
                   <div>
                     <h3 className="mc-card-title">核心全局快捷键</h3>
@@ -1024,9 +1197,30 @@ export function SettingsView({
                     <IconKeyboard size={13} /> 配置会中工作台快捷键
                   </button>
                 </div>
-                <ShortcutRecorder label="隐藏 / 显示主窗口" description="在任意应用中一键切换窗口显示状态" value={hotkey} onChange={setHotkey} />
-                <ShortcutRecorder label="静默全屏截图识题" description="支持组合键、F1–F24 或鼠标侧键 Mouse4 / Mouse5" value={hotkeyShot} onChange={setHotkeyShot} />
-                <ShortcutRecorder label="框选区域截图识题" description="拖动选取屏幕局部区域并发送到视觉模型" value={hotkeyRegion} onChange={setHotkeyRegion} />
+                <ShortcutRecorder
+                  rowId="settings-section-hotkeyToggle"
+                  highlighted={highlightedSection === 'hotkeyToggle'}
+                  label="隐藏 / 显示主窗口"
+                  description="在任意应用中一键切换窗口显示状态"
+                  value={hotkey}
+                  onChange={setHotkey}
+                />
+                <ShortcutRecorder
+                  rowId="settings-section-hotkeyShot"
+                  highlighted={highlightedSection === 'hotkeyShot'}
+                  label="静默全屏截图识题"
+                  description="支持组合键、F1–F24 或鼠标侧键 Mouse4 / Mouse5"
+                  value={hotkeyShot}
+                  onChange={setHotkeyShot}
+                />
+                <ShortcutRecorder
+                  rowId="settings-section-hotkeyRegion"
+                  highlighted={highlightedSection === 'hotkeyRegion'}
+                  label="框选区域截图识题"
+                  description="拖动选取屏幕局部区域并发送到视觉模型"
+                  value={hotkeyRegion}
+                  onChange={setHotkeyRegion}
+                />
               </section>
 
               <WindowControlsCard />
@@ -1042,11 +1236,17 @@ export function SettingsView({
                     <div className="mc-srow-desc">默认浅色主题，支持暗色或跟随系统切换</div>
                   </div>
                   <div className="mc-srow-control">
-                    <select className="mc-select" value={theme} onChange={e => setTheme(e.target.value)}>
-                      <option value="light">浅色（默认）</option>
-                      <option value="dark">深色</option>
-                      <option value="system">跟随系统</option>
-                    </select>
+                    <CustomSelect
+                      className="mc-select"
+                      ariaLabel="主题外观"
+                      value={theme}
+                      onChange={setTheme}
+                      options={[
+                        { value: 'light', label: '浅色（默认）' },
+                        { value: 'dark', label: '深色' },
+                        { value: 'system', label: '跟随系统' }
+                      ]}
+                    />
                   </div>
                 </div>
                 <div className="mc-srow mc-srow-compact">
@@ -1068,20 +1268,31 @@ export function SettingsView({
                 <div className="mc-srow mc-srow-compact">
                   <div><div className="mc-srow-label">界面缩放字号</div></div>
                   <div className="mc-srow-control">
-                    <select className="mc-select" value={fontScale} onChange={e => setFontScale(e.target.value)}>
-                      <option value="small">紧凑</option>
-                      <option value="medium">标准</option>
-                      <option value="large">大号</option>
-                    </select>
+                    <CustomSelect
+                      className="mc-select"
+                      ariaLabel="界面缩放字号"
+                      value={fontScale}
+                      onChange={setFontScale}
+                      options={[
+                        { value: 'small', label: '紧凑' },
+                        { value: 'medium', label: '标准' },
+                        { value: 'large', label: '大号' }
+                      ]}
+                    />
                   </div>
                 </div>
-                <div className="mc-srow mc-srow-compact">
-                  <div><div className="mc-srow-label">界面语言</div></div>
-                  <div className="mc-srow-control">
-                    <select className="mc-select" value={uiLang} onChange={e => setUiLang(e.target.value)}>
-                      <option value="zh">简体中文</option>
-                      <option value="en">English</option>
-                    </select>
+                <div className="mc-srow">
+                  <div>
+                    <div className="mc-srow-label">界面语言</div>
+                    <div className="mc-srow-desc">
+                      当前版本界面仅提供简体中文。回答语言（支持英文）与语音识别语言可在各自设置中独立配置：
+                      <button type="button" className="mc-link-subtle" style={{ padding: '0 4px' }} onClick={() => setActiveTab('models')}>默认回答语言</button>
+                      ·
+                      <button type="button" className="mc-link-subtle" style={{ padding: '0 4px' }} onClick={() => setActiveTab('audio')}>识别语言偏好</button>
+                    </div>
+                  </div>
+                  <div className="mc-srow-control is-inline">
+                    <span className="mc-badge">简体中文</span>
                   </div>
                 </div>
                 <div className="mc-srow mc-srow-compact">
@@ -1101,7 +1312,19 @@ export function SettingsView({
                 </div>
               </section>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '0 4px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, padding: '0 4px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  {onOpenQuickStart && (
+                    <button type="button" className="mc-link-subtle" onClick={onOpenQuickStart}>
+                      重播快速配置引导
+                    </button>
+                  )}
+                  {onOpenDiagnostics && (
+                    <button type="button" className="mc-link-subtle" onClick={onOpenDiagnostics}>
+                      故障排查与诊断信息
+                    </button>
+                  )}
+                </div>
                 <button
                   type="button"
                   className="mc-link-subtle"

@@ -19,16 +19,6 @@ const NAV_ITEMS = [
   { id: 'settings', label: '高级设置', icon: IconSettings }
 ];
 
-function overallStatus(health) {
-  if (health.llm.state === 'err' || health.asr.state === 'err') {
-    return { cls: 'mc-dot-err', label: '服务异常' };
-  }
-  if (health.llm.ready && health.asr.ready) {
-    return { cls: 'mc-dot-ok', label: '服务就绪' };
-  }
-  return { cls: 'mc-dot-warn', label: '待配置接口' };
-}
-
 export function AppShell({
   route,
   onNavigate,
@@ -46,7 +36,7 @@ export function AppShell({
   children
 }) {
   const health = computeServiceHealth(settings, asr, library);
-  const status = overallStatus(health);
+  const summary = health.taskSummary;
   const securityOn = Boolean(windowState?.securityMode?.enabled);
   const maximized = Boolean(windowState?.maximized);
 
@@ -64,7 +54,7 @@ export function AppShell({
               onClick={onResumeWorkbench}
               title="返回正在进行的实时面试工作台"
             >
-              进行中：{activeSession.name} · 继续 →
+              进行中：{activeSession.name} · 返回面试 →
             </button>
           )}
         </div>
@@ -87,13 +77,15 @@ export function AppShell({
             type="button"
             className="mc-sidebar-status-pill mc-hide-narrow"
             onClick={onOpenHealth}
-            title={`模型：${health.llm.ready ? '已就绪' : '待配置'} · 语音：${health.asr.label} · 资料库：${health.kb.label}（点击查看详情）`}
+            title={`回答模型：${health.llm.ready ? '已就绪' : '待配置'} · 语音：${health.asr.label} · 资料库：${health.kb.label}（点击查看快速配置与服务状态）`}
           >
-            <i className={`mc-dot ${status.cls}`} />
-            <span>{status.label}</span>
-            <span className="mc-sidebar-status-meta">
-              {library?.enabled ? `${library?.files?.length || 0} 份` : '未开库'}
+            <span className="mc-sidebar-status-row">
+              <i className={`mc-dot ${summary.dot}`} />
+              <span className="mc-sidebar-status-text">{summary.label}</span>
             </span>
+            {summary.meta && (
+              <span className="mc-sidebar-status-meta">{summary.meta}</span>
+            )}
           </button>
 
           <nav className="mc-nav-list">

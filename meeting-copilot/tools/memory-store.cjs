@@ -12,6 +12,40 @@ const BUCKETS = [
 
 const BUCKET_MAP = new Map(BUCKETS.map(b => [b.id, b]));
 
+const STANDARD_REVIEW_RULEBOOK = `# 面试复盘与知识库更新规则
+
+> 本规则用于指导外部 Coding Agent（如 Codex / Antigravity）在每次面试归档后，按统一结构完成转录纠错、复盘总结与记忆库更新，同时严守防编造底线。
+
+## 一、输入与只读原件保护
+
+每次归档位于 \`岗位档案/<公司-岗位>/面试记录/<YYYY-MM-DD-轮次>/\`，包含：
+- \`原始转录与AI参考.md\`（**只读原件，严禁改写或覆盖**）
+- \`session.json\`（会话元数据与外部双轨 WAV 录音路径指针，不把音频拷贝进资料库目录）
+- \`本人面试后感受.md\`（可选）
+
+## 二、核心输出产物
+
+在同一次面试归档目录内输出：
+1. \`转录校对版.md\`：修正明显 ASR 同音错字与断句，保留「面试官 / 我」角色区分；无法辨认处标注 \`[听不清]\`，不得脑补对话内容。
+2. \`面试复盘.md\`（6 段标准结构）：
+   - 本场考察重点与岗位关注方向
+   - 逐题表现对照表（区分：面试官问题 / 本人真实回答 / 建议改进方向）
+   - 本人表达与节奏分析（若有 \`本人面试后感受.md\` 则优先忠实核对；否则仅基于原始转录中的可观察停顿、重复或偏题做客观分析，不武断臆测情绪）
+   - 最值得立刻修正的 1~3 处表达
+   - 下次面试前可执行练习（≤ 3 项）
+   - 本次沉淀至 \`面试记忆/\` 与题库的变更摘要
+
+## 三、四路分流与防编造红线
+
+- **严禁把「当场 AI 参考回答」写成候选人本人说过的话或已具备的项目经历**。
+- 更新 \`面试记忆/\` 时严格分流：
+  1. \`表达与偏好.md\`：口风、结构与边界声明习惯（增量更新）
+  2. \`薄弱项与踩坑.md\`：本场暴露的真实短板与易错点（增量更新）
+  3. \`公司与岗位洞察.md\`：面试官透露的业务痛点、团队技术栈与反问线索（按公司归档）
+  4. \`待审核新事实.md\`：任何涉及个人项目细节、数据指标或新技能边界的候选条目，**必须以 \`- [ ] **[pending]** ...\` 格式写入此文件等待用户人工确认**，不得直接写进简历或项目真源。
+- 同步更新对应 \`岗位档案/<公司-岗位>/JD.md\` 头部 YAML 的 \`status\` 与 \`rounds\`。
+`;
+
 function sha256(str) {
   return crypto.createHash('sha256').update(String(str || ''), 'utf8').digest('hex');
 }
@@ -178,13 +212,31 @@ function createMemoryStore({ getRoot, snapshotDir }) {
     const { index } = recordSnapshotIfChanged(files, combinedHash, { source: 'external-agent' });
     const pendingBucket = parsed.find(b => b.id === 'pending_fact');
     const pendingCount = (pendingBucket?.items || []).filter(i => i.pending).length;
+    const rulebookPath = path.join(root, '复盘与更新规则.md');
     return {
       root,
       memoryDir: path.join(root, '面试记忆'),
+      rulebookPath,
+      rulebookExists: fs.existsSync(rulebookPath),
       buckets: parsed,
       pendingCount,
       latestVersion: index.latestVersion,
       snapshots: [...index.snapshots].reverse()
+    };
+  }
+
+  function ensureReviewRulebook({ overwrite = false } = {}) {
+    const root = requireRoot();
+    const rulebookPath = insideRoot(root, path.join(root, '复盘与更新规则.md'));
+    const existed = fs.existsSync(rulebookPath);
+    if (!existed || overwrite) {
+      writeAtomic(rulebookPath, STANDARD_REVIEW_RULEBOOK);
+    }
+    return {
+      ok: true,
+      created: !existed || overwrite,
+      rulebookPath,
+      relPath: '复盘与更新规则.md'
     };
   }
 
@@ -392,22 +444,34 @@ function createMemoryStore({ getRoot, snapshotDir }) {
       writeAtomic(reflectionPath, `# 本人面试后感受（${folderName}）\n\n${cleanFeeling}\n`);
     }
 
-    // 4. Build ready-to-paste Codex / Antigravity review instruction prompt
+    // 4. Verify referenced files before building Codex / Antigravity review instruction (fixes M04)
     const relArchive = path.relative(root, archiveDir).replace(/\\/g, '/');
+    const rulebookPath = path.join(root, '复盘与更新规则.md');
+    const rulebookExists = fs.existsSync(rulebookPath);
+    const missingFiles = [];
+    if (!rulebookExists) missingFiles.push('复盘与更新规则.md');
+
+    const feelingLine = cleanFeeling
+      ? `- 本人本次面试感受（请忠实保留并与转录核对）：\n  > ${cleanFeeling.replace(/\r?\n/g, '\n  > ')}`
+      : `- 本人未额外填写感受：请回看未校对原始转录中的可观察表达特征（严谨区分 ASR 断句误差与语义卡壳，不武断给紧张打分）。`;
+
+    const headerLine = rulebookExists
+      ? `请严格按照 \`${rulebookPath}\` 执行本场面试复盘与知识库更新：`
+      : `请作为我的面试复盘助手，严格遵守防编造原则（严禁把「当场 AI 参考回答」当成本人真实发言或已有项目经历），基于下方已归档文件完成本场复盘与知识库更新：`;
+
     const agentPrompt = [
-      `请严格按照 \`${path.join(root, '复盘与更新规则.md')}\` 执行本场面试复盘与知识库更新：`,
+      headerLine,
       '',
       `- 资料库根目录：\`${root}\``,
       `- 本场归档目录：\`${archiveDir}\`（相对路径：\`${relArchive}\`）`,
-      `- 原始转录与 AI 参考：\`${rawMdPath}\``,
+      `- 原始转录与 AI 参考（只读原件）：\`${rawMdPath}\``,
       `- 会话元数据与双轨 WAV 指针：\`${sessionJsonPath}\``,
-      cleanFeeling
-        ? `- 本人本次面试感受（请按模式 A 忠实保留并核对）：\n  > ${cleanFeeling.replace(/\r?\n/g, '\n  > ')}`
-        : `- 本人未额外填写感受：请按规则「模式 B」回看未校对原始转录中的可观察表达特征（严谨区分 ASR 断句误差与语义卡壳，不武断给紧张打分）。`,
+      ...(reflectionPath ? [`- 本人面试后感受：\`${reflectionPath}\``] : []),
+      feelingLine,
       '',
       '请依次完成：',
       `1. 保持原件只读不变，在本场目录输出 \`转录校对版.md\` 和 6 段标准 \`面试复盘.md\`；`,
-      `2. 按 4 路分流规则更新 \`面试记忆/\`（个人/项目新事实写入 \`面试记忆/待审核新事实.md\` 等待我确认；口风/避坑/公司洞察增量更新对应文件），并在必要时向 \`通用问答/\` 或 \`通用技术知识/实战真题补充/\` 沉淀高价值真题；`,
+      `2. 按 4 路分流规则更新 \`面试记忆/\`（个人/项目新事实写入 \`面试记忆/待审核新事实.md\` 并以 \`- [ ] **[pending]** ...\` 格式等待我确认；口风/避坑/公司洞察增量更新对应文件），并在必要时向 \`通用问答/\` 或 \`通用技术知识/实战真题补充/\` 沉淀高价值真题；`,
       `3. 同步更新 \`岗位档案/${cleanRole}/JD.md\` 顶部 YAML 的 \`status\` 与 \`rounds\`（追加 \`${folderName}\`），最后给我一份清晰的变更摘要。`
     ].join('\n');
 
@@ -419,12 +483,19 @@ function createMemoryStore({ getRoot, snapshotDir }) {
       sessionJsonPath,
       reflectionPath,
       roundFolder: folderName,
-      agentPrompt
+      agentPrompt,
+      prerequisites: {
+        rulebookPath,
+        rulebookExists,
+        missingFiles,
+        readyForExternalAgent: missingFiles.length === 0
+      }
     };
   }
 
   return {
     getState,
+    ensureReviewRulebook,
     getSnapshotDiff,
     saveBucket,
     appendItem,

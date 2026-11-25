@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Switch, eyeContactStatusText } from './SharedWidgets.jsx';
+import { CustomSelect } from './CustomSelect.jsx';
 
 function createEyeContactPreview(options = {}) {
   const media = options.mediaDevices || navigator.mediaDevices;
@@ -266,29 +267,38 @@ export function EyeContactSettings({ active = true }) {
               <div className="mc-srow-desc">选择物理摄像头作为眼神矫正输入源</div>
             </div>
             <div className="mc-srow-control">
-              <select
+              <CustomSelect
                 className="mc-select"
+                ariaLabel="输入摄像头"
                 disabled={busy}
                 value={selected?.deviceId || (config.sourceDeviceName ? '__saved__' : '')}
-                onChange={e => {
-                  const dev = sources.find(item => item.deviceId === e.target.value);
+                onChange={val => {
+                  const dev = sources.find(item => item.deviceId === val);
                   void save({ sourceDeviceId: dev?.deviceId || '', sourceDeviceName: dev?.label || '' });
                 }}
-              >
-                <option value="">自动选择</option>
-                {!selected && config.sourceDeviceName && <option value="__saved__">{config.sourceDeviceName}（当前未枚举到）</option>}
-                {sources.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label}</option>)}
-              </select>
+                options={[
+                  { value: '', label: '自动选择' },
+                  ...(!selected && config.sourceDeviceName ? [{ value: '__saved__', label: `${config.sourceDeviceName}（当前未枚举到）` }] : []),
+                  ...sources.map(d => ({ value: d.deviceId, label: d.label }))
+                ]}
+              />
             </div>
           </div>
 
           <div className="mc-srow mc-srow-compact">
             <div><div className="mc-srow-label">处理方式</div></div>
             <div className="mc-srow-control">
-              <select className="mc-select" disabled={busy} value={config.outputMode} onChange={e => void save({ outputMode: e.target.value })}>
-                <option value="correct">眼神矫正</option>
-                <option value="passthrough">原画直通（不做矫正）</option>
-              </select>
+              <CustomSelect
+                className="mc-select"
+                ariaLabel="处理方式"
+                disabled={busy}
+                value={config.outputMode}
+                onChange={val => void save({ outputMode: val })}
+                options={[
+                  { value: 'correct', label: '眼神矫正' },
+                  { value: 'passthrough', label: '原画直通（不做矫正）' }
+                ]}
+              />
             </div>
           </div>
 
@@ -317,23 +327,40 @@ export function EyeContactSettings({ active = true }) {
                 <div className="mc-grid-2">
                   <div className="mc-field">
                     <label className="mc-field-label">时间平滑</label>
-                    <select className="mc-select" disabled={busy} value={String(config.temporal)} onChange={e => void save({ temporal: Number(e.target.value) })}>
-                      <option value="4294967295">完全平滑（默认）</option>
-                      <option value="35">基础平滑</option>
-                      <option value="0">关闭</option>
-                    </select>
+                    <CustomSelect
+                      className="mc-select"
+                      ariaLabel="时间平滑"
+                      disabled={busy}
+                      value={String(config.temporal)}
+                      onChange={val => void save({ temporal: Number(val) })}
+                      options={[
+                        { value: '4294967295', label: '完全平滑（默认）' },
+                        { value: '35', label: '基础平滑' },
+                        { value: '0', label: '关闭' }
+                      ]}
+                    />
                   </div>
                   <div className="mc-field">
                     <label className="mc-field-label">眼部融合区域</label>
-                    <select className="mc-select" disabled={busy} value={config.eyeSize} onChange={e => void save({ eyeSize: Number(e.target.value) })}>
-                      {[2, 3, 4, 5, 6].map(v => <option key={v} value={v}>{v}</option>)}
-                    </select>
+                    <CustomSelect
+                      className="mc-select"
+                      ariaLabel="眼部融合区域"
+                      disabled={busy}
+                      value={String(config.eyeSize)}
+                      onChange={val => void save({ eyeSize: Number(val) })}
+                      options={[2, 3, 4, 5, 6].map(v => ({ value: String(v), label: String(v) }))}
+                    />
                   </div>
                   <div className="mc-field">
                     <label className="mc-field-label">断开后等待释放</label>
-                    <select className="mc-select" disabled={busy} value={config.idleGraceMs} onChange={e => void save({ idleGraceMs: Number(e.target.value) })}>
-                      {[1000, 3000, 5000, 10000].map(v => <option key={v} value={v}>{v / 1000} 秒</option>)}
-                    </select>
+                    <CustomSelect
+                      className="mc-select"
+                      ariaLabel="断开后等待释放"
+                      disabled={busy}
+                      value={String(config.idleGraceMs)}
+                      onChange={val => void save({ idleGraceMs: Number(val) })}
+                      options={[1000, 3000, 5000, 10000].map(v => ({ value: String(v), label: `${v / 1000} 秒` }))}
+                    />
                   </div>
                 </div>
               </div>

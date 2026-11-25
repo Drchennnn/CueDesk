@@ -1,10 +1,15 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { createHash } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const { spawn, execFile } = require('node:child_process');
 const CLSID = '{AEF3B972-5FA5-4647-9571-358EB472BC9E}';
 const CATEGORY = '{860BB310-5D01-11d0-BD3B-00A0C911CE86}';
+const STATUS_LINE_LIMIT = 1024 * 1024;
+const COMPARISON_BMP_PREFIX = 'data:image/bmp;base64,';
+const COMPARISON_BASE64_LIMIT = Math.ceil((54 + 960 * 720 * 3) / 3) * 4;
+const COMPARISON_LINE_LIMIT = 2 * (COMPARISON_BMP_PREFIX.length + COMPARISON_BASE64_LIMIT) + 4096;
+const COMPARISON_EVENT_PREFIX = '{"type":"comparison",';
 const psQuote = value => "'" + String(value).replace(/'/g, "''") + "'";
 const DEFAULT_SETTINGS = Object.freeze({ sourceDeviceId: '', sourceDeviceName: '', outputMode: 'correct', releaseWhenIdle: true,
   idleGraceMs: 3000, restartOnFailure: true, lookAway: false, eyeSize: 3, temporal: 0xffffffff });
@@ -33,13 +38,28 @@ function helperArguments(settings, sdkDir) {
 }
 
 function runPowerShell(script, timeout = 15000) {
+  const utf8Script = '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n' + script;
   return new Promise((resolve, reject) => {
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-      { windowsHide: true, timeout, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(utf8Script, 'utf16le').toString('base64')],
+      { windowsHide: true, timeout, maxBuffer: 1024 * 1024, encoding: 'utf8' }, (error, stdout, stderr) => {
         if (error) reject(new Error((stderr || error.message).trim().slice(-800)));
         else resolve(stdout.trim());
       });
   });
+}
+
+function comparisonImageDimensions(url) {
+  if (typeof url !== 'string' || !url.startsWith(COMPARISON_BMP_PREFIX) ||
+      url.length > COMPARISON_BMP_PREFIX.length + COMPARISON_BASE64_LIMIT) return null;
+  const payload = url.slice(COMPARISON_BMP_PREFIX.length);
+  const data = Buffer.from(payload, 'base64');
+  if (data.length < 54 || data.toString('base64') !== payload || data.readUInt16LE(0) !== 0x4d42 ||
+      data.readUInt32LE(2) !== data.length || data.readUInt32LE(10) !== 54 || data.readUInt32LE(14) !== 40 ||
+      data.readUInt16LE(26) !== 1 || data.readUInt16LE(28) !== 24 || data.readUInt32LE(30) !== 0) return null;
+  const width = data.readInt32LE(18), height = data.readInt32LE(22);
+  if (width < 1 || width > 960 || height < 1 || height > 720 ||
+      data.length !== 54 + Math.ceil(width * 3 / 4) * 4 * height) return null;
+  return { width, height };
 }
 
 function createWindowsPlatform({ resourcesPath = process.resourcesPath || path.resolve(__dirname, '..'),
@@ -118,6 +138,7 @@ function createEyeContact(options) {
   const events = [];
   let settings = { ...DEFAULT_SETTINGS }, activeSettings = null;
   let child = null, generation = 0, starting = null, stopping = null, disposed = false, desired = false;
+  let comparison = null;
   let startupReject = null, retryTimer = null, idleTimer = null, disconnectAt = null, retries = 0, appliedMode = 'idle', connectedStreak = 0;
   let state = { engine: 'full', enabled: false, phase: 'off', mode: 'idle', requestedMode: 'idle', device: '',
     virtualCamera: '', width: null, height: null, fps: null, connected: false, deviceFallback: false, sdk: null,
@@ -155,9 +176,41 @@ function createEyeContact(options) {
     if (!child || child.exitCode !== null || child.stdin.destroyed) throw new Error('眼神引擎已停止。');
     child.stdin.write(command + '\n');
   }
+  function finishComparison(error, result) {
+    if (!comparison) return;
+    const pending = comparison;
+    comparison = null;
+    clearTimeout(pending.timer);
+    if (error) pending.reject(error);
+    else pending.resolve(result);
+  }
+  async function captureComparison() {
+    if (state.phase !== 'ready' || !state.enabled || state.mode !== 'correct' ||
+        appliedMode !== 'correct' || state.preview.status !== 'first-frame') {
+      throw new Error('请先用眼神矫正模式打开预览并等待画面。');
+    }
+    if (comparison) throw new Error('正在生成矫正前后对比。');
+    return new Promise((resolve, reject) => {
+      const requestId = randomUUID();
+      const timer = setTimeout(() => finishComparison(new Error('获取矫正前后画面超时，请重试。')), options.comparisonTimeout ?? 6000);
+      comparison = { requestId, resolve, reject, timer };
+      try { write('compare ' + requestId); }
+      catch (error) { finishComparison(error); }
+    });
+  }
+  function receiveComparison(event) {
+    if (!comparison || event.requestId !== comparison.requestId) return;
+    const original = comparisonImageDimensions(event.original), corrected = comparisonImageDimensions(event.corrected);
+    if (event.mode !== 'correct' || !original || !corrected || original.width !== corrected.width || original.height !== corrected.height) {
+      finishComparison(new Error('眼神引擎返回的对比画面无效，请重试。'));
+      return;
+    }
+    finishComparison(null, { original: event.original, corrected: event.corrected, ...original });
+  }
   function applyMode(mode) {
     if (appliedMode === mode || !child) return;
     write('mode ' + mode); appliedMode = mode;
+    if (mode !== 'correct') finishComparison(new Error('眼神矫正处理已停止。'));
     if (mode === 'idle') connectedStreak = 0;
     update({ requestedMode: mode }); diagnostic('mode-request', { mode });
   }
@@ -198,6 +251,7 @@ function createEyeContact(options) {
   }
   function failRuntime(proc, error, current) {
     if (child !== proc || current !== generation || proc.fault) return;
+    finishComparison(error);
     proc.fault = error.message; diagnostic('runtime-error', { message: error.message });
     update({ error: error.message });
     void terminate(proc).catch(failure => {
@@ -209,6 +263,7 @@ function createEyeContact(options) {
   }
   async function stop() {
     desired = false; generation++; clearTimers();
+    finishComparison(new Error('眼神引擎已停止。'));
     platform.cancelResources?.();
     startupReject?.(new Error('启动已取消。'));
     const proc = child;
@@ -268,17 +323,26 @@ function createEyeContact(options) {
           proc.stdout.setEncoding('utf8');
           proc.stdout.on('data', chunk => {
             if (current !== generation || child !== proc) return;
-            output += chunk;
-            if (output.length > 1024 * 1024) {
-              const error = new Error('眼神引擎返回了过大的状态数据。');
-              settled ? failRuntime(proc, error, current) : settle(error); return;
-            }
-            let index;
-            while ((index = output.indexOf('\n')) >= 0) {
-              const line = output.slice(0, index).trim(); output = output.slice(index + 1);
+            let offset = 0;
+            while (offset < chunk.length) {
+              const end = chunk.indexOf('\n', offset);
+              const limit = (output.slice(0, COMPARISON_EVENT_PREFIX.length) + chunk.slice(offset, offset + COMPARISON_EVENT_PREFIX.length))
+                .startsWith(COMPARISON_EVENT_PREFIX) ? COMPARISON_LINE_LIMIT : STATUS_LINE_LIMIT;
+              if (output.length + (end === -1 ? chunk.length : end) - offset > limit) {
+                output = '';
+                const error = new Error('眼神引擎返回了过大的数据。');
+                settled ? failRuntime(proc, error, current) : settle(error); return;
+              }
+              if (end === -1) { output += chunk.slice(offset); return; }
+              const line = (output + chunk.slice(offset, end)).trim();
+              output = '';
+              offset = end + 1;
               if (!line.startsWith('{')) continue;
               let event; try { event = JSON.parse(line); } catch { continue; }
-              if (event.type === 'ready') {
+              if (!event || typeof event !== 'object') continue;
+              if (event.type === 'comparison') {
+                receiveComparison(event);
+              } else if (event.type === 'ready') {
                 if (ready) continue;
                 ready = true;
                 update({ enabled: true, phase: 'ready', device: String(event.device || ''), width: event.width ?? null,
@@ -303,6 +367,10 @@ function createEyeContact(options) {
                 }
                 try { reconcileMode(); } catch (error) { failRuntime(proc, error, current); }
               } else if (event.type === 'status') {
+                if (event.event === 'comparison-correction-inactive') {
+                  if (comparison && event.message === comparison.requestId) finishComparison(new Error('眼神矫正处理已停止。'));
+                  continue;
+                }
                 const detail = { event: String(event.event || '').slice(0, 100), message: String(event.message ?? event.detail ?? event.reason ?? '').slice(0, 1000),
                   code: String(event.code ?? event.hr ?? '').slice(0, 100) };
                 update({ lastStatus: { ...detail, at: new Date(now()).toISOString() },
@@ -327,6 +395,7 @@ function createEyeContact(options) {
             if (current !== generation || child !== proc) return;
             child = null; clearTimeout(idleTimer); idleTimer = null;
             const message = proc.fault || `眼神引擎已退出（${code ?? '未知'}）。`;
+            finishComparison(new Error(message));
             diagnostic('exit', { code, message, ready });
             if (!ready || !settled) { settle(new Error(message)); return; }
             if (desired && activeSettings.restartOnFailure && retries < 1) {
@@ -368,6 +437,7 @@ function createEyeContact(options) {
   function reportPreview(report) {
     if (!report || !['waiting', 'first-frame', 'stopped', 'error'].includes(report.status)) throw new Error('预览状态无效。');
     if (report.sessionId !== state.sessionId || !state.enabled) return getState();
+    if (report.status !== 'first-frame') finishComparison(new Error('摄像头预览已停止。'));
     if (report.status === state.preview.status && String(report.message || '') === String(state.preview.message || '') &&
         (Number(report.width) || null) === (state.preview.width || null) && (Number(report.height) || null) === (state.preview.height || null)) return getState();
     const preview = { status: report.status, at: new Date(now()).toISOString(),
@@ -377,11 +447,12 @@ function createEyeContact(options) {
   function getDiagnostics() { return { at: new Date(now()).toISOString(), state: getState(), settings: getSettings(), events: events.map(item => ({ ...item })) }; }
   function dispose() {
     disposed = true; desired = false; generation++; clearTimers(); startupReject?.(new Error('应用已退出。'));
+    finishComparison(new Error('应用已退出。'));
     platform.cancelResources?.();
     const proc = child; child = null;
     if (proc) { try { proc.stdin.write('stop\n'); } catch {} try { proc.kill(); } catch {} }
   }
-  return { getState, start, stop, restart, dispose, getSettings, setSettings, reportPreview, getDiagnostics };
+  return { getState, start, stop, restart, dispose, getSettings, setSettings, reportPreview, captureComparison, getDiagnostics };
 }
 module.exports = { createEyeContact, createWindowsPlatform, DEFAULT_SETTINGS, validateSettings, helperArguments };
 

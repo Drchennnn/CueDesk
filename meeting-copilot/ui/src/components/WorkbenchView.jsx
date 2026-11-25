@@ -6,15 +6,14 @@ import {
   getSelectedQuestion
 } from '../core/sessionModel.js';
 import {
-  CODING_EXPLAIN_MODES,
-  CODING_FORMATS,
-  CODING_LANGUAGES,
   formatCodingSummary,
   normalizeCodingPrefs
 } from '../core/codingPrefs.js';
 import { isInteractiveTarget, startClickThroughPolling } from '../core/clickThroughHitTest.js';
 import { resolveAsrCapabilities } from '../core/turnPolicy.js';
 import { AnchoredPopover } from './AnchoredPopover.jsx';
+import { CodingPrefsPopover } from './CodingPrefsPopover.jsx';
+import { CustomSelect } from './CustomSelect.jsx';
 import { GearPopover, WorkbenchShortcutsModal } from './GearPopover.jsx';
 import { ThirdPane } from './ThirdPane.jsx';
 import { VirtualCursor } from './VirtualCursor.jsx';
@@ -141,6 +140,7 @@ export function WorkbenchView({
   onEndSessionSave,
   onEndSessionDiscard,
   onSettingsUpdated,
+  onNavigateCapability,
   onOpenSettings,
   onOpenKnowledgeSettings
 }) {
@@ -582,7 +582,28 @@ export function WorkbenchView({
       return <ModelAnswers results={attempt.modelResults} onlyOptions={session.scene === 'written'} />;
     }
     if (attempt.status === 'error') {
-      return <div className="mc-alert mc-alert-err">{attempt.error || '生成失败'}</div>;
+      const errText = attempt.error || '生成失败';
+      const isVisionErr = question.kind === 'shot' || question.kind === 'batch' || /视觉|截图|vision|multimodal/i.test(errText);
+      const isAsrErr = /语音|asr|转写/i.test(errText);
+      const fixCapability = isVisionErr ? 'vision' : isAsrErr ? 'asr' : 'text-llm';
+      const fixLabel = isVisionErr ? '配置截图模型 →' : isAsrErr ? '配置语音识别 →' : '配置文本模型 →';
+      const openFix = () => {
+        if (onNavigateCapability) onNavigateCapability(fixCapability);
+        else onOpenSettings?.();
+      };
+      return (
+        <div className="mc-alert mc-alert-err" style={{ display: 'flex', flexDirection: 'column', gap: 8 }} data-interactive="true">
+          <div>{errText}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <button type="button" className="mc-btn mc-btn-sm mc-btn-primary" onClick={openFix}>
+              {fixLabel}
+            </button>
+            <button type="button" className="mc-btn mc-btn-sm" onClick={() => onRegenerateQuestion(question.id)}>
+              <IconRefresh size={12} /> 重答本题
+            </button>
+          </div>
+        </div>
+      );
     }
     const blocks = parseAnswerBlocks(attempt.text || '', false);
     if (!blocks.length) {
@@ -642,7 +663,7 @@ export function WorkbenchView({
 
           <div className="mc-wb-tools">
             <div className="mc-wb-tools-scroll">
-              {/* Audio capture button + hover source pill */}
+              {/* Audio capture button + hover source popover (no native title tooltip overlap — fixes M18) */}
               <div
                 style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}
                 onMouseEnter={() => { clearTimeout(audioPillTimerRef.current); setAudioPillOpen(true); }}
@@ -652,10 +673,9 @@ export function WorkbenchView({
                   ref={audioBtnRef}
                   type="button"
                   className={`mc-icon-btn${capturing ? ' is-live' : ''}`}
-                  title={capturing
+                  aria-label={capturing
                     ? `正在采集（${session.audioSource === 'mic' ? '麦克风' : '系统音频'}），点击暂停`
                     : `已暂停采集（${session.audioSource === 'mic' ? '麦克风' : '系统音频'}），点击开始`}
-                  aria-label="开关音频采集"
                   onClick={onToggleCapture}
                 >
                   {session.audioSource === 'mic'
@@ -1137,17 +1157,15 @@ export function WorkbenchView({
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }} data-interactive="true">
                       {selectedQuestion.attempts.length > 1 && (
-                        <select
+                        <CustomSelect
                           className="mc-filter-select"
-                          style={{ height: 22, fontSize: 11 }}
+                          style={{ height: 22, fontSize: 11, minWidth: 74 }}
+                          align="end"
                           value={selectedQuestion.activeAttemptId || ''}
-                          onChange={e => onSelectAttempt(selectedQuestion.id, e.target.value)}
-                          aria-label="切换回答版本"
-                        >
-                          {selectedQuestion.attempts.map((a, i) => (
-                            <option key={a.id} value={a.id}>尝试 {i + 1}</option>
-                          ))}
-                        </select>
+                          onChange={val => onSelectAttempt(selectedQuestion.id, val)}
+                          ariaLabel="切换回答版本"
+                          options={selectedQuestion.attempts.map((a, i) => ({ value: a.id, label: `尝试 ${i + 1}` }))}
+                        />
                       )}
                       {activeAttempt?.text && (
                         <button type="button" className="mc-btn mc-btn-sm" style={{ height: 22 }} onClick={() => void copyCurrentAnswer(activeAttempt.text)}>
@@ -1179,8 +1197,21 @@ export function WorkbenchView({
                   )}
                 </div>
               ) : (
-                <div className="mc-field-hint" style={{ marginTop: 36, textAlign: 'center' }}>
-                  {health.llm.ready ? '等待生成… 识别到问题后回答将实时流式显示在这里。' : '文本大模型尚未配置 API Key，点击右下角模型状态可前往配置。'}
+                <div style={{ marginTop: 32, textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }} data-interactive="true">
+                  <div className="mc-field-hint">
+                    {health.llm.ready
+                      ? '手动打字问答已就绪；在左下角输入问题按 Enter，或开启顶栏音频实时听写。'
+                      : '回答模型尚未配置 API Key，配置后即可在此直接提问。'}
+                  </div>
+                  {!health.llm.ready && (
+                    <button
+                      type="button"
+                      className="mc-btn mc-btn-sm mc-btn-primary"
+                      onClick={() => (onNavigateCapability ? onNavigateCapability('text-llm') : onOpenSettings())}
+                    >
+                      配置回答模型 →
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -1273,25 +1304,38 @@ export function WorkbenchView({
           DYNAMICALLY ANCHORED POPOVERS (all getBoundingClientRect + 150ms anim)
          ================================================================= */}
 
-      {/* 1. Audio Source Pill Popover */}
+      {/* 1. Audio Source Popover (status header built in, zero tooltip overlap — fixes M18) */}
       <AnchoredPopover
         open={audioPillOpen}
         anchorRef={audioBtnRef}
         placement="bottom"
         align="center"
         offset={6}
-        width={176}
-        estimatedHeight={40}
-        className="mc-popover-pill"
-        ariaLabel="切换音频采集源"
+        width={196}
+        estimatedHeight={76}
+        className="mc-audio-popover-box"
+        ariaLabel="音频采集与音源切换"
+        trapFocus={false}
+        autoFocus={false}
         onMouseEnter={() => clearTimeout(audioPillTimerRef.current)}
         onMouseLeave={() => { audioPillTimerRef.current = setTimeout(() => setAudioPillOpen(false), 150); }}
       >
+        <button
+          type="button"
+          className="mc-audio-popover-status"
+          onClick={() => { onToggleCapture(); setAudioPillOpen(false); }}
+        >
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <i className={`mc-dot ${capturing ? 'mc-dot-ok' : 'mc-dot-idle'}`} />
+            <span>{capturing ? '正在采集' : '已暂停采集'}</span>
+          </span>
+          <span style={{ color: 'var(--text-muted)', fontSize: 10.5 }}>{capturing ? '点击暂停' : '点击开始'}</span>
+        </button>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           <button
             type="button"
             className={`mc-btn mc-btn-sm ${session.audioSource === 'system' ? 'mc-btn-primary' : 'mc-btn-ghost'}`}
-            style={{ height: 24, borderRadius: 99, flex: 1 }}
+            style={{ height: 26, borderRadius: 99, flex: 1 }}
             onClick={() => { onSwitchAudioSource('system'); setAudioPillOpen(false); }}
           >
             <IconSpeaker size={12} /> 系统音频
@@ -1299,7 +1343,7 @@ export function WorkbenchView({
           <button
             type="button"
             className={`mc-btn mc-btn-sm ${session.audioSource === 'mic' ? 'mc-btn-primary' : 'mc-btn-ghost'}`}
-            style={{ height: 24, borderRadius: 99, flex: 1 }}
+            style={{ height: 26, borderRadius: 99, flex: 1 }}
             onClick={() => { onSwitchAudioSource('mic'); setAudioPillOpen(false); }}
           >
             <IconMic size={12} /> 麦克风
@@ -1354,15 +1398,17 @@ export function WorkbenchView({
         {effectiveLibEnabled && (
           <div className="mc-field" style={{ gap: 4 }}>
             <label className="mc-field-label" style={{ fontSize: 11.5 }}>本场岗位目录</label>
-            <select
-              className="mc-select"
-              style={{ padding: '4px 8px', fontSize: 12 }}
+            <CustomSelect
+              className="mc-filter-select"
+              style={{ height: 28, fontSize: 12, width: '100%' }}
+              ariaLabel="本场岗位目录"
               value={session.role || ''}
-              onChange={e => onChangeSessionMeta({ role: e.target.value })}
-            >
-              <option value="">通用（默认岗位）</option>
-              {(library?.roles || []).map(r => <option key={r} value={r}>{r}</option>)}
-            </select>
+              onChange={val => onChangeSessionMeta({ role: val })}
+              options={[
+                { value: '', label: '通用（默认岗位）' },
+                ...(library?.roles || []).map(r => ({ value: r, label: r }))
+              ]}
+            />
           </div>
         )}
         <div className="mc-field-hint" style={{ fontSize: 11 }}>
@@ -1427,153 +1473,78 @@ export function WorkbenchView({
         </div>
       </AnchoredPopover>
 
-      {/* 5. Coding / 作答偏好 Popover (anchored directly above ⊞ button!) */}
-      <AnchoredPopover
+      {/* 5. Coding / 作答偏好 Popover (shared between Interview Workbench and Written Floating Window) */}
+      <CodingPrefsPopover
         open={codingPopoverOpen}
         anchorRef={codingBtnRef}
-        placement="top"
-        align="start"
-        offset={8}
-        width={268}
-        estimatedHeight={280}
-        className="mc-dropdown-menu"
-        style={{ padding: 10, gap: 9 }}
-        ariaLabel="作答偏好设置"
+        codingPrefs={codingPrefs}
+        onChange={next => void onUpdatePrefs({ codingPrefs: next })}
         onClose={() => setCodingPopoverOpen(false)}
-      >
-        <div className="mc-pref-row">
-          <span className="mc-pref-label">题型</span>
-          <div className="mc-segmented">
-            <button
-              type="button"
-              className={`mc-seg-btn${codingPrefs.mode === 'normal' ? ' is-active' : ''}`}
-              onClick={() => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, mode: 'normal' } })}
-            >
-              常规
-            </button>
-            <button
-              type="button"
-              className={`mc-seg-btn${codingPrefs.mode === 'coding' ? ' is-active' : ''}`}
-              onClick={() => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, mode: 'coding' } })}
-            >
-              <IconCode size={11} /> Coding
-            </button>
-          </div>
-        </div>
+      />
 
-        {codingPrefs.mode === 'coding' && (
-          <>
-            <div className="mc-pref-row">
-              <span className="mc-pref-label">编程语言</span>
-              <select
-                className="mc-select"
-                style={{ width: 132, height: 26, padding: '0 8px', fontSize: 12 }}
-                value={codingPrefs.language}
-                onChange={e => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, language: e.target.value } })}
-              >
-                {CODING_LANGUAGES.map(l => <option key={l.id} value={l.id}>{l.label}</option>)}
-              </select>
-            </div>
-
-            <div className="mc-pref-row">
-              <span className="mc-pref-label">代码格式</span>
-              <div className="mc-segmented">
-                {CODING_FORMATS.map(fmt => (
-                  <button
-                    key={fmt.id}
-                    type="button"
-                    className={`mc-seg-btn${codingPrefs.codeFormat === fmt.id ? ' is-active' : ''}`}
-                    onClick={() => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, codeFormat: fmt.id } })}
-                  >
-                    {fmt.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="mc-pref-row">
-              <span className="mc-pref-label">结论格式</span>
-              <div className="mc-segmented">
-                {CODING_EXPLAIN_MODES.map(m => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    className={`mc-seg-btn${codingPrefs.explainMode === m.id ? ' is-active' : ''}`}
-                    onClick={() => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, explainMode: m.id } })}
-                  >
-                    {m.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="mc-dropdown-sep" style={{ margin: '1px 0' }} />
-
-            <div className="mc-pref-row">
-              <span className="mc-pref-label">附带时间 / 空间复杂度</span>
-              <Switch
-                checked={codingPrefs.includeComplexity}
-                onChange={v => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, includeComplexity: v } })}
-              />
-            </div>
-            <div className="mc-pref-row">
-              <span className="mc-pref-label">提示边界条件</span>
-              <Switch
-                checked={codingPrefs.includeEdgeCases}
-                onChange={v => void onUpdatePrefs({ codingPrefs: { ...codingPrefs, includeEdgeCases: v } })}
-              />
-            </div>
-          </>
-        )}
-      </AnchoredPopover>
-
-      {/* 6. Bottom-Right Model & Health Status Popover */}
+      {/* 6. Bottom-Right Model & Health Status Popover (per-capability deep-links — M13) */}
       <AnchoredPopover
         open={modelPopoverOpen}
         anchorRef={modelBtnRef}
         placement="top"
         align="end"
         offset={8}
-        width={256}
-        estimatedHeight={190}
+        width={276}
+        estimatedHeight={220}
         className="mc-dropdown-menu"
-        style={{ padding: 10, gap: 8 }}
+        style={{ padding: 10, gap: 6 }}
         ariaLabel="当前模型与服务状态"
         onClose={() => setModelPopoverOpen(false)}
       >
-        <div style={{ fontSize: 12.5, fontWeight: 600 }}>当前模型与本地服务</div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 12 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-            <span style={{ color: 'var(--text-muted)' }}>文本模型</span>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
-              <i className={`mc-dot ${health.llm.ready ? 'mc-dot-ok' : 'mc-dot-warn'}`} />
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 150 }}>
-                {settings?.llm?.model || '未配置'}
-              </span>
+        <div style={{ fontSize: 12.5, fontWeight: 600, padding: '0 4px' }}>当前模型与本地服务</div>
+        {[
+          {
+            cap: 'text-llm',
+            label: '回答模型',
+            dot: health.llm.ready ? 'mc-dot-ok' : 'mc-dot-warn',
+            value: settings?.llm?.model || '待配置'
+          },
+          {
+            cap: 'asr',
+            label: '语音识别',
+            dot: health.asr.ready ? 'mc-dot-ok' : health.asr.state === 'err' ? 'mc-dot-err' : 'mc-dot-warn',
+            value: health.asr.label
+          },
+          {
+            cap: 'vision',
+            label: '截图视觉',
+            dot: health.vision.ready ? 'mc-dot-ok' : 'mc-dot-idle',
+            value: health.vision.label
+          },
+          {
+            cap: 'kb',
+            label: '本地资料库',
+            dot: effectiveLibEnabled ? 'mc-dot-ok' : 'mc-dot-idle',
+            value: effectiveLibEnabled ? `已启用 (${library?.files?.length || 0} 篇)` : '本场关闭'
+          }
+        ].map((row) => (
+          <button
+            key={row.cap}
+            type="button"
+            className="mc-dropdown-item"
+            style={{ justifyContent: 'space-between', padding: '6px 8px', fontSize: 12 }}
+            onClick={() => {
+              setModelPopoverOpen(false);
+              if (onNavigateCapability) onNavigateCapability(row.cap);
+              else if (row.cap === 'kb') onOpenKnowledgeSettings?.();
+              else onOpenSettings?.();
+            }}
+          >
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--text-muted)' }}>
+              <i className={`mc-dot ${row.dot}`} />
+              <span>{row.label}</span>
             </span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-            <span style={{ color: 'var(--text-muted)' }}>语音识别</span>
-            <span>{health.asr.label}</span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-            <span style={{ color: 'var(--text-muted)' }}>截图视觉</span>
-            <span>{health.vision.label}</span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-            <span style={{ color: 'var(--text-muted)' }}>本地资料库</span>
-            <span>{effectiveLibEnabled ? `已启用 (${library?.files?.length || 0} 份)` : '本场关闭'}</span>
-          </div>
-        </div>
-        <div className="mc-dropdown-sep" style={{ margin: '2px 0' }} />
-        <button
-          type="button"
-          className="mc-btn mc-btn-sm mc-btn-primary"
-          style={{ width: '100%' }}
-          onClick={() => { setModelPopoverOpen(false); onOpenSettings(); }}
-        >
-          前往模型与接口设置 →
-        </button>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, maxWidth: 155 }}>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }}>{row.value}</span>
+              <span style={{ color: 'var(--text-faint)' }}>→</span>
+            </span>
+          </button>
+        ))}
       </AnchoredPopover>
 
       {/* 7. Gear Popover (anchored directly below Gear button, immune to workbench hover opacity!) */}

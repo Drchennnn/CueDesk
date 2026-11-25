@@ -68,8 +68,29 @@ test('memory-store auto-snapshots external agent edits, supports diff, pending-f
   assert(fs.existsSync(arch.rawMdPath));
   assert(fs.existsSync(arch.sessionJsonPath));
   assert(fs.existsSync(arch.reflectionPath));
-  assert(arch.agentPrompt.includes('复盘与更新规则.md'));
+  assert.equal(arch.prerequisites.rulebookExists, false);
+  assert(!arch.agentPrompt.includes('复盘与更新规则.md'));
   assert(arch.agentPrompt.includes('前面有点快'));
+
+  // 6. Generating standard rulebook makes subsequent archive prompts cite it
+  const initRule = store.ensureReviewRulebook();
+  assert.equal(initRule.ok, true);
+  const archWithRule = store.archiveSessionToRole({
+    session: {
+      id: 'sess_1',
+      name: '测试一面',
+      role: '测试公司-全栈实习',
+      audioSource: 'system',
+      createdAt: Date.now(),
+      segments: [],
+      questions: []
+    },
+    roleDirectory: '测试公司-全栈实习',
+    roundLabel: '一面',
+    userFeeling: '前面有点快，后面聊顺了'
+  });
+  assert.equal(archWithRule.prerequisites.rulebookExists, true);
+  assert(archWithRule.agentPrompt.includes('复盘与更新规则.md'));
   // Verify NO wav files were copied inside kbRoot
   const archivedFiles = fs.readdirSync(arch.archiveDir);
   assert(!archivedFiles.some(f => f.endsWith('.wav')));

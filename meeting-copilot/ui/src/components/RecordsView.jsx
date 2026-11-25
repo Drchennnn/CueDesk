@@ -18,6 +18,8 @@ import {
   IconX
 } from './Icons.jsx';
 import { EvidencePanel, ModelAnswers, Switch, cleanAnswerReferences } from './SharedWidgets.jsx';
+import { CustomSelect } from './CustomSelect.jsx';
+import { computeLineDiff } from '../core/lineDiff.js';
 
 function renderInlineMd(text) {
   const parts = String(text || '').split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
@@ -50,23 +52,6 @@ function formatDuration(sec) {
   const m = Math.floor(s / 60);
   const r = s % 60;
   return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
-}
-
-function computeLineDiff(beforeText, afterText) {
-  const a = String(beforeText || '').split(/\r?\n/);
-  const b = String(afterText || '').split(/\r?\n/);
-  const rows = [];
-  const max = Math.max(a.length, b.length);
-  for (let i = 0; i < max; i++) {
-    const la = a[i];
-    const lb = b[i];
-    if (la === lb) rows.push({ kind: 'same', line: i + 1, text: la ?? '' });
-    else {
-      if (la !== undefined) rows.push({ kind: 'del', line: i + 1, text: la });
-      if (lb !== undefined) rows.push({ kind: 'add', line: i + 1, text: lb });
-    }
-  }
-  return rows;
 }
 
 const SOURCE_LABELS = {
@@ -200,9 +185,11 @@ function AgentArchiveReviewTab({ session, library }) {
   const [nextStatus, setNextStatus] = useState('waiting');
   const [feeling, setFeeling] = useState('');
   const [busy, setBusy] = useState(false);
+  const [ruleBusy, setRuleBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
 
   const runArchive = async () => {
     if (!roleDir) {
@@ -211,6 +198,7 @@ function AgentArchiveReviewTab({ session, library }) {
     }
     setBusy(true);
     setError('');
+    setNotice('');
     try {
       const res = await window.mc.memoryArchiveSession({
         session,
@@ -227,6 +215,25 @@ function AgentArchiveReviewTab({ session, library }) {
     }
   };
 
+  const generateStandardRulebook = async () => {
+    setRuleBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const created = await window.mc.memoryInitRulebook?.();
+      if (created?.ok) {
+        setNotice('已生成标准《复盘与更新规则.md》，并刷新外部 Agent 复盘指令。');
+        if (result) {
+          await runArchive();
+        }
+      }
+    } catch (e) {
+      setError(e.message || '生成规则文件失败');
+    } finally {
+      setRuleBusy(false);
+    }
+  };
+
   const copyPrompt = async () => {
     if (!result?.agentPrompt) return;
     try {
@@ -236,14 +243,16 @@ function AgentArchiveReviewTab({ session, library }) {
     } catch {}
   };
 
+  const prereq = result?.prerequisites;
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <section className="mc-card">
         <div className="mc-card-head">
           <div>
-            <h3 className="mc-card-title">一键归档并交由 Codex / Antigravity 深度复盘</h3>
+            <h3 className="mc-card-title">归档本场记录并交由外部 Agent（Codex / Antigravity）复盘</h3>
             <p className="mc-card-desc">
-              按《复盘与更新规则》将原始转录、AI 对照草稿与双轨 WAV 路径指针落盘到对应岗位档案（不复制大音频进 Git），并生成即贴即用的 Agent 复盘指令。
+              分两步完成：① 本软件先把原始转录、AI 草稿与双轨 WAV 指针落盘到岗位档案（不拷贝大音频进 Git）；② 复制指令到外部 Agent 执行复盘并回写记忆库。
             </p>
           </div>
         </div>
@@ -251,21 +260,34 @@ function AgentArchiveReviewTab({ session, library }) {
           <div className="mc-grid-2">
             <div className="mc-field">
               <label className="mc-field-label">归档目标岗位目录</label>
-              <select className="mc-select" value={roleDir} onChange={e => setRoleDir(e.target.value)}>
-                <option value="">请选择岗位…</option>
-                {roles.map(r => <option key={r} value={r}>{r}</option>)}
-              </select>
+              <CustomSelect
+                className="mc-select"
+                ariaLabel="归档目标岗位目录"
+                value={roleDir}
+                onChange={setRoleDir}
+                options={[
+                  { value: '', label: '请选择岗位…' },
+                  ...roles.map(r => ({ value: r, label: r }))
+                ]}
+              />
             </div>
             <div className="mc-field">
               <label className="mc-field-label">本场面试轮次 & 更新状态</label>
               <div style={{ display: 'flex', gap: 6 }}>
                 <input className="mc-input" style={{ flex: 1 }} value={roundLabel} onChange={e => setRoundLabel(e.target.value)} placeholder="一面 / 二面 / HR面" />
-                <select className="mc-select" style={{ width: 112 }} value={nextStatus} onChange={e => setNextStatus(e.target.value)}>
-                  <option value="waiting">待结果</option>
-                  <option value="interviewing">面试中</option>
-                  <option value="offer">已获 Offer</option>
-                  <option value="closed">已结束</option>
-                </select>
+                <CustomSelect
+                  className="mc-select"
+                  style={{ width: 112 }}
+                  ariaLabel="归档后岗位状态"
+                  value={nextStatus}
+                  onChange={setNextStatus}
+                  options={[
+                    { value: 'waiting', label: '待结果' },
+                    { value: 'interviewing', label: '面试中' },
+                    { value: 'offer', label: '已获 Offer' },
+                    { value: 'closed', label: '已结束' }
+                  ]}
+                />
               </div>
             </div>
           </div>
@@ -273,24 +295,25 @@ function AgentArchiveReviewTab({ session, library }) {
           <div className="mc-field">
             <label className="mc-field-label">
               <span>本次面试主观体验与补充感受（可选）</span>
-              <span className="mc-field-hint">留空则由 Agent 按规则「模式 B」分析原始转录中的卡壳/绕圈特征</span>
+              <span className="mc-field-hint">留空则提示外部 Agent 仅依据原始转录中的客观特征分析</span>
             </label>
             <textarea
               className="mc-textarea"
               rows={3}
               value={feeling}
               onChange={e => setFeeling(e.target.value)}
-              placeholder="例如：今天整体像聊天不太紧张，但被追问 LangChain 底层工具调用参数时卡壳了…"
+              placeholder="例如：今天整体像聊天不太紧张，但被追问某个细节时卡壳了…"
             />
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <button type="button" className="mc-btn mc-btn-primary" disabled={busy || !library?.root} onClick={() => void runArchive()}>
-              <IconSparkles size={14} /> {busy ? '正在归档…' : '归档本场并生成 Agent 复盘指令'}
+              <IconSparkles size={14} /> {busy ? '正在归档…' : '归档本场并检查外部复盘依赖'}
             </button>
-            {!library?.root && <span className="mc-field-hint">请先在「知识库」配置资料根目录</span>}
+            {!library?.root && <span className="mc-field-hint">请先在「知识库」选择资料文件夹</span>}
           </div>
 
+          {notice && <div className="mc-alert mc-alert-ok">{notice}</div>}
           {error && <div className="mc-alert mc-alert-err">{error}</div>}
         </div>
       </section>
@@ -299,20 +322,66 @@ function AgentArchiveReviewTab({ session, library }) {
         <section className="mc-card">
           <div className="mc-card-head">
             <div>
-              <h3 className="mc-card-title">已归档至：{result.relArchive}</h3>
-              <p className="mc-card-desc">直接复制下方指令发送给 Codex 或 Antigravity；Agent 更新 `面试记忆/` 后，回到本页「记忆动态」即可审查 Diff 与一键回滚。</p>
+              <h3 className="mc-card-title">① 已归档至本机：{result.relArchive}</h3>
+              <p className="mc-card-desc">以下原始文件已写入本机目录，可直接打开核对。</p>
             </div>
-            <div style={{ display: 'flex', gap: 6 }}>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               <button type="button" className="mc-btn mc-btn-sm" onClick={() => void window.mc.memoryOpenPath?.(result.archiveDir)}>
                 <IconFolder size={13} /> 打开归档目录
               </button>
-              <button type="button" className="mc-btn mc-btn-sm mc-btn-primary" onClick={() => void copyPrompt()}>
-                {copied ? <><IconCheck size={12} /> 已复制指令</> : <><IconCopy size={12} /> 一键复制给 Agent</>}
+              <button type="button" className="mc-btn mc-btn-sm" onClick={() => void window.mc.memoryOpenPath?.(result.rawMdPath)}>
+                打开转录与参考
+              </button>
+              <button type="button" className="mc-btn mc-btn-sm" onClick={() => void window.mc.memoryOpenPath?.(result.sessionJsonPath)}>
+                打开 session.json
               </button>
             </div>
           </div>
-          <div className="mc-card-body">
-            <pre className="mc-evidence-excerpt" style={{ maxHeight: 280 }}>{result.agentPrompt}</pre>
+          <div className="mc-card-body" style={{ gap: 12 }}>
+            {prereq && !prereq.rulebookExists ? (
+              <div className="mc-alert mc-alert-warn" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                <div>
+                  <strong>② 依赖检查：目录中暂无《复盘与更新规则.md》</strong>
+                  <div style={{ fontSize: 12, marginTop: 2 }}>
+                    下方指令已自动改为「自包含指令」（不引用不存在的文件），可直接使用；也可以一键在根目录生成标准规则文件供长期复用。
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="mc-btn mc-btn-sm mc-btn-primary"
+                  disabled={ruleBusy}
+                  style={{ flexShrink: 0 }}
+                  onClick={() => void generateStandardRulebook()}
+                >
+                  {ruleBusy ? '正在生成…' : '生成标准规则'}
+                </button>
+              </div>
+            ) : (
+              <div className="mc-alert mc-alert-ok" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                <div>
+                  <strong>② 依赖检查通过：全部引用路径均存在于本机</strong>
+                  <div style={{ fontSize: 12, marginTop: 2 }}>已包含规则文件《复盘与更新规则.md》与全部归档产物。</div>
+                </div>
+                {prereq?.rulebookPath && (
+                  <button type="button" className="mc-btn mc-btn-sm" onClick={() => void window.mc.memoryOpenPath?.(prereq.rulebookPath)}>
+                    打开规则文件
+                  </button>
+                )}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <div>
+                <strong style={{ fontSize: 13 }}>③ 下一步：在外部 Codex / Antigravity 中运行复盘</strong>
+                <div className="mc-field-hint">
+                  复制下方指令粘贴到外部 Agent 会话，它会在本场目录产出 <code>转录校对版.md</code>、<code>面试复盘.md</code> 并更新 <code>面试记忆/</code>。
+                </div>
+              </div>
+              <button type="button" className="mc-btn mc-btn-sm mc-btn-primary" style={{ flexShrink: 0 }} onClick={() => void copyPrompt()}>
+                {copied ? <><IconCheck size={12} /> 已复制指令</> : <><IconCopy size={12} /> 复制给外部 Agent</>}
+              </button>
+            </div>
+            <pre className="mc-evidence-excerpt" style={{ maxHeight: 260 }}>{result.agentPrompt}</pre>
           </div>
         </section>
       )}
@@ -862,17 +931,18 @@ export function RecordsView({
                       </h3>
                       <p className="mc-card-desc">确认前严格不进入实时面试提示，彻底防止外部复盘误写引发事实幻觉。</p>
                     </div>
-                    <select
-                      className="mc-select"
-                      style={{ width: 170, height: 28, fontSize: 12 }}
+                    <CustomSelect
+                      className="mc-filter-select"
+                      style={{ width: 196, height: 28, fontSize: 12 }}
                       value={approveTarget}
-                      onChange={e => setApproveTarget(e.target.value)}
-                      aria-label="审核通过目标分区"
-                    >
-                      <option value="weakness_pitfall">通过后并入：薄弱项与踩坑</option>
-                      <option value="speaking_style">通过后并入：表达与偏好</option>
-                      <option value="company_insight">通过后并入：公司与岗位洞察</option>
-                    </select>
+                      onChange={setApproveTarget}
+                      ariaLabel="审核通过目标分区"
+                      options={[
+                        { value: 'weakness_pitfall', label: '通过后并入：薄弱项与踩坑' },
+                        { value: 'speaking_style', label: '通过后并入：表达与偏好' },
+                        { value: 'company_insight', label: '通过后并入：公司与岗位洞察' }
+                      ]}
+                    />
                   </div>
                   <div className="mc-card-body" style={{ gap: 8 }}>
                     {pendingItems.length > 0 ? pendingItems.map((it) => (
@@ -946,20 +1016,28 @@ export function RecordsView({
                       <button type="button" className="mc-icon-btn" onClick={() => setSnapDiff(null)}><IconX size={14} /></button>
                     </div>
                     <div className="mc-card-body" style={{ gap: 12 }}>
-                      {snapDiff.files.filter(f => f.changed).map(f => (
-                        <div key={f.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                          <strong style={{ fontSize: 12.5 }}>{f.title}</strong>
-                          <div className="mc-kb-diff-box" style={{ maxHeight: 240 }}>
-                            {computeLineDiff(f.before, f.after).filter(r => r.kind !== 'same').map((row, i) => (
-                              <div key={i} className={`mc-kb-diff-line is-${row.kind}`}>
-                                <span className="mc-kb-diff-ln">{row.line}</span>
-                                <span className="mc-kb-diff-sign">{row.kind === 'add' ? '+' : '-'}</span>
-                                <span>{row.text}</span>
-                              </div>
-                            ))}
+                      {snapDiff.files.filter(f => f.changed).map(f => {
+                        const diff = computeLineDiff(f.before, f.after);
+                        const changedRows = diff.rows.filter(r => r.kind !== 'same');
+                        return (
+                          <div key={f.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <strong style={{ fontSize: 12.5 }}>{f.title}</strong>
+                              <span className="mc-badge mc-badge-ok">+{diff.addedCount}</span>
+                              <span className="mc-badge mc-badge-err">-{diff.removedCount}</span>
+                            </div>
+                            <div className="mc-kb-diff-box" style={{ maxHeight: 240 }}>
+                              {changedRows.map((row, i) => (
+                                <div key={i} className={`mc-kb-diff-line is-${row.kind}`}>
+                                  <span className="mc-kb-diff-ln">{row.newLine ?? row.oldLine ?? ''}</span>
+                                  <span className="mc-kb-diff-sign">{row.kind === 'add' ? '+' : '-'}</span>
+                                  <span>{row.text}</span>
+                                </div>
+                              ))}
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </section>
                 )}
@@ -1030,12 +1108,18 @@ export function RecordsView({
                     <p className="mc-settings-cat-desc">点开任意场次即可回看问答、实时转写、双轨 WAV 录音，并一键归档发送给 Codex / 反重力复盘。</p>
                   </div>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <select className="mc-filter-select" value={timeRange} onChange={e => setTimeRange(e.target.value)} aria-label="按时间筛选">
-                      <option value="all">全部时间</option>
-                      <option value="today">今天</option>
-                      <option value="7d">近 7 天</option>
-                      <option value="30d">近 30 天</option>
-                    </select>
+                    <CustomSelect
+                      className="mc-filter-select"
+                      value={timeRange}
+                      onChange={setTimeRange}
+                      ariaLabel="按时间筛选"
+                      options={[
+                        { value: 'all', label: '全部时间' },
+                        { value: 'today', label: '今天' },
+                        { value: '7d', label: '近 7 天' },
+                        { value: '30d', label: '近 30 天' }
+                      ]}
+                    />
                     <div className="mc-search-wrap" style={{ width: 200 }}>
                       <span className="mc-search-icon"><IconSearch size={13} /></span>
                       <input className="mc-search-input" value={search} onChange={e => setSearch(e.target.value)} placeholder="搜索记录名称、岗位或问题…" />
@@ -1061,11 +1145,14 @@ export function RecordsView({
                           </div>
 
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+                            <button type="button" className="mc-btn mc-btn-sm" onClick={() => { setSelectedId(s.id); setDetailTab('qa'); }}>
+                              查看记录
+                            </button>
                             <button type="button" className="mc-btn mc-btn-sm" onClick={() => { setSelectedId(s.id); setDetailTab('review'); }}>
                               <IconSparkles size={11} /> 复盘归档
                             </button>
-                            <button type="button" className="mc-btn mc-btn-sm" onClick={() => onResumeFromRecord(s.id)}>
-                              <IconPlay size={11} /> {isLive ? '继续' : '打开'}
+                            <button type="button" className="mc-btn mc-btn-sm mc-btn-ghost" onClick={() => onResumeFromRecord(s.id)}>
+                              <IconPlay size={11} /> {isLive ? '继续会话' : '从记录继续'}
                             </button>
                             {confirmDeleteId === s.id ? (
                               <>

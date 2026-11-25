@@ -111,6 +111,85 @@ async function ready(f, fields = {}) {
   return pending;
 }
 
+async function correctPreview(f) {
+  await ready(f);
+  const proc = f.children.at(-1);
+  const stats = '{"type":"stats","vcamConnected":true,"mode":"correct","fps":30}\n';
+  proc.stdout.write(stats + stats);
+  const sessionId = f.controller.getState().sessionId;
+  f.controller.reportPreview({ sessionId, status: 'first-frame', width: 1280, height: 720 });
+  return { proc, sessionId };
+}
+
+function bitmap(width, height) {
+  const data = Buffer.alloc(54 + Math.ceil(width * 3 / 4) * 4 * height);
+  data.writeUInt16LE(0x4d42, 0);
+  data.writeUInt32LE(data.length, 2);
+  data.writeUInt32LE(54, 10);
+  data.writeUInt32LE(40, 14);
+  data.writeInt32LE(width, 18);
+  data.writeInt32LE(height, 22);
+  data.writeUInt16LE(1, 26);
+  data.writeUInt16LE(24, 28);
+  return 'data:image/bmp;base64,' + data.toString('base64');
+}
+
+test('same-frame comparison accepts a full-size fragmented BMP pair and ignores a different request', async t => {
+  const f = fixture(); t.after(() => f.controller.dispose());
+  const { proc } = await correctPreview(f);
+  const pending = f.controller.captureComparison();
+  const [, requestId] = f.commands.at(-1).trim().split(' ');
+  assert.match(requestId, /^[0-9a-f-]{36}$/);
+  await assert.rejects(f.controller.captureComparison(), /正在生成/);
+  proc.stdout.write('{"type":"comparison","requestId":"previous"}\n');
+  const image = bitmap(960, 720);
+  const line = JSON.stringify({ type: 'comparison', mode: 'correct', requestId, original: image, corrected: image }) + '\r\n';
+  for (let offset = 0; offset < line.length; offset += 65536) proc.stdout.write(line.slice(offset, offset + 65536));
+  const result = await pending;
+  assert.deepEqual(result, { original: image, corrected: image, width: 960, height: 720 });
+  assert.equal(f.controller.getState().enabled, true);
+  assert.equal(JSON.stringify(f.controller.getDiagnostics()).includes('data:image/'), false);
+});
+
+test('invalid comparison frames and a stopped preview reject only the current request', async t => {
+  const f = fixture(); t.after(() => f.controller.dispose());
+  await assert.rejects(f.controller.captureComparison(), /先用眼神矫正模式/);
+  const { proc, sessionId } = await correctPreview(f);
+  let pending = f.controller.captureComparison();
+  let requestId = f.commands.at(-1).trim().split(' ')[1];
+  proc.stdout.write(JSON.stringify({ type: 'comparison', mode: 'correct', requestId, original: bitmap(4, 4), corrected: 'data:text/html,invalid' }) + '\n');
+  await assert.rejects(pending, /画面无效/);
+  assert.equal(f.controller.getState().enabled, true);
+  pending = f.controller.captureComparison();
+  requestId = f.commands.at(-1).trim().split(' ')[1];
+  const rejected = assert.rejects(pending, /预览已停止/);
+  f.controller.reportPreview({ sessionId, status: 'stopped' });
+  await rejected;
+  proc.stdout.write(JSON.stringify({ type: 'comparison', mode: 'correct', requestId, original: bitmap(4, 4), corrected: bitmap(4, 4) }) + '\n');
+  assert.equal(f.controller.getState().phase, 'ready');
+  assert.equal(f.controller.getState().preview.status, 'stopped');
+});
+
+test('comparison timeout allows a retry and engine shutdown rejects the retry', async t => {
+  const f = fixture({ comparisonTimeout: 20 }); t.after(() => f.controller.dispose());
+  await correctPreview(f);
+  await assert.rejects(f.controller.captureComparison(), /超时/);
+  const rejected = assert.rejects(f.controller.captureComparison(), /引擎已停止/);
+  await f.controller.stop();
+  await rejected;
+});
+
+test('oversized output is rejected while ordinary status lines keep their lower size cap', async t => {
+  for (const [prefix, size] of [['{"type":"comparison",', 6 * 1024 * 1024], ['{"type":"stats",', 2 * 1024 * 1024]]) {
+    const f = fixture(); t.after(() => f.controller.dispose());
+    const { proc } = await correctPreview(f);
+    const rejected = assert.rejects(f.controller.captureComparison(), /过大的数据/);
+    proc.stdout.write(prefix + 'x'.repeat(size));
+    await rejected;
+    await f.controller.stop();
+  }
+});
+
 test('explicit source and picture settings reach the helper as separate argv', async t => {
   const f = fixture(); t.after(() => f.controller.dispose());
   f.controller.setSettings({ sourceDeviceId: 'browser-id', sourceDeviceName: 'USB Camera "2"', lookAway: true, temporal: 35, eyeSize: 4 });
@@ -182,6 +261,7 @@ function localPlatform(t, registration = {registered: false, dll: '', name: ''})
         execFile(exe, args, options, callback) {
           const script = Buffer.from(args[3], 'base64').toString('utf16le');
           scripts.push(script);
+          assert.equal(options.encoding, 'utf8');
           if (script.includes('$class=')) callback(null, JSON.stringify(registration), '');
           else if (script.includes('Get-CimInstance')) callback(null, '[]', '');
           else callback(Error('Unexpected camera registration attempt'), '', '');
@@ -226,14 +306,15 @@ test('an identical registered virtual camera DLL at another path is accepted wit
   assert.equal(f.scripts.length, 1);
 });
 
-test('camera status reads both COM class and category from the merged HKCR view', async t => {
-  const registration = {registered: true, dll: '', name: 'Current User Camera'};
+test('camera status reads UTF-8 names and both COM entries from the merged HKCR view', async t => {
+  const registration = {registered: true, dll: '', name: '当前用户虚拟摄像头'};
   const f = localPlatform(t, registration);
   registration.dll = path.join(f.engine, 'softcam.dll');
   const platform = f.create({});
   const actual = await platform.ensureCamera(await platform.resources(), () => { throw Error('Unexpected registration request'); });
-  assert.equal(actual.name, 'Current User Camera');
+  assert.equal(actual.name, '当前用户虚拟摄像头');
   assert.equal(f.scripts.length, 1);
+  assert.match(f.scripts[0], /^\[Console\]::OutputEncoding = \[System\.Text\.UTF8Encoding\]::new\(\$false\)\n/);
   assert.equal(f.scripts[0].split('Registry::HKEY_CLASSES_ROOT\\CLSID\\').length - 1, 2);
   assert.equal(f.scripts[0].includes('HKEY_LOCAL_MACHINE'), false);
   assert.ok(f.scripts[0].includes('$class=') && f.scripts[0].includes('$device='));
