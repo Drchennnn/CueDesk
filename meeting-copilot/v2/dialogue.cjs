@@ -21,11 +21,11 @@ function intent(question) {
 function catalog(documents) {
   return documents.filter(d => d.project_id).map(d => {
     const text = path.basename(d.file_path) + ' ' + d.title;
-    const aliases = [...new Set(text.match(/[A-Z]{2,}|九寨沟/g) || [])];
+    const aliases = [...new Set([...(Array.isArray(d.aliases) ? d.aliases : []), ...(text.match(/[A-Z]{2,}|九寨沟/g) || [])])];
     if (/SRAG/.test(text)) aliases.push('RAG', '课程问答', '课程检索');
     if (/九寨沟/.test(text)) aliases.push('客流预测', '客流项目');
     if (/IOD/i.test(text)) aliases.push('IOD2', 'IOD二期', '华为', '华为校企合作', '室内外识别', '多源感知');
-    return { id: d.project_id, title: d.title, aliases };
+    return { id: d.project_id, title: d.title, aliases: [...new Set(aliases)] };
   });
 }
 function mentioned(q, projects) {

@@ -166,14 +166,23 @@ class VectorIndex:
         write_json(self.config["report"], self.stats)
         print(json.dumps(self.stats, ensure_ascii=False), flush=True)
 
-    def search(self, question, limit, context_question="", previous_assistant_draft=""):
+    def search(self, question, limit, context_question="", previous_assistant_draft="", skip_rewrite=False):
         started = time.perf_counter()
-        cache_key = (question, context_question, previous_assistant_draft)
+        cache_key = (question, context_question, previous_assistant_draft, bool(skip_rewrite))
         with self.lock:
             if cache_key in self.result_cache:
                 cached = self.result_cache[cache_key]
                 return {**cached, "hits": cached["hits"][:limit], "milliseconds": round(1000 * (time.perf_counter() - started), 1)}
-            plan = self.rewriter.prepare(question, context_question, previous_assistant_draft)
+            if skip_rewrite and not previous_assistant_draft:
+                plan = {
+                    "original_query": question, "context_query": context_question or question,
+                    "query": question, "queries": [question],
+                    "status": "unchanged", "corrections": [], "clarification": "",
+                    "answer_focus": "", "already_explained": [],
+                    "model": None, "warning": None, "milliseconds": 0.0, "fast_path": True,
+                }
+            else:
+                plan = self.rewriter.prepare(question, context_question, previous_assistant_draft)
             missing = [text for text in plan["queries"] if text not in self.cache]
             if missing:
                 items, _ = self.embed(missing, "query")
@@ -223,6 +232,7 @@ class SearchRequest(BaseModel):
     question: str = Field(min_length=1, max_length=6000)
     context_question: str = Field(default="", max_length=8000)
     previous_assistant_draft: str = Field(default="", max_length=1400)
+    skip_rewrite: bool = Field(default=False)
     limit: int = Field(default=8, ge=1, le=20)
 
 
@@ -241,7 +251,7 @@ def create_app(index):
     @app.post("/search")
     def search(request: SearchRequest):
         try:
-            return index.search(request.question, request.limit, request.context_question, request.previous_assistant_draft)
+            return index.search(request.question, request.limit, request.context_question, request.previous_assistant_draft, request.skip_rewrite)
         except Exception as error:
             # Log only the exception class. Provider bodies may include request text.
             print("Search failed: " + type(error).__name__, flush=True)

@@ -44,7 +44,7 @@ function referenceMatch(terms,title,body){
   usable:meaningful.length>0&&(titleHits.length>=Math.min(2,meaningful.length)||meaningful.length===1&&bodyHits.length===1||bodyHits.length>=3&&coverage>=0.35)};
 }
 function finishPlan(plan,evidence){
- const knowledge=evidence.filter(e=>['technical_reference','technical_note'].includes(e.document_type));
+ const knowledge=evidence.filter(e=>['technical_reference','technical_note','interview_asked_qa','role_prep'].includes(e.document_type));
  const facts=evidence.filter(e=>['project_fact','experiment','personal_experience','resume'].includes(e.document_type));
  return {...plan,knowledge_status:knowledge.length?'local_candidates':'no_direct_local_knowledge',
   knowledge_ids:knowledge.map(e=>e.evidence_id),project_fact_ids:facts.map(e=>e.evidence_id),

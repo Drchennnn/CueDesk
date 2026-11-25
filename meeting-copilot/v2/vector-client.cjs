@@ -68,15 +68,25 @@ function createVectorClient() {
     return worker.starting;
   }
   return {
+    async health(options) {
+      if (!options?.enabled) return {enabled: false, online: false};
+      try {
+        const state = await health(options);
+        return {enabled: true, online: true, ...state};
+      } catch (error) {
+        return {enabled: true, online: false, error: error.message};
+      }
+    },
     async warm(options) {
       if (options?.enabled) await start(options);
     },
-    async search(options, question, store, contextQuestion = '', previousAssistantDraft = '') {
+    async search(options, question, store, contextQuestion = '', previousAssistantDraft = '', extra = {}) {
       if (!options?.enabled || path.resolve(options.library_root) !== store.root) return {hits: [], active: false};
       try {
         await start(options);
         const response = await request(options, '/search', {question, context_question: contextQuestion,
-          previous_assistant_draft: previousAssistantDraft.slice(-1400), limit: 8}, 9500);
+          previous_assistant_draft: previousAssistantDraft.slice(-1400),
+          skip_rewrite: Boolean(extra?.skipRewrite), limit: 8}, 9500);
         if (response.snapshot_sha256 !== options.snapshot_sha256) throw Error('检索快照不匹配');
         const docs = new Map(store.manifest.documents.filter(d => d.status === 'active').map(d => [d.document_id, d]));
         const hits = response.hits.filter(hit => {

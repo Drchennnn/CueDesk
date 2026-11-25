@@ -10,13 +10,37 @@ function excludedSource(relative){
  const parts=relative.replace(/\\/g,'/').split('/');
  return parts.some(part=>/^(?:node_modules|\.venv|venv|__pycache__)$/i.test(part))||/^requirements(?:[-.][^/]*)?\.txt$/i.test(parts.at(-1))||parts[0]==='通用技术知识'&&parts[1]==='assets';
 }
-function classify(rel,body){
+function parseFrontmatter(text){
+ const clean=String(text||'').replace(/^\uFEFF/,'');
+ const m=/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(clean);
+ if(!m)return {};
+ const out={};let activeKey=null;
+ for(const raw of m[1].split(/\r?\n/)){
+  const line=raw.trimEnd();if(!line.trim()||line.trim().startsWith('#'))continue;
+  const item=/^\s+-\s+(.+)$/.exec(line);
+  if(item&&activeKey){if(!Array.isArray(out[activeKey]))out[activeKey]=[];out[activeKey].push(item[1].trim().replace(/^['"]|['"]$/g,''));continue;}
+  const kv=/^([A-Za-z0-9_\-\u4e00-\u9fff]+)\s*:\s*(.*)$/.exec(line);
+  if(!kv){activeKey=null;continue;}
+  const k=kv[1].trim(),v=kv[2].trim();activeKey=k;
+  if(!v){out[k]=[];}
+  else if(v==='[]'){out[k]=[];}
+  else if(v.startsWith('[')&&v.endsWith(']')){out[k]=v.slice(1,-1).split(',').map(s=>s.trim().replace(/^['"]|['"]$/g,'')).filter(Boolean);}
+  else{out[k]=v.replace(/^['"]|['"]$/g,'');}
+ }
+ return out;
+}
+function classify(rel,body,fm=parseFrontmatter(body)){
+ const kind=String(fm.knowledge_kind||'').trim();
+ if(['candidate_profile','technical_reference','interview_memory','role_prep','interview_asked_qa','practice_drill','project_fact','guideline'].includes(kind))return kind;
  if(/^---\r?\n[\s\S]*?^knowledge_kind:\s*candidate_profile\s*$/m.test(body.slice(0,1000)))return 'candidate_profile';
  if(/^---\r?\n[\s\S]*?^knowledge_kind:\s*technical_reference\s*$/m.test(body.slice(0,1000)))return 'technical_reference';
- if(/面试记录|原始会话|原始转录|校对整理|复盘|backup|历史报告/i.test(rel))return 'archived';
- if(/个人设定|面试要求|资料选择|接入说明|README|JD\.md/i.test(rel))return 'guideline';
+ if(/^面试记忆\//.test(rel))return 'interview_memory';
+ if(/^通用技术知识\/实战真题补充\//.test(rel)&&!/README\.md$/i.test(rel))return 'interview_asked_qa';
+ if(/面试记录|原始会话|原始转录|校对整理|复盘|backup|历史报告|外部面经\//i.test(rel))return 'archived';
+ if(/复盘与更新规则|新增岗位与预测题规则|个人设定|面试要求|资料选择|接入说明|README|JD\.md/i.test(rel))return 'guideline';
  if(/简历/.test(rel))return 'resume';
  if(/^项目资料\//.test(rel))return 'project_fact';
+ if(/岗位准备\/.*预测题/.test(rel))return 'role_prep';
  if(/待确认|待补/.test(rel))return 'pending_fact';
  if(/技术.*笔记|技术原理|知识.*讲义|知识速成|技术笔记|基础讲解|基础知识.*讲解/.test(rel))return 'technical_note';
  if(/本人表达样例/.test(rel)&&/可用于项目事实推断:\s*否/.test(body))return 'guideline';
@@ -57,10 +81,16 @@ class Store{
  const isNew=!doc,changed=doc?.content_hash!==f.content_hash;doc={...(doc||{}),document_id:doc?.document_id||id('doc'),file_path:f.file_path,file_type:f.file_type,content_hash:f.content_hash,identity:f.identity,version:(doc?.version||0)+(changed?1:0),updated_at:changed?new Date(f.mtime).toISOString():doc.updated_at};reserved.add(doc.document_id);
  let pages;
  try{
- if(!changed&&doc.parser_version===7&&Array.isArray(this.index[doc.document_id])){newIndex[doc.document_id]=this.index[doc.document_id];}
+ if(!changed&&doc.parser_version===8&&Array.isArray(this.index[doc.document_id])){newIndex[doc.document_id]=this.index[doc.document_id];}
  else{if(f.file_type==='pdf'){if(!this.parsePdf)throw Error('PDF解析器不可用');pages=await this.parsePdf(f.bytes);if(!Array.isArray(pages)||!pages.some(p=>p.text?.trim()))throw Error('未提取到文字，需要OCR');}else pages=[{text:f.bytes.toString('utf8'),page:undefined}];
- const body=pages.map(p=>p.text).join('\n');doc.title=doc.title||(/^#\s+(.+)/m.exec(body)?.[1])||path.basename(f.file_path,path.extname(f.file_path));
- doc.document_type=doc.metadata_override?.document_type||classify(f.file_path,body);doc.parser_version=7;doc.tags=doc.tags||[];doc.status=doc.status==='archived'?'archived':doc.document_type==='archived'?'archived':'active';
+ const body=pages.map(p=>p.text).join('\n');
+ const fm=f.file_type==='pdf'?{}:parseFrontmatter(body);
+ doc.frontmatter=Object.keys(fm).length?fm:undefined;
+ doc.aliases=Array.isArray(fm.aliases)?fm.aliases:typeof fm.aliases==='string'&&fm.aliases?[fm.aliases]:[];
+ doc.memory_bucket=fm.memory_bucket||null;
+ doc.asked_in=fm.asked_in||null;
+ doc.title=doc.title||(/^#\s+(.+)/m.exec(body)?.[1])||path.basename(f.file_path,path.extname(f.file_path));
+ doc.document_type=doc.metadata_override?.document_type||classify(f.file_path,body,fm);doc.parser_version=8;doc.tags=doc.tags||[];doc.status=doc.status==='archived'?'archived':doc.document_type==='archived'?'archived':'active';
  doc.project_id=doc.project_id||(/^项目资料\//.test(f.file_path)?'project_'+doc.document_id:null);
  newIndex[doc.document_id]=pages.flatMap(p=>doc.document_type==='technical_reference'?splitReference(p.text,doc):split(p.text,doc,p.page));}
  if(doc.status==='missing'||doc.status==='retired'||doc.status==='error')doc.status='active';doc.parse_error=null;
@@ -74,7 +104,7 @@ class Store{
   else{newDocs.push({...d,status:'missing'});diagnostics.push('来源已缺失，保留历史身份：'+d.file_path);}
  }
  const roles=[];const dirs=[...new Set(newDocs.filter(d=>d.status==='active'&&d.file_path.startsWith('岗位档案/')).map(d=>d.file_path.split('/')[1]))];
- for(const dir of dirs){const members=newDocs.filter(d=>d.status==='active'&&d.file_path.startsWith('岗位档案/'+dir+'/'));const old=this.manifest.roles.find(r=>r.directory===dir)||this.manifest.roles.find(r=>members.some(d=>(r.documents||[]).includes(d.document_id)));const role={role_id:old?.role_id||id('role'),directory:dir,title:dir,documents:members.map(d=>d.document_id)};roles.push(role);for(const d of members)d.role_id=role.role_id;}
+ for(const dir of dirs){const members=newDocs.filter(d=>d.status==='active'&&d.file_path.startsWith('岗位档案/'+dir+'/'));const old=this.manifest.roles.find(r=>r.directory===dir)||this.manifest.roles.find(r=>members.some(d=>(r.documents||[]).includes(d.document_id)));const jdDoc=members.find(d=>/(?:^|\/)JD\.md$/i.test(d.file_path));const jfm=jdDoc?.frontmatter||{};const role={role_id:old?.role_id||id('role'),directory:dir,title:dir,company:jfm.company||dir.split('-')[0]||dir,role_name:jfm.role||dir.split('-').slice(1).join('-')||dir,status:jfm.status||'preparing',location:jfm.location||'',resume_ref:jfm.resume_ref||'',priority_projects:Array.isArray(jfm.priority_projects)?jfm.priority_projects:[],rounds:Array.isArray(jfm.rounds)?jfm.rounds:[],updated_at:jfm.updated_at||jdDoc?.updated_at||'',documents:members.map(d=>d.document_id)};roles.push(role);for(const d of members)d.role_id=role.role_id;}
  for(const d of newDocs)if(!d.file_path.startsWith('岗位档案/'))d.role_id=null;
  for(const required of this.manifest.policy?.required_document_ids||[])if(!newDocs.some(d=>d.document_id===required&&d.status==='active'))diagnostics.push('缺少必需文档ID：'+required);
  this.manifest={...this.manifest,documents:newDocs,roles};this.index=newIndex;this.diagnostics=diagnostics;
@@ -83,4 +113,4 @@ class Store{
  }
  locate(documentId,chunkId,contentHash){const d=this.manifest.documents.find(d=>d.document_id===documentId&&d.status==='active');if(!d)throw Error('来源已删除、归档或不可用；历史卡片保留当时摘录');const c=this.index[documentId]?.find(c=>c.chunk_id===chunkId&&c.content_hash===contentHash);if(!c)throw Error('来源内容已更新；请以卡片中的历史摘录为准');const f=inside(this.root,path.join(this.root,d.file_path));if(hash(fs.readFileSync(f))!==d.content_hash)throw Error('原文刚有变化，请刷新来源后重试');return {file:f,document:d,chunk:c};}
 }
-module.exports={Store,hash,split,classify,atomic,inside};
+module.exports={Store,hash,split,classify,parseFrontmatter,atomic,inside};

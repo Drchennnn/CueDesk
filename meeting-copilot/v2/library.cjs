@@ -24,7 +24,30 @@ const SYSTEM=`你生成候选人当场能说出的中文回答。按response_pro
 项目事实或采用的本地技术解释句末附直接支持该句的隐藏标记[[E1]]（可以多个）；标记不会显示在口述区。只引用本次提供的ID，原文必须真的支持这句话，不要拿概括性原则、题目或相似主题作证。模型通用知识无直接本地依据时可以不引用；自行组合的假设方案仅对资料支持的原则引用，不让引用变成已完成项目的证明。没有依据的个人事实只输出[[UNKNOWN:请本人补充的具体事实]]，不能代说有或没有，也不要接一篇通用知识来填满经历题。私下提醒用[[NOTE:内容]]。不要输出JSON或代码围栏。避免把常见简化当作绝对原理，保留必要适用条件。`;
 function searchText(s){return s.toLowerCase().replace(/最难|难点|挑战/g,'困难');}
 function terms(s){const related=expansions(s);s=searchText(s);s=s.replace(/你觉得|你认为|你看来|工程上|在实际落地中|假设|如果|做一个|一个|应该|通常|需要|进行|处理/g,' ');s=s.replace(/为什么|是什么|什么是|有什么|怎么|如何|怎样|哪些|什么|是不是|有没有|会不会|的话|一般|这个|那个|一下|已经|没有|自己|本人|是否|究竟|两个/g,' ');const out=(s.toLowerCase().match(/[a-z][a-z0-9.+-]*|\d+/g)||[]);for(const run of s.match(/[\u4e00-\u9fff]+/g)||[])for(let i=0;i<run.length-1;i++)out.push(run.slice(i,i+2));return [...new Set([...out,...related])].filter(s=>!['什么','怎么','这个','那个','一下','我们','你们','可以','就是','然后','如何','怎样','哪些','是否','一般','有什么','有什','么区','区别','时候','的话','以及','情况','具体','设计','需要','进行','问题','介绍','一下','不会','不能','什么'].includes(s));}
-function normRole(s){return s.replace(/[（(](?:已面|待面|已结束)[）)]/g,'').trim();}
+function normRole(s){return s.replace(/[（(](?:已面|未面试|待面|已结束)[）)]/g,'').trim();}
+function buildMemoryContext(allowed,index,role,maxChars=900){
+ const docs=allowed.filter(d=>d.document_type==='interview_memory'&&d.memory_bucket!=='pending_fact'&&!/待审核/.test(d.file_path));
+ if(!docs.length)return null;
+ const order={speaking_style:0,weakness_pitfall:1,company_insight:2};
+ docs.sort((a,b)=>(order[a.memory_bucket]??9)-(order[b.memory_bucket]??9));
+ const company=String(role?.company||role?.directory||'').split('-')[0].trim().toLowerCase();
+ const sections=[];let used=0;
+ for(const d of docs){
+  const chunks=(index[d.document_id]||[]).map(c=>c.content).join('\n');
+  let lines=chunks.split(/\r?\n/).map(l=>l.trim()).filter(l=>l&&!l.startsWith('>')&&!l.startsWith('<!--'));
+  if(d.memory_bucket==='company_insight'&&company){
+   const matched=lines.filter(l=>l.toLowerCase().includes(company));
+   lines=matched.length?matched:lines.slice(0,2);
+  }
+  const picked=[];
+  for(const l of lines){
+   if(used+l.length+2>maxChars)break;
+   picked.push(l);used+=l.length+2;
+  }
+  if(picked.length)sections.push({bucket:d.memory_bucket||'general',title:d.title,items:picked});
+ }
+ return sections.length?{usage:'仅控制口风、避坑提醒与公司关注点，绝不能证明本人做过或补造经历',sections}:null;
+}
 function safeText(s){return s.replace(/!\[[^\]]*\]\([^)]+\)/g,'[原图可在来源面板查看]').replace(/<!--[\s\S]*?-->/g,'').replace(/<a\s[^>]*><\/a>/g,'').replace(/https?:\/\/[^\s)]+/g,'[参考链接]').replace(/\[([^\]]+)\]\([^)]+\)/g,'$1').replace(/(?:[A-Za-z]:[\\/]|\/Users\/)[^\s\n]+/g,'[来源定位已隐藏]');}
 function createInterviewLibrary({file,parsePdf}){
  const vectorSource=createVectorSource(parsePdf),vectorClient=createVectorClient();
@@ -35,7 +58,7 @@ function createInterviewLibrary({file,parsePdf}){
  if(targetRole&&!r)throw Error('所选岗位无法唯一定位：'+targetRole+'；请在设置选择现有岗位');
  if(overrideRole===undefined&&r&&(config.role_id!==r.role_id||config.role!==r.directory)){config={...config,role_id:r.role_id,role:r.directory};atomic(file,config);}return r;}
  async function ready(overrideRole){const primary=current();await primary.refresh();const role=roleFor(primary,overrideRole);const s=await vectorSource.view(primary,config.vector_rag);return {s,role};}
- async function getPublic(){try{const {s,role}=await ready();const active=s.manifest.documents.filter(d=>d.status==='active'&&!d.retrieval_excluded&&(!d.role_id||d.role_id===role?.role_id));return {...config,material_status:materialStatus(config,active),roles:s.manifest.roles.map(r=>r.directory),files:active.map(d=>d.file_path),retired_sources:s.manifest.documents.filter(d=>d.status==='retired').map(d=>d.file_path),warning:s.diagnostics.join('\n'),last,indexDirectory:s.dir,documents:s.manifest.documents.map(({document_id,title,file_path,file_type,document_type,status,version,role_id,project_id,tags})=>({document_id,title,file_path,file_type,document_type,status,version,role_id,project_id,tags}))};}catch(e){return {...config,material_status:materialStatus(config,[],e.message),roles:store?.manifest.roles.map(r=>r.directory)||[],files:[],warning:e.message,last};}}
+ async function getPublic(){try{const {s,role}=await ready();const active=s.manifest.documents.filter(d=>d.status==='active'&&!d.retrieval_excluded&&(!d.role_id||d.role_id===role?.role_id));const allActive=s.manifest.documents.filter(d=>d.status==='active'&&!d.retrieval_excluded);const layerSummary={personal_truth:allActive.filter(d=>['resume','project_fact','experiment','personal_experience','candidate_profile'].includes(d.document_type)).length,interview_memory:allActive.filter(d=>d.document_type==='interview_memory').length,role_prep:active.filter(d=>d.document_type==='role_prep').length,interview_asked_qa:allActive.filter(d=>d.document_type==='interview_asked_qa').length,technical_reference:allActive.filter(d=>d.document_type==='technical_reference').length,archived_or_drill:s.manifest.documents.filter(d=>['archived','practice_drill'].includes(d.document_type)||d.status==='archived').length};return {...config,material_status:materialStatus(config,active),roles:s.manifest.roles.map(r=>r.directory),roles_meta:s.manifest.roles,layer_summary:layerSummary,files:active.map(d=>d.file_path),retired_sources:s.manifest.documents.filter(d=>d.status==='retired').map(d=>d.file_path),warning:s.diagnostics.join('\n'),last,indexDirectory:s.dir,documents:s.manifest.documents.map(({document_id,title,file_path,file_type,document_type,status,version,role_id,project_id,tags,aliases,memory_bucket,frontmatter,retrieval_excluded})=>({document_id,title,file_path,file_type,document_type,status,version,role_id,project_id,tags,aliases,memory_bucket,frontmatter,retrieval_excluded:Boolean(retrieval_excluded)}))};}catch(e){return {...config,material_status:materialStatus(config,[],e.message),roles:store?.manifest.roles.map(r=>r.directory)||[],roles_meta:store?.manifest.roles||[],files:[],warning:e.message,last};}}
  async function save(patch){const prior=config;config={...config,enabled:patch.enabled===true,root:String(patch.root||''),role:String(patch.role||'')};if(patch.persona_profile!==undefined)config.persona_profile=patch.persona_profile?{enabled:patch.persona_profile.enabled===true,document_id:String(patch.persona_profile.document_id||'')}:null;if(patch.intro_script!==undefined)config.intro_script=patch.intro_script?{enabled:patch.intro_script.enabled===true,document_id:String(patch.intro_script.document_id||''),heading:String(patch.intro_script.heading||'约2分钟')}:null;if(config.role!==prior.role||config.root!==prior.root)config.role_id=null;try{if(config.enabled)await ready();atomic(file,config);return getPublic();}catch(e){config=prior;throw e;}}
  async function build(input,fallback=[]){if(input.mode==='translate'||input.scene==='written')return fallback;
  const started=performance.now();
@@ -83,7 +106,8 @@ function createInterviewLibrary({file,parsePdf}){
   if(draft&&!/已经.{0,6}(?:实现|上线|接入)|我(?:们)?.{0,18}(?:做过|实现了|上线了|负责过)/.test(draftText)&&!catalog(allowed).some(p=>p.aliases.some(a=>draftText.toLowerCase().includes(a.toLowerCase()))))priorHistory.push({...draft,progress_only:true});
  }
  const history=priorHistory.map(m=>({source:m.progress_only?'当前假设方案上一条AI草稿，仅跟踪展示进度；不证明已实施或本人发言':m.role==='assistant'?'AI草稿，未确认、非个人事实':'历史提问，非事实确认',progress_only:Boolean(m.progress_only),text:String(m.content||'').slice(0,1400)}));
- const vectorRetrieval=allowReferences?await vectorClient.search(config.vector_rag,q,s,dialogue.effective_question,history.filter(m=>m.source.includes('AI草稿')).at(-1)?.text||''):{active:false,hits:[]};
+ const fastObjective=Boolean(!dialogue.continuation&&!dialogue.turn.correction&&!history.length&&!dialogue.project_reference_unresolved&&plan.reference_first&&q.length>=8&&q.length<=70&&!/这个|那个|它|刚才|上面|前面|然后呢|继续/.test(q)&&/[A-Za-z0-9]|什么|区别|原理|怎么选|如何选|作用|流程/.test(q));
+ const vectorRetrieval=allowReferences?await vectorClient.search(config.vector_rag,q,s,dialogue.effective_question,history.filter(m=>m.source.includes('AI草稿')).at(-1)?.text||'',{skipRewrite:fastObjective}):{active:false,hits:[]};
  const vectorRanks=new Map(vectorRetrieval.hits.map((hit,rank)=>[hit.chunk_id,{...hit,rank}]));
  const referenceAnchors=q.match(/redis|mysql|zset|mcp|lora|linux|vue|react|sqlite|qdrant|kafka|python|websocket|http\b/ig)||[];
  const personalSubjects=q.match(/spring\s*boot|kafka|redis|react|vue|Milvus|LoRA|微调|ZSet|排行榜|交易|线上事故/ig)||[];
@@ -91,25 +115,27 @@ function createInterviewLibrary({file,parsePdf}){
  const semanticFacets=facets(q).length?facets(q):dialogue.continuation?facets(dialogue.subject_question||''):[];
  const refs=allowed.filter(d=>d.document_type==='technical_reference').flatMap(d=>s.index[d.document_id]||[]);
  const idf=new Map(referenceTerms.map(t=>[t,1+Math.log(1+refs.length/(1+refs.filter(c=>c.content.toLowerCase().includes(t)).length))]));
- const scored=[];for(const d of allowed){if(['candidate_profile','draft','archived','guideline'].includes(d.document_type)||(d.document_type!=='technical_reference'&&/面经|面试题|参考回答|口语问答|复习导学|备考建议|复习计划|练习记录/.test(d.title+' '+d.file_path)))continue;for(const c of s.index[d.document_id]||[]){
+ const scored=[];for(const d of allowed){if(['candidate_profile','draft','archived','guideline','interview_memory','practice_drill'].includes(d.document_type)||(!['technical_reference','interview_asked_qa','role_prep'].includes(d.document_type)&&/面经|面试题|参考回答|口语问答|复习导学|备考建议|复习计划|练习记录/.test(d.title+' '+d.file_path)))continue;for(const c of s.index[d.document_id]||[]){
  const projectList=/哪些项目|项目有哪些|几个项目|介绍.{0,6}项目经历|介绍.{0,4}你的项目/.test(q);
  const unbound=!projects.length&&(dialogue.design||dialogue.project_reference_unresolved&&!projectList);
- if(unbound&&(d.project_id||!['technical_reference','technical_note','design_proposal'].includes(c.document_type)))continue;
- if(['draft','guideline','archived'].includes(c.document_type))continue;
+ if(unbound&&(d.project_id||!['technical_reference','technical_note','design_proposal','interview_asked_qa','role_prep'].includes(c.document_type)))continue;
+ if(['draft','guideline','archived','interview_memory','practice_drill'].includes(c.document_type))continue;
  if(/^(?:源码位置|来源|依据|出处)[：:]\s*$/.test(c.content.trim()))continue;
  if(c.content.split('\n').every(line=>!line.trim()||/^来源[：:]$|^\s*[-*]?\s*`?(?:[A-Za-z]:[\\/]|\/Users\/)/.test(line.trim())))continue;
  if(/(?:自测K\d|分钟练习|\*\*Q\d{1,3}\*\*)/.test(c.content))continue;
  const vectorHit=vectorRanks.get(c.chunk_id);
  if(c.document_type==='technical_reference'&&(!allowReferences||vectorRetrieval.active&&!vectorHit))continue;
+ if(c.document_type==='interview_asked_qa'&&!allowReferences)continue;
+ if(c.document_type==='role_prep'&&(plan.strict_personal||intents.includes('intro')||!role?.role_id||d.role_id!==role.role_id))continue;
  if(c.document_type==='technical_reference'&&!vectorHit&&referenceAnchors.length&&!referenceAnchors.some(t=>c.content.toLowerCase().includes(t.toLowerCase())))continue;
  if(c.document_type==='technical_reference'&&!vectorHit&&semanticFacets.length&&!semanticFacets.some(f=>matchesFacet(f,(c.question_title||'')+' '+d.title)))continue;
  const secondaryProject=generic&&!projects.length&&plan.allow_project_example&&d.project_id&&['project_fact','experiment','personal_experience'].includes(c.document_type);
- if(generic&&!secondaryProject&&!['technical_note','technical_reference','design_proposal'].includes(c.document_type))continue;
+ if(generic&&!secondaryProject&&!['technical_note','technical_reference','design_proposal','interview_asked_qa','role_prep'].includes(c.document_type))continue;
  if(c.content.length>6000)continue; // Preserve whole semantic blocks; report omission instead of slicing a table/code block.
  if(generic&&d.project_id&&!secondaryProject)continue;
  if(generic&&!secondaryProject&&['project_fact','experiment','personal_experience'].includes(c.document_type))continue;
  if(projects.length&&d.project_id&&!projects.includes(d.project_id))continue;
- if(projects.length&&!d.project_id&&!['technical_note','technical_reference'].includes(c.document_type)&&!intents.includes('intro'))continue;
+ if(projects.length&&!d.project_id&&!['technical_note','technical_reference','interview_asked_qa','role_prep'].includes(c.document_type)&&!intents.includes('intro'))continue;
  if(projects.length&&c.document_type==='resume'&&!intents.includes('intro'))continue;
  if(dialogue.experience&&!mixedKnowledge&&personalSubjects.length){
   if(!['resume','personal_experience','project_fact','experiment'].includes(c.document_type))continue;
@@ -119,6 +145,8 @@ function createInterviewLibrary({file,parsePdf}){
  }
  const title=searchText(d.title+' '+c.heading+' '+d.tags.join(' ')),body=searchText(c.content);let score=searchTerms.reduce((n,t)=>n+(title.includes(t)?4:body.includes(t)?1:0),0)/Math.sqrt(1+c.content.length/500);
  if(c.document_type==='technical_reference'&&!vectorHit){const question=searchText(c.question_title),match=referenceMatch(referenceTerms,question,body);if(!match.usable)continue;score=referenceTerms.reduce((n,t)=>n+(question.includes(t)?6*idf.get(t):body.includes(t)?0.35*idf.get(t):0),0);score+=currentTerms.filter(t=>idf.has(t)).reduce((n,t)=>n+(question.includes(t)?2*idf.get(t):0),0);}
+ if(c.document_type==='interview_asked_qa'){const match=referenceMatch(referenceTerms,searchText(c.heading+' '+d.title),body);if(!match.usable)continue;score+=16+match.title_hits*6;if(match.title_hits>=2||match.coverage>=0.6)score=Math.max(score,51.5);}
+ if(c.document_type==='role_prep'){const match=referenceMatch(referenceTerms.length?referenceTerms:searchTerms,searchText(c.heading),body);if(!match.usable)continue;score+=6+match.title_hits*3;}
  if(c.document_type==='technical_note'&&!referenceMatch(referenceTerms,searchText(c.heading),body).usable)continue;
  if(secondaryProject){const match=referenceMatch(searchTerms,c.heading.toLowerCase(),body);if(match.body_hits<2||match.coverage<0.35)continue;}
 
@@ -134,7 +162,10 @@ function createInterviewLibrary({file,parsePdf}){
  scored.sort((a,b)=>b.score-a.score);const selected=[],seen=new Set(),headingCounts=new Map();let chars=0;
  const intro=intents.includes('intro'),seeds=[];
  // Reserve factual project evidence before considering a much larger external corpus.
+ const topAsked=allowReferences?scored.find(x=>x.c.document_type==='interview_asked_qa'):null;
  const topReference=allowReferences?scored.find(x=>x.c.document_type==='technical_reference'):null;
+ const topRolePrep=!intro&&!plan.strict_personal?scored.find(x=>x.c.document_type==='role_prep'):null;
+ if(!intro&&plan.reference_first&&topAsked)seeds.push(topAsked);
  if(!intro&&plan.reference_first&&topReference)seeds.push(topReference);
  // Reserve one relevant block for every explicit topic in a compound question.
  if(projects.length&&!intro)for(const facet of facets(q)){
@@ -142,7 +173,9 @@ function createInterviewLibrary({file,parsePdf}){
   if(candidate&&!seeds.includes(candidate))seeds.push(candidate);
  }
  if(projects.length&&!intro)seeds.push(...scored.filter(x=>projects.includes(x.d.project_id)&&['project_fact','experiment','personal_experience'].includes(x.c.document_type)).slice(0,plan.reference_first?3:4));
+ if(!intro&&topAsked&&!seeds.includes(topAsked))seeds.push(topAsked);
  if(!intro&&topReference&&!seeds.includes(topReference))seeds.push(topReference);
+ if(!intro&&topRolePrep&&!seeds.includes(topRolePrep))seeds.push(topRolePrep);
  const secondary=scored.find(x=>x.secondaryProject);
  if(!intro&&secondary)seeds.push(...scored.filter(x=>x.secondaryProject&&x.d.project_id===secondary.d.project_id).slice(0,2));
  if(intro){
@@ -154,10 +187,11 @@ function createInterviewLibrary({file,parsePdf}){
    const own=candidates.find(x=>/个人主责|已有材料支持|个人职责与边界$/.test(x.c.heading));if(own)seeds.push(own);
   }
  }
- const referenceQuestions=new Set();let referenceChars=0,secondaryCount=0;
+ const referenceQuestions=new Set();let referenceChars=0,secondaryCount=0,rolePrepCount=0,rolePrepChars=0;
  for(const x of [...seeds,...scored]){if(x.secondaryProject&&(x.d.project_id!==secondary?.d.project_id||secondaryCount>=2))continue;if(selected.length>=(intro?12:8))break;const isRef=x.c.document_type==='technical_reference',refKey=x.d.document_id+'#'+x.c.question_id;
  if(isRef&&((!referenceQuestions.has(refKey)&&referenceQuestions.size>=3)||(projects.length&&referenceChars+x.c.content.length>4500)))continue;
- const key=x.d.document_id+'#'+x.c.heading;if((headingCounts.get(key)||0)>=3)continue;if(seen.has(x.c.content_hash)||chars+x.c.content.length>(intro?12000:10000))continue;headingCounts.set(key,(headingCounts.get(key)||0)+1);selected.push(x);if(x.secondaryProject)secondaryCount++;if(isRef){referenceQuestions.add(refKey);referenceChars+=x.c.content.length;}seen.add(x.c.content_hash);chars+=x.c.content.length;}
+ if(x.c.document_type==='role_prep'&&(rolePrepCount>=2||rolePrepChars+x.c.content.length>2200))continue;
+ const key=x.d.document_id+'#'+x.c.heading;if((headingCounts.get(key)||0)>=3)continue;if(seen.has(x.c.content_hash)||chars+x.c.content.length>(intro?12000:10000))continue;headingCounts.set(key,(headingCounts.get(key)||0)+1);selected.push(x);if(x.secondaryProject)secondaryCount++;if(isRef){referenceQuestions.add(refKey);referenceChars+=x.c.content.length;}if(x.c.document_type==='role_prep'){rolePrepCount++;rolePrepChars+=x.c.content.length;}seen.add(x.c.content_hash);chars+=x.c.content.length;}
  const evidence=selected.map(({d,c,score},i)=>({evidence_id:'E'+(i+1),document_id:d.document_id,chunk_id:c.chunk_id,document_title:d.title,project_id:d.project_id,role_id:d.role_id,document_type:c.document_type,heading:c.heading,source_location:c.source_location,content_hash:c.content_hash,document_hash:d.content_hash,version:d.version,retrieval_score:score,question_title:c.question_title,image_refs:c.image_refs,review_status:c.review_status,may_support_personal_action:['resume','personal_experience'].includes(c.document_type)||(['project_fact','experiment'].includes(c.document_type)&&/个人主责|本人补充|个人职责|已有材料支持|职责与归属/.test(c.heading)&&!/团队|他人|证据边界|待确认/.test(c.heading)),excerpt:c.content}));
  for(const item of evidence){const hit=vectorRanks.get(item.chunk_id);if(hit)Object.assign(item,{knowledge_entry_id:hit.entry_id,original_sources:hit.sources,vector_score:hit.score,rerank_score:hit.rerank_score});}
  const personalQuestion=dialogue.experience||intents.includes('intro')||(!generic&&intents.includes('fact'));
@@ -174,12 +208,15 @@ function createInterviewLibrary({file,parsePdf}){
  if(answerPlan.response_depth==='bounded_design')profile='能力范围外的大规模设计：约80—150字、三句左右。先说明不能给可靠的完整落地细节，再讲一个能解释的基础判断，最后指出必须验证的业务条件。不要承认讲不准后继续展开共识协议、分片和流量调度等专家方案；不声称已满足规模指标。';
  if(dialogue.continuation&&dialogue.turn.followup_only)profile='简短追问：约60—120字，只补一个下一步或本轮需要的新信息。上一条AI草稿仅用于知道已经展示了什么，避免再从头解释同一条链；不能把草稿当成已实施或本人已说过。';
  const roleContext=intro?[]:allowed.filter(d=>d.role_id===role?.role_id&&/(?:^|\/)JD\.md$/i.test(d.file_path)).slice(0,1).map(d=>({title:d.title,usage:'仅用于岗位关注点和回答深度，不证明本人能力或经历',text:(s.index[d.document_id]||[]).map(c=>c.content).join('\n').slice(0,1200)}));
+ const memoryEnabled=input.memoryEnabled!==false&&config.memory_recall_enabled!==false;
+ const memoryBudget=Number(config.memory_max_chars)>100?Math.min(2000,Number(config.memory_max_chars)):900;
+ const interviewMemory=!intro&&memoryEnabled?buildMemoryContext(allowed,s.index,role,memoryBudget):null;
  const tools=['Redis','Kafka','MySQL','Spring Boot','Go','React','Vue','Java','JavaScript','TypeScript','Docker','Kubernetes','AWS','Python','Flask','SQLite','FastAPI','Qdrant','XGBoost'];
  const own=evidence.filter(e=>e.may_support_personal_action&&!/待确认|不说|没有.{0,8}证据/.test(e.excerpt));
  const confirmed=tools.filter(tool=>own.some(e=>new RegExp('(?:^|[^a-z])'+tool.replace(' ','\\s*')+'(?![a-z])','i').test(e.excerpt)));
  const unfamiliar=persona?.skills.some(skill=>skill.level==='unfamiliar'&&terms(skill.area).some(t=>dialogue.effective_question.toLowerCase().includes(t)));
  const answerPolicy={intro,projectReference:Boolean(!intro&&(projects.length||dialogue.project_reference_unresolved)),unverifiedTools:intro?tools.filter(t=>!confirmed.includes(t)):[],absenceUnknown:Boolean(projects.length||dialogue.project_reference_unresolved||mixedKnowledge&&!supportsAbility(persona,q)||unfamiliar)};
- const messages=[{role:'system',content:SYSTEM+'\nretrieval_query是保守的检索理解，不是确认后的转录或个人事实。按原始问题保留否定、条件与经历边界。若status为ambiguous且词义会改变答案，先简短确认或在NOTE提示歧义，不能把改写猜测当成对方的原话。'+'\n当前日期为'+currentDate+'（香港时间）；已经开始的教育日期区间不能讲成未来入学。自我介绍技能只按confirmed_experience_tools和事实证据描述；未知技能不要代说熟悉、用过、只了解或没做过。\n场景的已给条件见scenario.constraints，每项保留提问原文；unconfirmed只是待确认，不能当成必需功能。总用户数不等于并发数，版本迭代不自动要求服务端；按题目实际运行方式和数据/密钥归属判断。未指明的产品不能擅自认成简历里某个项目，也不把面试官的批评当成本人的事实确认。对方纠正问题时先回应新焦点，不再重复上一轮例子；一轮问同一项目的耗时和困难，只用同一个项目，指代不明先澄清。短追问只推进一步，不照抄历史AI答案。'},{role:'user',content:JSON.stringify({retrieval_query:vectorRetrieval.query_plan,answer_plan:answerPlan,candidate_profile:persona,profile_supports_ability:supportsAbility(persona,q),role:role?.title||'通用',role_context:roleContext,confirmed_experience_tools:confirmed,current_date:currentDate,intent:intents,current_topic:{projects:dialogue.project_titles,question:dialogue.effective_question,subject:dialogue.subject_question,inherited:dialogue.inherited,project_reference_unresolved:dialogue.project_reference_unresolved},dialogue_action:dialogue.turn,scenario:dialogue.scenario,response_profile:profile,unknown_policy:'未提供或不支持的个人事实保持unknown；项目边界和一般方案可以分别解释，通用参考不构成履历',project_knowledge_bridge:bridge,project_feature_status:featureStatus,mixed_knowledge_and_experience:mixedKnowledge,evidence:evidence.map(e=>({id:e.evidence_id,type:e.document_type,title:e.document_title,heading:e.heading,may_support_personal_action:e.may_support_personal_action,text:safeText(e.excerpt)}))})}];
+ const messages=[{role:'system',content:SYSTEM+'\nretrieval_query是保守的检索理解，不是确认后的转录或个人事实。按原始问题保留否定、条件与经历边界。若status为ambiguous且词义会改变答案，先简短确认或在NOTE提示歧义，不能把改写猜测当成对方的原话。\nrole_prep是当前岗位提前预演的思路参考，interview_asked_qa是历次真实面试沉淀的通用技术参考，interview_memory是表达偏好与历史踩坑提醒；三者均不得证明本人做过或已上线，涉及假设方案一律用“如果由我设计，我会…”。'+'\n当前日期为'+currentDate+'（香港时间）；已经开始的教育日期区间不能讲成未来入学。自我介绍技能只按confirmed_experience_tools和事实证据描述；未知技能不要代说熟悉、用过、只了解或没做过。\n场景的已给条件见scenario.constraints，每项保留提问原文；unconfirmed只是待确认，不能当成必需功能。总用户数不等于并发数，版本迭代不自动要求服务端；按题目实际运行方式和数据/密钥归属判断。未指明的产品不能擅自认成简历里某个项目，也不把面试官的批评当成本人的事实确认。对方纠正问题时先回应新焦点，不再重复上一轮例子；一轮问同一项目的耗时和困难，只用同一个项目，指代不明先澄清。短追问只推进一步，不照抄历史AI答案。'},{role:'user',content:JSON.stringify({retrieval_query:vectorRetrieval.query_plan,answer_plan:answerPlan,candidate_profile:persona,profile_supports_ability:supportsAbility(persona,q),role:role?.title||'通用',role_context:roleContext,...(interviewMemory?{interview_memory:interviewMemory}:{}),confirmed_experience_tools:confirmed,current_date:currentDate,intent:intents,current_topic:{projects:dialogue.project_titles,question:dialogue.effective_question,subject:dialogue.subject_question,inherited:dialogue.inherited,project_reference_unresolved:dialogue.project_reference_unresolved},dialogue_action:dialogue.turn,scenario:dialogue.scenario,response_profile:profile,unknown_policy:'未提供或不支持的个人事实保持unknown；项目边界和一般方案可以分别解释，通用参考不构成履历',project_knowledge_bridge:bridge,project_feature_status:featureStatus,mixed_knowledge_and_experience:mixedKnowledge,evidence:evidence.map(e=>({id:e.evidence_id,type:e.document_type,title:e.document_title,heading:e.heading,may_support_personal_action:e.may_support_personal_action,text:safeText(e.excerpt)}))})}];
  if(dialogue.turn.correction&&dialogue.project_reference_unresolved)messages.push({role:'user',content:JSON.stringify({correction_context:'项目指代没有确认，不选另一个项目补故事。只回应本轮纠正后的重点，可解释一般判断；不编造本人遇到的具体障碍。'})});
  messages[0].content+='\n能力画像不证明学习路径、课程内容或选择动机。没有直接材料支持时，不编造何时开始学开发、是否上过课程、为什么当时没学；只说明已知的当前能力和今后的打算。若dialogue_action.open_alternative为true，只回答已完整提出的子问题，不补造尚未说完的备选项。按requested_facets覆盖复合问题的各部分；若材料能说明策略，只缺模型名、参数或独立贡献细节，正常讲策略，仅保留缺失细节，不能把整部分退为待确认。对方质疑上一条AI草稿的做法时，可以解释局限和以我会提出改进；草稿不证明本人真实手工或自动化测试经历。';
  messages.push({role:'system',content:'本轮口述要求。'+profile+'。个人学习来源、选择动机、习惯、代码量和token统计，以及具体失败事件，需要对应的直接事实，相关项目或能力画像不能推导这些事实。缺证据的部分仅写[[UNKNOWN:待补充的具体个人事实]]，不代说没有统计、不是课程学的或曾经失败。一般流程用我会表述。'+(dialogue.continuation?'追问仅回答本轮角度。已展示要点为'+JSON.stringify(vectorRetrieval.query_plan?.already_explained||[])+'。建议推进角度为'+(vectorRetrieval.query_plan?.answer_focus||'按原问题补充')+'。原问题优先于建议角度。':'')+(dialogue.turn.correction?'对方正在纠正此前回答的前提，只回应纠正后的焦点。历史中的未确认需求仍是假设。':'')});
@@ -217,6 +254,23 @@ function createInterviewLibrary({file,parsePdf}){
   }
   return {document_id:doc.document_id,title:doc.title,file_path:doc.file_path,file_type:doc.file_type,document_type:doc.document_type,version:doc.version,file:full,content};
  }
- return {getPublic,save,build,locate,readDocument,get enabled(){return config.enabled;}};
+ async function readChunks(ref){
+  const {s}=await ready();
+  const key=typeof ref==='string'?ref:(ref?.document_id||ref?.file_path||'');
+  const doc=s.manifest.documents.find(d=>d.status==='active'&&(d.document_id===key||d.file_path===key));
+  if(!doc)throw Error('未找到可用文档：'+key);
+  const chunks=(s.index[doc.document_id]||[]).map(c=>({
+   chunk_id:c.chunk_id,heading:c.heading,document_type:c.document_type,
+   source_location:c.source_location,chars:c.content.length,
+   may_support_personal_action:['resume','personal_experience'].includes(c.document_type)||(['project_fact','experiment'].includes(c.document_type)&&/个人主责|本人补充|个人职责|已有材料支持|职责与归属/.test(c.heading)&&!/团队|他人|证据边界|待确认/.test(c.heading)),
+   excerpt:c.content.slice(0,500)
+  }));
+  return {document_id:doc.document_id,title:doc.title,file_path:doc.file_path,document_type:doc.document_type,frontmatter:doc.frontmatter||null,chunks};
+ }
+ async function getRagStatus(){
+  const health=await vectorClient.health(config.vector_rag);
+  return {...health,endpoint:config.vector_rag?.endpoint||'',source_root:config.vector_rag?.source_root||'',replaced_directory:config.vector_rag?.replaced_directory||'',snapshot_sha256:config.vector_rag?.snapshot_sha256||''};
+ }
+ return {getPublic,save,build,locate,readDocument,readChunks,getRagStatus,get enabled(){return config.enabled;}};
 }
 module.exports={createInterviewLibrary,intent,terms,SYSTEM};
