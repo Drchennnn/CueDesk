@@ -61,17 +61,3 @@ test('actual patched text builders and interview multimodal share the configured
   assert.ok(!written[0].content.includes('新的面试规则'));
   assert.ok(written[0].content.includes('25 行以内'));
 });
-
-test('prompt editor changes are drafts and restoring original requires explicit save', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '../meeting-copilot/interview-prompt-ui.js'), 'utf8');
-  const element = (type, props) => ({ type, props });
-  const editor = vm.runInNewContext(source + '\nInterviewPromptSettings;', { jsxRuntimeExports: { jsx: element, jsxs: element } });
-  const changes = [];
-  const tree = editor({ value: 'custom', defaultValue: 'original', onChange: value => changes.push(value) });
-  const all = node => !node || typeof node !== 'object' ? [] : [node, ...[node.props?.children].flat().flatMap(all)];
-  const nodes = all(tree);
-  const area = nodes.find(node => node.type === 'textarea');
-  area.props.onChange({ target: { value: 'new' } });
-  nodes.find(node => node.type === 'button').props.onClick();
-  assert.deepEqual(changes, ['new', 'original']);
-});

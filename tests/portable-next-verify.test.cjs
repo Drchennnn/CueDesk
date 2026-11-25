@@ -10,9 +10,13 @@ const { pathToFileURL } = require('node:url');
 const ROOT = path.resolve(__dirname, '..');
 const UI_JS = path.join(ROOT, 'meeting-copilot/ui/dist/index-hyFYaQxP.js');
 const UI_CSS = path.join(ROOT, 'meeting-copilot/ui/dist/index-BJg-OUFD.css');
-const BASELINE = path.join(ROOT, 'work/meeting-ui-handoff-baseline');
+const BASELINE_ASAR = path.join(ROOT, 'releases/MeetingCopilot/app/resources/app.asar');
 
 test('3-layer IPC contract: every window.mc call in renderer exists in preload, and every preload channel exists in main', t => {
+  if (!fs.existsSync(BASELINE_ASAR)) {
+    t.skip('Read-only baseline releases/MeetingCopilot/app/resources/app.asar not present');
+    return;
+  }
   assert.ok(fs.existsSync(UI_JS), 'compiled UI JS bundle must exist');
   assert.ok(fs.existsSync(UI_CSS), 'compiled UI CSS bundle must exist');
 
@@ -24,12 +28,16 @@ test('3-layer IPC contract: every window.mc call in renderer exists in preload, 
   const py = `
 import importlib.util
 from pathlib import Path
-spec = importlib.util.spec_from_file_location("pb", r"${path.join(ROOT, 'meeting-copilot/release/patch_baseline.py').replace(/\\/g, '\\\\')}")
-pb = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(pb)
-base = Path(r"${BASELINE.replace(/\\/g, '\\\\')}")
-Path(r"${mainFile.replace(/\\/g, '\\\\')}").write_bytes(pb.patch_main((base / "out/main/index.js").read_bytes()))
-Path(r"${preloadFile.replace(/\\/g, '\\\\')}").write_bytes(pb.patch_preload((base / "out/preload/index.js").read_bytes()))
+spec_pb = importlib.util.spec_from_file_location("pb", r"${path.join(ROOT, 'meeting-copilot/release/patch_baseline.py').replace(/\\/g, '\\\\')}")
+pb = importlib.util.module_from_spec(spec_pb)
+spec_pb.loader.exec_module(pb)
+spec_asar = importlib.util.spec_from_file_location("asar_util", r"${path.join(ROOT, 'meeting-copilot/release/asar_util.py').replace(/\\/g, '\\\\')}")
+asar_util = importlib.util.module_from_spec(spec_asar)
+spec_asar.loader.exec_module(asar_util)
+raw = Path(r"${BASELINE_ASAR.replace(/\\/g, '\\\\')}").read_bytes()
+header, offset = asar_util.read_header(raw)
+Path(r"${mainFile.replace(/\\/g, '\\\\')}").write_bytes(pb.patch_main(asar_util.read_member(raw, header, offset, "out/main/index.js")))
+Path(r"${preloadFile.replace(/\\/g, '\\\\')}").write_bytes(pb.patch_preload(asar_util.read_member(raw, header, offset, "out/preload/index.js")))
 `;
   cp.execFileSync('python', ['-c', py], { stdio: 'pipe' });
   cp.execFileSync('node', ['--check', mainFile], { stdio: 'pipe' });

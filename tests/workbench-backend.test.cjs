@@ -369,18 +369,27 @@ test('v2 library honors request-level libraryOverride without mutating global co
 });
 
 test('patch_baseline.py patches baseline main and preload cleanly with valid JS syntax', t => {
+  const baselineAsar = path.resolve(__dirname, '../releases/MeetingCopilot/app/resources/app.asar');
+  if (!fs.existsSync(baselineAsar)) {
+    t.skip('Read-only baseline releases/MeetingCopilot/app/resources/app.asar not present');
+    return;
+  }
   const dir = tmpDir(t);
   const mainOut = path.join(dir, 'main.cjs');
   const preloadOut = path.join(dir, 'preload.cjs');
   const pyCode = `
 import importlib.util
 from pathlib import Path
-spec = importlib.util.spec_from_file_location("pb", r"${path.resolve(__dirname, '../meeting-copilot/release/patch_baseline.py').replace(/\\/g, '\\\\')}")
-pb = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(pb)
-base = Path(r"${path.resolve(__dirname, '../work/meeting-ui-handoff-baseline').replace(/\\/g, '\\\\')}")
-Path(r"${mainOut.replace(/\\/g, '\\\\')}").write_bytes(pb.patch_main((base / "out/main/index.js").read_bytes()))
-Path(r"${preloadOut.replace(/\\/g, '\\\\')}").write_bytes(pb.patch_preload((base / "out/preload/index.js").read_bytes()))
+spec_pb = importlib.util.spec_from_file_location("pb", r"${path.resolve(__dirname, '../meeting-copilot/release/patch_baseline.py').replace(/\\/g, '\\\\')}")
+pb = importlib.util.module_from_spec(spec_pb)
+spec_pb.loader.exec_module(pb)
+spec_asar = importlib.util.spec_from_file_location("asar_util", r"${path.resolve(__dirname, '../meeting-copilot/release/asar_util.py').replace(/\\/g, '\\\\')}")
+asar_util = importlib.util.module_from_spec(spec_asar)
+spec_asar.loader.exec_module(asar_util)
+raw = Path(r"${baselineAsar.replace(/\\/g, '\\\\')}").read_bytes()
+header, offset = asar_util.read_header(raw)
+Path(r"${mainOut.replace(/\\/g, '\\\\')}").write_bytes(pb.patch_main(asar_util.read_member(raw, header, offset, "out/main/index.js")))
+Path(r"${preloadOut.replace(/\\/g, '\\\\')}").write_bytes(pb.patch_preload(asar_util.read_member(raw, header, offset, "out/preload/index.js")))
 `;
   cp.execFileSync('python', ['-c', pyCode], { stdio: 'pipe' });
   cp.execFileSync('node', ['--check', mainOut], { stdio: 'pipe' });

@@ -14,7 +14,7 @@ import zipfile
 HERE = Path(__file__).resolve().parent
 PROJECT = HERE.parent
 ROOT = PROJECT.parent
-spec = importlib.util.spec_from_file_location('asar', PROJECT / 'install.py')
+spec = importlib.util.spec_from_file_location('asar', HERE / 'asar_util.py')
 asar = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(asar)
 MAIN = 'out/main/index.js'

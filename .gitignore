@@ -26,8 +26,20 @@ error.log
 /data/
 meeting-copilot/analysis/
 meeting-copilot/ui/dist/
+meeting-copilot/native-eyecontact-extract/
+meeting-copilot/rag/probe.py
+meeting-copilot/rag/negative-probe.py
+meeting-copilot/rag/validate.py
+meeting-copilot/rag/validate_asr.py
+meeting-copilot/rag/run-with-credential.ps1
+tests/knowledge-v2-regression.cjs
 node_modules/
 Local State
 *.part
 *.trtpkg
+
+# Local audit reports, screenshots & handoff notes
 主代理交接Prompt.md
+产品前端审核对比说明.md
+桌面UX对标审核报告-*.md
+UX审核配图-*/

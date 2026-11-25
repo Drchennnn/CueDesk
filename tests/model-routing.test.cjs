@@ -5,14 +5,37 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const baselineFile = path.resolve(__dirname, '../work/meeting-ui-handoff-baseline/out/main/index.js');
-const legacyFile = path.resolve(__dirname, '../work/model-routing-check/main.cjs');
-const file = process.env.MC_ROUTING_MAIN || (fs.existsSync(baselineFile) ? baselineFile : legacyFile);
-const skip = !fs.existsSync(file) && 'Stage work/meeting-ui-handoff-baseline or run install_model_routing.py --check';
+const cp = require('node:child_process');
+
+const baselineAsar = path.resolve(__dirname, '../releases/MeetingCopilot/app/resources/app.asar');
+const file = process.env.MC_ROUTING_MAIN || '';
+const hasSource = Boolean((file && fs.existsSync(file)) || fs.existsSync(baselineAsar));
+const skip = !hasSource && 'Baseline releases/MeetingCopilot/app/resources/app.asar not present';
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
+let cachedMainSource = null;
+function loadMainSource() {
+  if (cachedMainSource !== null) return cachedMainSource;
+  if (file && fs.existsSync(file)) {
+    cachedMainSource = fs.readFileSync(file, 'utf8');
+    return cachedMainSource;
+  }
+  const py = `
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("asar_util", r"${path.resolve(__dirname, '../meeting-copilot/release/asar_util.py').replace(/\\/g, '\\\\')}")
+asar_util = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(asar_util)
+raw = Path(r"${baselineAsar.replace(/\\/g, '\\\\')}").read_bytes()
+header, offset = asar_util.read_header(raw)
+sys.stdout.buffer.write(asar_util.read_member(raw, header, offset, "out/main/index.js"))
+`;
+  cachedMainSource = cp.execFileSync('python', ['-c', py], { maxBuffer: 16 * 1024 * 1024 }).toString('utf8');
+  return cachedMainSource;
+}
+
 function fixture(mode = 'interview', enabled = true, key = 'test-text-key', libraryEnabled = false) {
-  const source = fs.readFileSync(file, 'utf8');
+  const source = loadMainSource();
   const start = source.indexOf('    const llmControllers =');
   const end = source.indexOf('    asr.onEvent(', start);
   const handlers = {}, calls = [], events = [];

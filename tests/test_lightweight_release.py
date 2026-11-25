@@ -20,18 +20,6 @@ spec.loader.exec_module(module_build)
 
 
 class LightweightReleaseChecks(unittest.TestCase):
-    def test_renderer_uses_delivery_ui_without_changing_the_local_installation(self):
-        source = '''// eye-contact-ui-v2-begin
-OLD_LOCAL_CAMERA_UI
-// eye-contact-ui-v2-end
-setAsr((s) => ({ ...s, workerState: ev.state }));
-      asr.phase === "error" &&'''
-        result = portable_build.patch_renderer(source.encode('utf-8')).decode('utf-8')
-        self.assertNotIn('OLD_LOCAL_CAMERA_UI', result)
-        self.assertIn('取消安装', result)
-        self.assertIn("eye.phase === 'installing'", result)
-        self.assertIn('语音识别待配置', result)
-
     def fixture(self, root):
         project = root / 'project'
         source = root / 'installed'

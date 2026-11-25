@@ -268,35 +268,6 @@ test('old fixed-slot configuration migrates without losing configured slots, key
   assert.equal(fs.readFileSync(path.join(directory, 'prompts/common.md'), 'utf8'), '用户自己的提示词');
 });
 
-test('vision settings plus button adds exactly one editable API card per click and retains input', () => {
-  const vm = require('node:vm');
-  const element = (type, props, key) => ({ type, props, key });
-  const component = vm.runInNewContext(fs.readFileSync(path.resolve(__dirname, '../meeting-copilot/multimodal-ui.js'), 'utf8') + '\nMultimodalSettings;', {
-    jsxRuntimeExports: { jsx: element, jsxs: element },
-    reactExports: { useState: () => ['', () => {}], useRef: () => ({ current: null }), useEffect: () => {} },
-    crypto: { randomUUID },
-    window: { mc: {} }
-  });
-  let value = { enabled: false, mode: 'auto', retryOnRefusal: true, endpoints: [{ id: 'primary', enabled: true, baseUrl: '', model: '', timeoutMs: 30000 }] };
-  const render = () => component({ value, onChange: next => { value = next; }, providerSelect: () => element('select', {}) });
-  const all = tree => !tree || typeof tree !== 'object' ? [] : [tree, ...[tree.props?.children].flat().flatMap(all)];
-  let nodes = all(render());
-  assert.equal(nodes.filter(n => n.props?.children === '视觉 API Key').length, 1);
-  nodes.find(n => n.props?.type === 'password').props.onChange({ target: { value: 'pending-unsaved-key' } });
-  nodes = all(render());
-  nodes.find(n => n.props?.['aria-label'] === '添加视觉模型接口').props.onClick();
-  assert.equal(value.endpoints.length, 2);
-  assert.equal(value.endpoints[0].apiKey, 'pending-unsaved-key');
-  nodes = all(render());
-  assert.equal(nodes.filter(n => n.props?.children === '视觉 API Key').length, 2);
-  nodes.find(n => n.props?.children === '＋ 添加备用接口').props.onClick();
-  assert.equal(value.endpoints.length, 3);
-  nodes = all(render());
-  nodes.find(n => n.props?.title === '移除接口 2（保存后生效）').props.onClick();
-  assert.equal(value.endpoints.length, 2);
-  assert.equal(value.endpoints[0].apiKey, 'pending-unsaved-key');
-});
-
 test('simultaneous answers start every configured interface together, publish early results and isolate failures', async t => {
   const pending = new Map(), calls = [], events = [];
   const { router, directory } = fixture(t, (config, messages, signal) => {

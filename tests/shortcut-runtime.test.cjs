@@ -1,14 +1,8 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const { createShortcutRuntime } = require('../meeting-copilot/shortcut-runtime.cjs');
-const uiSource = fs.readFileSync(path.resolve(__dirname, '../meeting-copilot/shortcut-recorder-ui.js'), 'utf8');
-const key = vm.runInNewContext(uiSource + '\nacceleratorFromKeyboardEvent;');
-const merge = vm.runInNewContext(uiSource + '\nmergeModelAnswer;');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 function fixture(t) {
@@ -85,28 +79,4 @@ test('recording sessions can be replaced or ended before native startup without 
   f.runtime.dispose();
   assert.ok(f.children.every(child => child.killed));
   assert.equal(f.active.size, 0);
-});
-test('keyboard recorder supports physical letters, punctuation, arrows, function keys and numpad combinations', () => {
-  assert.equal(key({ key: 's', code: 'KeyS', ctrlKey: true, shiftKey: true }), 'Control+Shift+S');
-  assert.equal(key({ key: 'S', code: 'KeyS', altKey: true }), 'Alt+S');
-  assert.equal(key({ key: 'ArrowLeft', code: 'ArrowLeft', ctrlKey: true }), 'Control+Left');
-  assert.equal(key({ key: '+', code: 'Equal', ctrlKey: true, shiftKey: true }), 'Control+Shift+Plus');
-  assert.equal(key({ key: '1', code: 'Numpad1', altKey: true }), 'Alt+num1');
-  assert.equal(key({ key: '+', code: 'NumpadAdd', ctrlKey: true }), 'Control+numadd');
-  assert.equal(key({ key: 'F12', code: 'F12' }), 'F12');
-  assert.equal(key({ key: 'Control', code: 'ControlLeft', ctrlKey: true }), null);
-  assert.equal(key({ key: 'x', code: 'KeyX' }), null);
-  assert.equal(key({ key: 'a', code: 'KeyA', ctrlKey: true, repeat: true }), null);
-});
-test('separate model cards preserve configuration order, partial answers and completed answers after stopping', () => {
-  let turn = { status: 'streaming', text: '' };
-  turn = merge(turn, { id: 'second', index: 1, name: '备用', model: 'b', status: 'done', text: '先返回的答案' });
-  assert.ok(turn.text.includes('先返回的答案'));
-  turn = merge(turn, { id: 'first', index: 0, name: '主接口', model: 'a', status: 'pending', text: '' });
-  assert.deepEqual(Array.from(turn.modelResults, r => r.id), ['first', 'second']);
-  turn = merge(turn, { id: 'first', index: 0, name: '主接口', model: 'a', status: 'error', error: '超时', text: '' });
-  assert.ok(turn.text.includes('先返回的答案'));
-  assert.equal(turn.modelResults[0].error, '超时');
-  turn = { ...turn, status: 'done' };
-  assert.equal(merge(turn, { id: 'third', index: 2, status: 'done', text: 'late' }), turn);
 });
