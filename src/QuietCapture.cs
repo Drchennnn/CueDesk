@@ -35,6 +35,11 @@ static class Program
                 Capture(Path.GetFullPath(args[1]));
                 return 0;
             }
+            if (args.Length == 3 && args[0] == "--capture-rect")
+            {
+                CaptureRect(args[1], Path.GetFullPath(args[2]));
+                return 0;
+            }
             if (args.Length == 2 && args[0] == "--capture-region")
                 return RegionCapture.Run(Path.GetFullPath(args[1]), false);
             if (args.Length == 2 && args[0] == "--self-test-region")
@@ -76,6 +81,25 @@ static class Program
         using (var bitmap = CaptureDesktop())
         using (var file = new FileStream(output, FileMode.CreateNew, FileAccess.Write))
             bitmap.Save(file, ImageFormat.Png);
+    }
+
+    internal static void CaptureRect(string spec, string output)
+    {
+        string[] parts = (spec ?? "").Split(',');
+        if (parts.Length != 4) throw new ArgumentException("Invalid rect spec");
+        int x = int.Parse(parts[0]);
+        int y = int.Parse(parts[1]);
+        int w = int.Parse(parts[2]);
+        int h = int.Parse(parts[3]);
+        if (w < 1 || h < 1 || w > 16384 || h > 16384) throw new ArgumentOutOfRangeException("Invalid rect bounds");
+        Directory.CreateDirectory(Path.GetDirectoryName(output));
+        using (var bitmap = new Bitmap(w, h, PixelFormat.Format24bppRgb))
+        {
+            using (var graphics = Graphics.FromImage(bitmap))
+                graphics.CopyFromScreen(x, y, 0, 0, new Size(w, h), CopyPixelOperation.SourceCopy);
+            using (var file = new FileStream(output, FileMode.CreateNew, FileAccess.Write))
+                bitmap.Save(file, ImageFormat.Png);
+        }
     }
 
     internal static Bitmap CaptureDesktop()

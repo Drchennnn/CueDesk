@@ -31,17 +31,19 @@ function createInterviewLibrary({file,parsePdf}){
  let config={enabled:false,root:'',role:'',role_id:null};if(fs.existsSync(file))config={...config,...JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,''))};let store,last=null;
  if(config.enabled&&config.vector_rag?.enabled)queueMicrotask(()=>vectorClient.warm(config.vector_rag).catch(()=>{}));
  function current(){if(!config.root)throw Error('尚未设置资料目录');const dir=path.join(path.dirname(file),'knowledge-v2',hash(path.resolve(config.root).toLowerCase()).slice(0,16));if(!store||store.root!==path.resolve(config.root))store=new Store({root:config.root,dir,parsePdf});return store;}
- function roleFor(s){const roles=s.manifest.roles;let r=roles.find(r=>r.role_id===config.role_id)||roles.find(r=>r.directory===config.role);if(!r&&config.role){const possible=roles.filter(r=>normRole(r.directory)===normRole(config.role));if(possible.length===1)r=possible[0];}
- if(config.role&&!r)throw Error('所选岗位无法唯一定位：'+config.role+'；请在设置选择现有岗位');
- if(r&&(config.role_id!==r.role_id||config.role!==r.directory)){config={...config,role_id:r.role_id,role:r.directory};atomic(file,config);}return r;}
- async function ready(){const primary=current();await primary.refresh();const role=roleFor(primary);const s=await vectorSource.view(primary,config.vector_rag);return {s,role};}
+ function roleFor(s,overrideRole){const targetRole=overrideRole!==undefined?String(overrideRole||''):config.role;const targetRoleId=overrideRole!==undefined?null:config.role_id;const roles=s.manifest.roles;let r=roles.find(r=>r.role_id===targetRoleId)||roles.find(r=>r.directory===targetRole);if(!r&&targetRole){const possible=roles.filter(r=>normRole(r.directory)===normRole(targetRole));if(possible.length===1)r=possible[0];}
+ if(targetRole&&!r)throw Error('所选岗位无法唯一定位：'+targetRole+'；请在设置选择现有岗位');
+ if(overrideRole===undefined&&r&&(config.role_id!==r.role_id||config.role!==r.directory)){config={...config,role_id:r.role_id,role:r.directory};atomic(file,config);}return r;}
+ async function ready(overrideRole){const primary=current();await primary.refresh();const role=roleFor(primary,overrideRole);const s=await vectorSource.view(primary,config.vector_rag);return {s,role};}
  async function getPublic(){try{const {s,role}=await ready();const active=s.manifest.documents.filter(d=>d.status==='active'&&!d.retrieval_excluded&&(!d.role_id||d.role_id===role?.role_id));return {...config,material_status:materialStatus(config,active),roles:s.manifest.roles.map(r=>r.directory),files:active.map(d=>d.file_path),retired_sources:s.manifest.documents.filter(d=>d.status==='retired').map(d=>d.file_path),warning:s.diagnostics.join('\n'),last,indexDirectory:s.dir,documents:s.manifest.documents.map(({document_id,title,document_type,status,version})=>({document_id,title,document_type,status,version}))};}catch(e){return {...config,material_status:materialStatus(config,[],e.message),roles:store?.manifest.roles.map(r=>r.directory)||[],files:[],warning:e.message,last};}}
  async function save(patch){const prior=config;config={...config,enabled:patch.enabled===true,root:String(patch.root||''),role:String(patch.role||'')};if(patch.persona_profile!==undefined)config.persona_profile=patch.persona_profile?{enabled:patch.persona_profile.enabled===true,document_id:String(patch.persona_profile.document_id||'')}:null;if(patch.intro_script!==undefined)config.intro_script=patch.intro_script?{enabled:patch.intro_script.enabled===true,document_id:String(patch.intro_script.document_id||''),heading:String(patch.intro_script.heading||'约2分钟')}:null;if(config.role!==prior.role||config.root!==prior.root)config.role_id=null;try{if(config.enabled)await ready();atomic(file,config);return getPublic();}catch(e){config=prior;throw e;}}
  async function build(input,fallback=[]){if(input.mode==='translate'||input.scene==='written')return fallback;
  const started=performance.now();
  function unavailable(reason){const messages=fallbackMessages(input,fallback,reason);last={question:String(input.freeQuestion||input.question||''),sources:[],strategy:'条件式参考回答',diagnostics:messages.diagnostics,retrievalMs:performance.now()-started};return messages;}
- if(!config.enabled)return unavailable('资料库未启用，个人项目资料未载入');
- let scope;try{scope=await ready();}catch(error){return unavailable('资料库加载失败：'+error.message);}
+ const effectiveEnabled=input.libraryOverride?.enabled!==undefined?Boolean(input.libraryOverride.enabled):config.enabled;
+ const overrideRole=input.libraryOverride?.role;
+ if(!effectiveEnabled)return unavailable(input.libraryOverride?.enabled===false?'本场已临时关闭资料库检索':'资料库未启用，个人项目资料未载入');
+ let scope;try{scope=await ready(overrideRole);}catch(error){return unavailable('资料库加载失败：'+error.message);}
  const {s,role}=scope;const q=String(input.freeQuestion||input.question||'请根据当前内容回答');const context=(input.recentTranscript||[]).slice(-4).map(x=>typeof x==='string'?{speaker:'unconfirmed',text:x}:x);
  const allowed=s.manifest.documents.filter(d=>d.status==='active'&&!d.retrieval_excluded&&(!d.role_id||d.role_id===role?.role_id));
  const dialogue=resolveDialogue(input,allowed,hash(s.root)+'#'+(role?.role_id||''));

@@ -7,7 +7,7 @@ function createCaptureService({ helperPath, execFile = require('node:child_proce
   let busy = false;
   let child = null;
   let cancelled = false;
-  async function capture(mode = 'full') {
+  async function capture(mode = 'full', rect = null) {
     if (!['full', 'region'].includes(mode)) throw new Error('未知截图模式');
     if (busy) return null;
     busy = true;
@@ -16,8 +16,17 @@ function createCaptureService({ helperPath, execFile = require('node:child_proce
     try {
       directory = await fs.promises.mkdtemp(path.join(tempRoot, 'meeting-copilot-shot-'));
       const file = path.join(directory, 'screen.png');
+      const hasRect = mode === 'full' && rect &&
+        Number.isInteger(rect.x) && Number.isInteger(rect.y) &&
+        Number.isInteger(rect.width) && Number.isInteger(rect.height) &&
+        rect.width > 0 && rect.height > 0;
+      const cliArgs = mode === 'region'
+        ? ['--capture-region', file]
+        : hasRect
+          ? ['--capture-rect', `${rect.x},${rect.y},${rect.width},${rect.height}`, file]
+          : ['--capture-once', file];
       const result = await new Promise((resolve, reject) => {
-        child = execFile(helperPath, [mode === 'region' ? '--capture-region' : '--capture-once', file], {
+        child = execFile(helperPath, cliArgs, {
           windowsHide: true, timeout: mode === 'region' ? 75000 : 15000
         }, error => {
           child = null;

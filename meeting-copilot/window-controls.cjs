@@ -44,8 +44,9 @@ function createWindowControls({ file, screen, shortcuts, getWindow = () => null,
   function applyVisual(w, opacity) {
     w.setOpacity(1);
     // Transparent frameless windows can ignore native opacity on some Windows
-    // builds; mirror it in the document so the visible surface still changes.
-    const script = `document.documentElement.style.opacity=${JSON.stringify(opacity)};`;
+    // builds; mirror it in the document. In UI Next mode, expose as CSS token
+    // so layered background/text/popover opacities stay independent.
+    const script = `if(document.documentElement.dataset.uiNext==='1'){document.documentElement.style.setProperty('--mc-window-opacity',${JSON.stringify(String(opacity))});}else{document.documentElement.style.opacity=${JSON.stringify(opacity)};}`;
     const pending = w.webContents.executeJavaScript?.(script, false);
     pending?.catch?.(() => {}); // did-finish-load reapplies after navigation.
   }

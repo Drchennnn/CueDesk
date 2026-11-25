@@ -201,6 +201,11 @@ def main() -> None:
     (destination / "app/resources/app.asar").write_bytes(bp.compact_archive(original, replacements))
 
     bp.write_configuration(destination)
+    # New blank releases default to light theme aligned with the redesigned UI; existing configs remain untouched.
+    defaults_settings_path = destination / "config/defaults/settings.json"
+    defaults_settings = json.loads(defaults_settings_path.read_text("utf-8"))
+    defaults_settings.setdefault("ui", {})["theme"] = "light"
+    bp.write_json(defaults_settings_path, defaults_settings)
     bp.write_launchers(destination)
 
     # Copy RAG scripts and docs
