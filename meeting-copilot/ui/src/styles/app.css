@@ -1,0 +1,28 @@
+:root {
+  --ss-bg-1: #ffffff;
+  --ss-bg-2: #f4f4f5;
+  --ss-bg-3: #eeeef0;
+  --ss-border: #e4e4e7;
+  --ss-text: #09090b;
+  --ss-muted: #71717b;
+  --ss-faint: #9f9fa9;
+  --ss-primary: #18181b;
+  --ss-primary-fg: #fafafa;
+  --ss-success: #1c882d;
+  --ss-warning: #dca400;
+  --ss-danger: #e7000b;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+}

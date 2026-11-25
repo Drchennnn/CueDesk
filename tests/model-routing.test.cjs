@@ -4,11 +4,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const file = process.env.MC_ROUTING_MAIN || path.resolve(__dirname, '../work/model-routing-check/main.cjs');
-const skip = !fs.existsSync(file) && 'Run install_model_routing.py --check to generate the real-bundle fixture';
+
+const baselineFile = path.resolve(__dirname, '../work/meeting-ui-handoff-baseline/out/main/index.js');
+const legacyFile = path.resolve(__dirname, '../work/model-routing-check/main.cjs');
+const file = process.env.MC_ROUTING_MAIN || (fs.existsSync(baselineFile) ? baselineFile : legacyFile);
+const skip = !fs.existsSync(file) && 'Stage work/meeting-ui-handoff-baseline or run install_model_routing.py --check';
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-function fixture(mode = 'interview', enabled = true, key = 'test-text-key') {
+function fixture(mode = 'interview', enabled = true, key = 'test-text-key', libraryEnabled = false) {
   const source = fs.readFileSync(file, 'utf8');
   const start = source.indexOf('    const llmControllers =');
   const end = source.indexOf('    asr.onEvent(', start);
@@ -20,13 +23,33 @@ function fixture(mode = 'interview', enabled = true, key = 'test-text-key') {
     buildMessages: (input, kind) => ({ input, kind }),
     chat: async (messages, signal, progress, options) => { calls.push({ type: 'image', messages, signal, options }); return '截图答案'; }
   };
-  const sendEv = event => events.push(event);
+  const interviewLibrary = {
+    get enabled() { return libraryEnabled; },
+    build: async (input, fallback) => {
+      calls.push({ type: 'library', input });
+      if (!libraryEnabled && Array.isArray(fallback) && fallback.length) return fallback;
+      const built = [{ role: 'system', content: 'V2 资料链' }, { role: 'user', content: input.freeQuestion || input.question || '截图' }];
+      if (libraryEnabled) {
+        Object.defineProperty(built, 'evidence', { value: [{ evidence_id: 'E1', excerpt: '示例证据' }] });
+        Object.defineProperty(built, 'diagnostics', { value: [] });
+        Object.defineProperty(built, 'answerPolicy', { value: {} });
+      }
+      return built;
+    }
+  };
+  const evidenceMod = require('../meeting-copilot/v2/evidence.cjs');
   const context = {
     AbortController, console: { log() {}, error() {}, warn() {} },
+    path,
+    process: { resourcesPath: path.resolve(__dirname, '../meeting-copilot') },
+    require: (id) => {
+      if (String(id).includes('evidence.cjs')) return evidenceMod;
+      return require(id);
+    },
     electron: { ipcMain: { on: (name, callback) => { handlers[name] = callback; }, handle: (name, callback) => { handlers[name] = callback; } } },
     IPC: Object.fromEntries(['llmAsk', 'llmCancel', 'memoUpdate', 'translateText', 'shotAsk', 'llmEvent'].map(name => [name, name])),
     win: { webContents: { send: (_channel, event) => events.push(event) } },
-    settings, multimodalRouter, unifiedEnabled: () => enabled,
+    settings, multimodalRouter, interviewLibrary, unifiedEnabled: () => enabled,
     unifiedProgress: () => () => {},
     knowledge: { text: '' },
     buildAnswerMessages: input => [{ role: 'system', content: '面试 Prompt' }, { role: 'user', content: input.freeQuestion || input.question || '最新转录' }],
@@ -48,11 +71,12 @@ function fixture(mode = 'interview', enabled = true, key = 'test-text-key') {
 
 test('all ordinary ask modes use exactly the text endpoint, regardless of screenshot switch and legacy vision flag', { skip }, async () => {
   for (const enabled of [false, true]) for (const mode of ['continuous', 'segment', 'free', 'translate']) {
-    const { handlers, calls, events } = fixture('interview', enabled);
+    const { handlers, calls, events } = fixture('interview', enabled, 'test-text-key', false);
     handlers.llmAsk({}, { requestId: 'text-' + mode, mode, question: '问题', freeQuestion: '自由问题', recentTranscript: [] });
     await flush();
-    assert.deepEqual(calls.map(call => call.type), ['text']);
-    assert.equal(calls[0].endpoint.model, 'text-model');
+    assert.deepEqual(calls.filter(c => c.type !== 'library').map(call => call.type), ['text']);
+    const textCall = calls.find(c => c.type === 'text');
+    assert.equal(textCall.endpoint.model, 'text-model');
     assert.equal(events.filter(event => event.kind === 'done').length, 1);
     assert.equal(events.some(event => event.kind === 'model'), false);
   }
@@ -66,15 +90,21 @@ test('missing text credentials reports a text error without silently calling ima
   assert.equal(events[0].message, '未配置文本模型密钥');
 });
 
-test('interview screenshots call multimodal only and explicitly override stored simultaneous preference', { skip }, async () => {
+test('interview screenshots route through interview library without parallel mode; written/auto use multimodalRouter', { skip }, async () => {
   for (const mode of ['interview', 'auto', 'written']) {
-    const { handlers, calls } = fixture(mode);
+    const { handlers, calls } = fixture(mode, true, 'test-text-key', mode === 'interview');
     handlers.shotAsk({}, { requestId: mode, imageDataUrl: 'data:image/png;base64,AAAA' });
     await flush();
-    assert.deepEqual(calls.map(call => call.type), ['image']);
-    assert.equal(calls[0].messages.kind, 'shot');
-    assert.equal(calls[0].messages.input.imageDataUrl, 'data:image/png;base64,AAAA');
-    assert.equal(calls[0].options.simultaneousAnswers, mode === 'written');
+    const imageCalls = calls.filter(c => c.type === 'image');
+    assert.equal(imageCalls.length, 1);
+    if (mode === 'interview') {
+      assert.equal(calls.some(c => c.type === 'library'), true);
+      assert.notEqual(imageCalls[0].options?.simultaneousAnswers, true);
+    } else {
+      assert.equal(imageCalls[0].messages.kind, 'shot');
+      assert.equal(imageCalls[0].messages.input.imageDataUrl, 'data:image/png;base64,AAAA');
+      assert.equal(imageCalls[0].options.simultaneousAnswers, mode === 'written');
+    }
   }
 });
 

@@ -6,6 +6,8 @@ settings.json
 interfaces.json
 written-window.json
 capture.json
+templates.json
+workbench-prefs.json
 *.pyc
 Screenshots/
 bin/Screenshots/
@@ -22,6 +24,10 @@ error.log
 /analysis/
 /exports/
 /data/
+meeting-copilot/analysis/
+meeting-copilot/ui/dist/
+node_modules/
 Local State
 *.part
 *.trtpkg
+主代理交接Prompt.md
