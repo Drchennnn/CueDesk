@@ -9,10 +9,24 @@ import {
   cancelAttempt,
   createEmptySession,
   createId,
+  jumpToLatestQuestion,
+  mergeQuestions,
   migrateSessionsFile,
-  projectLegacyTurns,
-  serializeSessionsForDisk
+  regenerateQuestion,
+  selectAttempt,
+  selectQuestion,
+  serializeSessionsForDisk,
+  setAttemptTranslation,
+  setSegmentTranslation
 } from './core/sessionModel.js';
+import {
+  appendManualDraft,
+  classifyTurn,
+  clearManualDraft,
+  commitManualDraft,
+  createManualDraftState,
+  handleAudioSourceSwitch
+} from './core/turnPolicy.js';
 import { createAudioController } from './core/audioController.js';
 import { AppShell } from './components/AppShell.jsx';
 import { HomeView } from './components/HomeView.jsx';
@@ -20,10 +34,17 @@ import { KnowledgeView } from './components/KnowledgeView.jsx';
 import { RecordsView } from './components/RecordsView.jsx';
 import { SettingsView } from './components/SettingsView.jsx';
 import { WrittenCompactView } from './components/WrittenCompactView.jsx';
+import { WorkbenchView } from './components/WorkbenchView.jsx';
 import { DiagnosticsModal, HelpModal, ServiceHealthModal } from './components/SharedWidgets.jsx';
 
 // Signal to main-process window-controls.cjs that UI Next manages layered opacity tokens.
 document.documentElement.dataset.uiNext = '1';
+
+function percentile(values, p) {
+  if (!values.length) return undefined;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))];
+}
 
 function createScreenshotBatch({ capture, send, isWritten, getSession, onChange }) {
   let state = { enabled: false, images: [], question: '', busy: false, message: '' };
@@ -93,13 +114,17 @@ function App() {
   const [templatesStore, setTemplatesStore] = useState(null);
   const [workbenchPrefs, setWorkbenchPrefs] = useState(null);
   const [windowState, setWindowState] = useState(null);
+  const [hoverInside, setHoverInside] = useState(true);
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [route, setRoute] = useState('home'); // 'home' | 'knowledge' | 'records' | 'settings' | 'workbench'
   const [settingsTab, setSettingsTab] = useState('models');
   const [asr, setAsr] = useState({ phase: 'loading', workerState: 'loading' });
+  const [hud, setHud] = useState({ count: 0 });
   const [capturing, setCapturing] = useState(false);
+  const [secondaryMicActive, setSecondaryMicActive] = useState(false);
   const [partials, setPartials] = useState({});
+  const [manualDraft, setManualDraft] = useState(createManualDraftState);
   const [modal, setModal] = useState(null); // 'health' | 'diagnostics' | 'help' | null
   const [writtenError, setWrittenError] = useState('');
   const [batch, setBatch] = useState({ enabled: false, images: [], question: '', busy: false, message: '' });
@@ -111,6 +136,10 @@ function App() {
   const workbenchPrefsRef = useRef(null);
   const settingsCloseRef = useRef(null);
   const audioRef = useRef(null);
+  const e2eSamplesRef = useRef([]);
+  const memoChainRef = useRef(new Map());
+  const autoTurnTimerRef = useRef(null);
+  const actionsRef = useRef({});
 
   settingsRef.current = settings;
   sessionsRef.current = sessions;
@@ -137,6 +166,87 @@ function App() {
   const patchSessionById = useCallback((sid, updater) => {
     setSessions(list => list.map(s => (s.id === sid ? updater(s) : s)));
   }, []);
+
+  const buildLibraryOverrideFor = useCallback((session) => {
+    if (!session) return undefined;
+    const override = {};
+    if (typeof session.libraryEnabled === 'boolean') override.enabled = session.libraryEnabled;
+    if (session.role) override.role = session.role;
+    return Object.keys(override).length ? override : undefined;
+  }, []);
+
+  const enqueueMemoUpdate = useCallback((sid, question, answer) => {
+    if (!question?.trim() || !answer?.trim()) return;
+    const prev = memoChainRef.current.get(sid) ?? Promise.resolve();
+    const next = prev.then(async () => {
+      const cur = sessionsRef.current.find(x => x.id === sid);
+      if (!cur) return;
+      const updated = await window.mc.memoUpdate({ memo: cur.memo || '', question, answer });
+      if (updated) patchSessionById(sid, s => ({ ...s, memo: updated }));
+    }).catch(() => {});
+    memoChainRef.current.set(sid, next);
+  }, [patchSessionById]);
+
+  const dispatchLlmAsk = useCallback((session, { requestId, mode = 'free', prompt, excludeQuestionId = null }) => {
+    const recentTranscript = (session.segments || []).slice(-18).map(seg => ({
+      speaker: seg.speaker,
+      text: seg.text
+    }));
+    window.mc.llmAsk({
+      requestId,
+      mode,
+      question: mode === 'free' ? undefined : prompt,
+      freeQuestion: mode === 'free' ? prompt : undefined,
+      recentTranscript,
+      history: buildLlmHistory(session, { excludeQuestionId, maxTurns: 6 }),
+      resume: session.resume || undefined,
+      jd: session.jd || undefined,
+      memo: session.memo || undefined,
+      background: session.kbText || undefined,
+      dialogueState: session.dialogueState || undefined,
+      sessionId: session.id,
+      scene: session.scene || 'interview',
+      answerLang: session.answerLang || settingsRef.current?.llm?.answerLang || 'chinese',
+      libraryOverride: buildLibraryOverrideFor(session),
+      codingPrefs: workbenchPrefsRef.current?.codingPrefs
+    });
+  }, [buildLibraryOverrideFor]);
+
+  const handleAskText = useCallback((promptText, sourceSegmentIds = [], { mode = 'free', forceSelect = true } = {}) => {
+    const sid = activeSessionIdRef.current;
+    const cur = sessionsRef.current.find(s => s.id === sid);
+    const clean = String(promptText || '').trim();
+    if (!cur || !clean) return;
+    const requestId = createId('req');
+    patchSessionById(cur.id, (s) => addQuestionWithAttempt(s, {
+      requestId,
+      prompt: clean,
+      kind: mode === 'continuous' || mode === 'segment' ? 'segment' : 'free',
+      sourceSegmentIds,
+      forceSelect
+    }));
+    dispatchLlmAsk(cur, { requestId, mode, prompt: clean });
+  }, [dispatchLlmAsk, patchSessionById]);
+
+  const handleRegenerateQuestion = useCallback((questionId) => {
+    const sid = activeSessionIdRef.current;
+    const cur = sessionsRef.current.find(s => s.id === sid);
+    const q = cur?.questions?.find(item => item.id === questionId);
+    if (!cur || !q) return;
+    // Cancel any currently streaming attempt on this question
+    for (const att of q.attempts) {
+      if (att.status === 'streaming') window.mc.llmCancel(att.requestId);
+    }
+    const requestId = createId('req');
+    patchSessionById(cur.id, (s) => regenerateQuestion(s, questionId, { requestId }));
+    dispatchLlmAsk(cur, { requestId, mode: 'free', prompt: q.prompt, excludeQuestionId: questionId });
+  }, [dispatchLlmAsk, patchSessionById]);
+
+  const handleCancelAttempt = useCallback((requestId) => {
+    const sid = activeSessionIdRef.current;
+    window.mc.llmCancel(requestId);
+    if (sid) patchSessionById(sid, (s) => cancelAttempt(s, requestId));
+  }, [patchSessionById]);
 
   const ensureSessionForWritten = useCallback(() => {
     if (activeSessionIdRef.current) {
@@ -176,14 +286,9 @@ function App() {
       answerLang: targetSession.answerLang,
       displayId: extra.displayId ?? workbenchPrefsRef.current?.captureDisplayId,
       codingPrefs: workbenchPrefsRef.current?.codingPrefs,
-      libraryOverride: targetSession.libraryEnabled !== null || targetSession.role
-        ? {
-            ...(typeof targetSession.libraryEnabled === 'boolean' ? { enabled: targetSession.libraryEnabled } : {}),
-            ...(targetSession.role ? { role: targetSession.role } : {})
-          }
-        : undefined
+      libraryOverride: buildLibraryOverrideFor(targetSession)
     });
-  }, [ensureSessionForWritten, patchSessionById]);
+  }, [buildLibraryOverrideFor, ensureSessionForWritten, patchSessionById]);
 
   const batchController = useMemo(() => createScreenshotBatch({
     capture: (mode, displayId) => window.mc.pickRegion(mode, displayId ?? workbenchPrefsRef.current?.captureDisplayId),
@@ -193,7 +298,7 @@ function App() {
     onChange: setBatch
   }), [sendShotQuestion, ensureSessionForWritten]);
 
-  // Initial load of settings, sessions, templates, library, workbench prefs, window state
+  // Initial load & IPC listeners
   useEffect(() => {
     let alive = true;
     Promise.all([
@@ -220,6 +325,7 @@ function App() {
     });
     const offWin = window.mc.onWindowState?.((st) => setWindowState(st));
     const offPrefs = window.mc.onWorkbenchPrefsState?.((p) => setWorkbenchPrefs(p));
+    const offHover = window.mc.onHoverState?.(({ inside }) => setHoverInside(Boolean(inside)));
     const onLibEvt = () => { void window.mc.getInterviewLibrary().then(setLibrary).catch(() => {}); };
     window.addEventListener('mc-library-updated', onLibEvt);
 
@@ -238,14 +344,45 @@ function App() {
         setPartials(prev => ({ ...prev, [ev.speaker]: ev.text }));
       } else if (ev.kind === 'segment') {
         setPartials(prev => ({ ...prev, [ev.speaker]: undefined }));
+        if (ev.timings) {
+          const e2eMs = Date.now() - ev.timings.speechEndTs;
+          const inferMs = ev.timings.inferEndTs - ev.timings.inferStartTs;
+          e2eSamplesRef.current.push(e2eMs);
+          if (e2eSamplesRef.current.length > 200) e2eSamplesRef.current.shift();
+          setHud({
+            lastE2eMs: e2eMs,
+            lastInferMs: inferMs,
+            p50: percentile(e2eSamplesRef.current, 50),
+            p95: percentile(e2eSamplesRef.current, 95),
+            count: e2eSamplesRef.current.length
+          });
+        }
         const sid = activeSessionIdRef.current;
-        if (sid) {
-          patchSessionById(sid, (s) => appendSegment(s, {
+        const cur = sessionsRef.current.find(s => s.id === sid);
+        if (cur) {
+          const segId = cur.nextSegmentId || 1;
+          patchSessionById(cur.id, (s) => appendSegment(s, {
+            id: segId,
             speaker: ev.speaker,
             text: ev.text,
             startTs: ev.timings?.speechStartTs,
             endTs: ev.timings?.speechEndTs
           }));
+          if ((ev.speaker ?? 'them') === 'them') {
+            if (cur.transcriptionMode === 'manual') {
+              setManualDraft(prev => appendManualDraft(prev, { id: segId, text: ev.text, endTs: ev.timings?.speechEndTs }));
+            } else if (cur.transcriptionMode === 'auto') {
+              const verdict = classifyTurn(ev.text);
+              if (verdict.action === 'answer') {
+                clearTimeout(autoTurnTimerRef.current);
+                autoTurnTimerRef.current = setTimeout(() => {
+                  const latestSess = sessionsRef.current.find(s => s.id === cur.id);
+                  if (!latestSess || latestSess.transcriptionMode !== 'auto') return;
+                  handleAskText(ev.text, [segId], { mode: 'continuous', forceSelect: false });
+                }, 1050);
+              }
+            }
+          }
         }
       }
     };
@@ -257,6 +394,13 @@ function App() {
 
     const offLlm = window.mc.onLlmEvent((ev) => {
       setSessions(list => list.map(s => applyLlmEvent(s, ev)));
+      if (ev.kind === 'done') {
+        const cur = sessionsRef.current.find(s => s.questions.some(q => q.attempts.some(a => a.requestId === ev.requestId)));
+        const q = cur?.questions.find(item => item.attempts.some(a => a.requestId === ev.requestId));
+        if (cur && q && ['segment', 'free', 'manual'].includes(q.kind)) {
+          enqueueMemoUpdate(cur.id, q.prompt, ev.text || '');
+        }
+      }
     });
     const offShot = window.mc.onShotHotkey((mode) => void batchController.take(mode));
     const offBatch = window.mc.onScreenshotBatchAction((action) => {
@@ -264,16 +408,21 @@ function App() {
       if (action === 'sendBatch') batchController.sendBatch();
     });
     const offTray = window.mc.onTrayCommand(({ command }) => {
-      if (command === 'open-settings') navigateWithFlush('settings');
+      if (command === 'open-settings') actionsRef.current.navigateWithFlush?.('settings');
       else if (command === 'open-health') setModal('health');
       else if (command === 'open-help') setModal('help');
+      else if (command === 'toggle-capture') void actionsRef.current.handleToggleCapture?.();
     });
+    window.__mcOpenSettings = () => actionsRef.current.navigateWithFlush?.('settings');
+    window.__mcOpenHelp = () => setModal('help');
 
     return () => {
       alive = false;
+      clearTimeout(autoTurnTimerRef.current);
       offWritten?.();
       offWin?.();
       offPrefs?.();
+      offHover?.();
       offAsr?.();
       offLlm?.();
       offShot?.();
@@ -281,9 +430,9 @@ function App() {
       offTray?.();
       window.removeEventListener('mc-library-updated', onLibEvt);
     };
-  }, [batchController, patchSessionById]);
+  }, [batchController, enqueueMemoUpdate, handleAskText, patchSessionById]);
 
-  // Apply theme & font scale tokens
+  // Theme & font scale sync
   useEffect(() => {
     const ui = settings?.ui;
     if (!ui) return;
@@ -300,13 +449,12 @@ function App() {
     return () => mq.removeEventListener('change', applyTheme);
   }, [settings?.ui?.theme, settings?.ui?.fontScale]);
 
-  // Written compact dataset flag
   const isWrittenCompact = Boolean(settings?.writtenWindow?.enabled);
   useEffect(() => {
     document.documentElement.dataset.writtenCompact = isWrittenCompact ? 'true' : 'false';
   }, [isWrittenCompact]);
 
-  // Debounced sessions persistence
+  // Debounced auto-persistence of sessions
   useEffect(() => {
     if (!loadedRef.current) return;
     const timer = setTimeout(() => {
@@ -341,6 +489,7 @@ function App() {
   }, []);
 
   const handleUpdateWorkbenchPrefs = useCallback(async (patch) => {
+    setWorkbenchPrefs(prev => (prev ? { ...prev, ...patch } : prev));
     try {
       const next = await window.mc.setWorkbenchPrefs(patch);
       setWorkbenchPrefs(next);
@@ -356,6 +505,23 @@ function App() {
       const refreshed = await window.mc.getSettings();
       setSettings(refreshed);
     } catch {}
+  }, []);
+
+  const startCaptureWithSource = useCallback(async (audioSource, micEnabled = false) => {
+    const res = await audioRef.current.start({
+      audioSource,
+      micEnabled,
+      micDeviceId: settingsRef.current?.audio?.micDeviceId || '',
+      themDeviceId: settingsRef.current?.audio?.themDeviceId || ''
+    });
+    setCapturing(true);
+    setSecondaryMicActive(Boolean(res.secondaryMicActive));
+  }, []);
+
+  const stopCaptureNow = useCallback(async () => {
+    await audioRef.current.stop();
+    setCapturing(false);
+    setSecondaryMicActive(false);
   }, []);
 
   const handleStartSession = useCallback(async (config) => {
@@ -376,6 +542,7 @@ function App() {
     setSessions(list => [session, ...list]);
     setActiveSessionId(session.id);
     activeSessionIdRef.current = session.id;
+    setManualDraft({ ...createManualDraftState(), audioSource: session.audioSource });
     if (typeof config.autoSaveOnClose === 'boolean') {
       void handleUpdateWorkbenchPrefs({ autoSaveOnClose: config.autoSaveOnClose });
     }
@@ -383,35 +550,116 @@ function App() {
       await window.mc.enableSecurity({ scope: 'session' }).then(setWindowState).catch(() => {});
     }
     navigateWithFlush('workbench');
+    window.mc.prewarm({ resume: session.resume || undefined, jd: session.jd || undefined, immediate: true });
     if (config.autoStartCapture) {
       try {
-        await audioRef.current.start({
-          audioSource: config.audioSource,
-          micEnabled: false,
-          micDeviceId: settingsRef.current?.audio?.micDeviceId || '',
-          themDeviceId: settingsRef.current?.audio?.themDeviceId || ''
-        });
-        setCapturing(true);
+        await startCaptureWithSource(config.audioSource, false);
       } catch (e) {
         setAsr(prev => ({ ...prev, lastError: e.message }));
       }
     }
-  }, [handleUpdateWorkbenchPrefs, navigateWithFlush]);
+  }, [handleUpdateWorkbenchPrefs, navigateWithFlush, startCaptureWithSource]);
 
-  const handleEndActiveSession = useCallback(async () => {
-    await audioRef.current.stop();
-    setCapturing(false);
+  const handleSaveProgressSync = useCallback(async () => {
+    const payload = serializeSessionsForDisk(sessionsRef.current, activeSessionIdRef.current);
+    return window.mc.saveSessionsSync(payload);
+  }, []);
+
+  const finalizeCloseSession = useCallback(async (discardCurrent = false) => {
+    clearTimeout(autoTurnTimerRef.current);
+    await stopCaptureNow();
+    const closingId = activeSessionIdRef.current;
     await window.mc.disableSecurity({ scope: 'session' }).then(setWindowState).catch(() => {});
+    if (discardCurrent && closingId) {
+      setSessions(list => list.filter(s => s.id !== closingId));
+    }
     setActiveSessionId(null);
     activeSessionIdRef.current = null;
+    setManualDraft(createManualDraftState());
     navigateWithFlush('home');
-  }, [navigateWithFlush]);
+  }, [navigateWithFlush, stopCaptureNow]);
+
+  const handleEndSessionSave = useCallback(async () => {
+    const res = await handleSaveProgressSync();
+    if (!res?.ok) return res;
+    await finalizeCloseSession(false);
+    return res;
+  }, [finalizeCloseSession, handleSaveProgressSync]);
+
+  const handleEndSessionDiscard = useCallback(async () => {
+    await finalizeCloseSession(true);
+  }, [finalizeCloseSession]);
 
   const handleResumeFromRecord = useCallback((sid) => {
+    const target = sessionsRef.current.find(s => s.id === sid);
+    if (!target) return;
     setActiveSessionId(sid);
     activeSessionIdRef.current = sid;
+    setManualDraft({ ...createManualDraftState(), audioSource: target.audioSource });
     navigateWithFlush('workbench');
   }, [navigateWithFlush]);
+
+  const handleToggleCapture = useCallback(async () => {
+    const cur = sessionsRef.current.find(s => s.id === activeSessionIdRef.current);
+    if (!cur) return;
+    if (capturing) {
+      await stopCaptureNow();
+    } else {
+      try {
+        await startCaptureWithSource(cur.audioSource, secondaryMicActive);
+      } catch (e) {
+        setAsr(prev => ({ ...prev, lastError: e.message }));
+      }
+    }
+  }, [capturing, secondaryMicActive, startCaptureWithSource, stopCaptureNow]);
+
+  actionsRef.current = { navigateWithFlush, handleToggleCapture };
+
+  const handleSwitchAudioSource = useCallback(async (nextSource) => {
+    const cur = sessionsRef.current.find(s => s.id === activeSessionIdRef.current);
+    if (!cur || cur.audioSource === nextSource) return;
+    patchSessionById(cur.id, s => ({ ...s, audioSource: nextSource }));
+    setManualDraft(prev => handleAudioSourceSwitch(prev, nextSource, 'clear').nextState);
+    if (capturing) {
+      try {
+        await startCaptureWithSource(nextSource, false);
+      } catch (e) {
+        setAsr(prev => ({ ...prev, lastError: e.message }));
+      }
+    }
+  }, [capturing, patchSessionById, startCaptureWithSource]);
+
+  const handleToggleSecondaryMic = useCallback(async () => {
+    const next = !secondaryMicActive;
+    try {
+      const res = await audioRef.current.setSecondaryMic(next, settingsRef.current?.audio?.micDeviceId || '');
+      setSecondaryMicActive(Boolean(res.secondaryMicActive));
+    } catch (e) {
+      setAsr(prev => ({ ...prev, lastError: e.message }));
+    }
+  }, [secondaryMicActive]);
+
+  const handleTranslateSegment = useCallback(async (seg) => {
+    const sid = activeSessionIdRef.current;
+    if (!sid || !seg?.text) return;
+    try {
+      const zh = await window.mc.translate(seg.text);
+      patchSessionById(sid, s => setSegmentTranslation(s, seg.id, { translation: zh, error: '' }));
+    } catch (e) {
+      patchSessionById(sid, s => setSegmentTranslation(s, seg.id, { error: e.message || '翻译失败' }));
+    }
+  }, [patchSessionById]);
+
+  const handleTranslateAnswer = useCallback(async (questionId, attemptId, text) => {
+    const sid = activeSessionIdRef.current;
+    if (!sid || !text) return;
+    try {
+      const zh = await window.mc.translate(text);
+      patchSessionById(sid, s => setAttemptTranslation(s, questionId, attemptId, { translation: zh, error: '' }));
+    } catch (e) {
+      patchSessionById(sid, s => setAttemptTranslation(s, questionId, attemptId, { error: e.message || '翻译失败' }));
+    }
+  }, [patchSessionById]);
 
   const handleEnterWrittenCompact = useCallback(async () => {
     try {
@@ -457,10 +705,7 @@ function App() {
           try { setSettings(await window.mc.setWrittenWindow(patch)); }
           catch (e) { setWrittenError(e.message); }
         }}
-        onCancel={(reqId) => {
-          window.mc.llmCancel(reqId);
-          if (curSess) patchSessionById(curSess.id, s => cancelAttempt(s, reqId));
-        }}
+        onCancel={handleCancelAttempt}
         onRestore={() => void handleExitWrittenCompact()}
         batch={batch}
         batchController={batchController}
@@ -468,27 +713,55 @@ function App() {
     );
   }
 
-  // Phase 3 will mount the full dual-pane WorkbenchView here; until then, keep a clean navigable bridge.
   if (route === 'workbench' && activeSession) {
     return (
-      <div className="mc-wb-shell">
-        <header className="mc-wb-topbar">
-          <div className="mc-wb-topbar-left">
-            <button type="button" className="mc-btn mc-btn-sm" onClick={() => navigateWithFlush('home')}>
-              ← 返回首页（保持后台运行）
-            </button>
-            <span className="mc-wb-title">{activeSession.name}</span>
-          </div>
-          <div className="mc-wb-tools">
-            <button type="button" className="mc-btn mc-btn-sm mc-btn-danger" onClick={() => void handleEndActiveSession()}>
-              结束会话
-            </button>
-          </div>
-        </header>
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
-          实时面试工作台（Phase 3 实装中）
-        </div>
-      </div>
+      <WorkbenchView
+        session={activeSession}
+        settings={settings}
+        library={library}
+        asr={asr}
+        hud={hud}
+        capturing={capturing}
+        secondaryMicActive={secondaryMicActive}
+        partials={partials}
+        manualDraft={manualDraft}
+        workbenchPrefs={workbenchPrefs}
+        windowState={windowState}
+        hoverInside={hoverInside}
+        onBackHome={() => navigateWithFlush('home')}
+        onToggleCapture={() => void handleToggleCapture()}
+        onSwitchAudioSource={(src) => void handleSwitchAudioSource(src)}
+        onToggleSecondaryMic={() => void handleToggleSecondaryMic()}
+        onCaptureScreen={(mode) => void batchController.take(mode)}
+        onEnterWrittenCompact={() => void handleEnterWrittenCompact()}
+        onAskText={(q, segIds) => handleAskText(q, segIds)}
+        onRegenerateQuestion={handleRegenerateQuestion}
+        onCancelAttempt={handleCancelAttempt}
+        onSelectQuestion={(qid) => patchSessionById(activeSession.id, s => selectQuestion(s, qid))}
+        onSelectAttempt={(qid, aid) => patchSessionById(activeSession.id, s => selectAttempt(s, qid, aid))}
+        onJumpLatest={() => patchSessionById(activeSession.id, s => jumpToLatestQuestion(s))}
+        onMergeQuestions={(srcId, dstId) => patchSessionById(activeSession.id, s => mergeQuestions(s, srcId, dstId))}
+        onClearSessionContent={() => patchSessionById(activeSession.id, s => ({ ...s, questions: [], segments: [], selectedQuestionId: null, unreadQuestionIds: [] }))}
+        onCommitManualDraft={() => {
+          const committed = commitManualDraft(manualDraft);
+          setManualDraft(committed.nextState);
+          if (committed.prompt) handleAskText(committed.prompt, committed.sourceSegmentIds, { mode: 'segment', forceSelect: true });
+        }}
+        onClearManualDraft={() => setManualDraft(prev => clearManualDraft(prev))}
+        onChangeSessionMeta={(patch) => patchSessionById(activeSession.id, s => ({ ...s, ...patch }))}
+        onTranslateSegment={handleTranslateSegment}
+        onTranslateAnswer={handleTranslateAnswer}
+        onClearTranscript={() => patchSessionById(activeSession.id, s => ({ ...s, segments: [] }))}
+        onUpdatePrefs={handleUpdateWorkbenchPrefs}
+        onSetAlwaysOnTop={(on) => window.mc.setAlwaysOnTop(on).then(setWindowState)}
+        onSetPreventFocus={(on) => window.mc.setPreventFocus(on).then(setWindowState)}
+        onSetAllowCapture={(allow) => window.mc.setAllowCapture(allow).then(async (st) => { setWindowState(st); setSettings(await window.mc.getSettings()); })}
+        onSetClickThrough={(on) => window.mc.setClickThrough(on).then(setWindowState)}
+        onSaveProgressSync={handleSaveProgressSync}
+        onEndSessionSave={handleEndSessionSave}
+        onEndSessionDiscard={handleEndSessionDiscard}
+        onOpenSettings={() => navigateWithFlush('settings', 'models')}
+      />
     );
   }
 
@@ -523,7 +796,7 @@ function App() {
             activeSession={activeSession}
             onStartSession={(cfg) => void handleStartSession(cfg)}
             onResumeWorkbench={() => navigateWithFlush('workbench')}
-            onEndActiveSession={() => void handleEndActiveSession()}
+            onEndActiveSession={() => void handleEndSessionSave()}
             onOpenSettings={(tab) => navigateWithFlush('settings', tab)}
             onEnterWrittenCompact={() => void handleEnterWrittenCompact()}
             onQuickCaptureWritten={(mode) => void batchController.take(mode)}
