@@ -135,7 +135,7 @@ def patch_main(raw: bytes) -> bytes:
     text = replace_once(
         text,
         'const RELEASES_URL = "https://github.com/JWM0203/MeetingCopilot/releases/latest";',
-        'const RELEASES_URL = "https://github.com/Drchennnn/meetingcopilot-integrated/releases/latest";',
+        'const RELEASES_URL = "https://github.com/Drchennnn/CueDesk/releases/latest";',
         "releases URL",
     )
     brand_anchor = 'brand: "MeetingCopilot",'
