@@ -13,6 +13,7 @@ Screenshots/
 bin/Screenshots/
 error.log
 *.png
+!docs/images/*.png
 !meeting-copilot/assets/*.png
 !meeting-copilot/ui/src/assets/*.png
 *.asar
