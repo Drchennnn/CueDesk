@@ -1,32 +1,29 @@
-MeetingCopilot 整合版配置指南
-2026-11-18
+MeetingCopilot 整合版配置指南（V3.2）
 
 官网与地址速查
 
 下面给出可在本版相应配置区域填写的示例。实际配置文件初始保持空白。
-接口和模型按 2026-11-17 查阅的官方文档整理，使用自己的服务账号与 API Key。
-按速查表手动填写时选择“自定义”，模型 ID 以服务商控制台为准。
+文本与视觉模型均采用纯自定义配置（自定义 Base URL + 模型 ID + API Key），支持一键获取 `/models` 模型列表与可选思考等级；模型 ID 请以各服务商控制台为准。
 
 本地面试资料库
-在设置 → 面试资料 → 面试资料目录，填写自己的本地文件夹。
-例如 D:/MeetingMaterials，Windows 资源管理器中可先创建该目录再放入资料。
+在「知识库 → 总览与 RAG 状态」中选择自己的本地文件夹（例如 D:/MeetingMaterials），开启「面试中使用」后按需选择岗位。
 目录内可按本指南第五节组织简历、项目、通用问答和岗位档案。
-本地文件夹路径直接填在“面试资料目录”中。
 持久化后的配置文件为 data/interview-library.json，其中 root 保存这个目录。
 
-实时转录／语音识别
-服务平台为阿里云百炼。
-官网与控制台 https://bailian.console.aliyun.com/
-API Key 申请与配置 https://help.aliyun.com/zh/model-studio/get-api-key
-在软件设置中选择云端实时语音识别，填写以下地址与模型。
-WebSocket 地址 wss://dashscope.aliyuncs.com/api-ws/v1/inference
-模型示例 fun-asr-realtime，或 paraformer-realtime-v2。
-这组示例使用北京地域的 API Key。
-百炼也提供业务空间专属地址。
-wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference
-将 {WorkspaceId} 换成自己的业务空间 ID 后填写。
-官方 WebSocket 文档 https://help.aliyun.com/zh/model-studio/websocket-for-paraformer-real-time-service
-官方模型与地域说明 https://help.aliyun.com/zh/model-studio/real-time-speech-recognition-user-guide
+实时转录／语音识别（6 大流式 WebSocket + 2 大分段 HTTP 协议）
+在「高级设置 → 语音与录制」中选择对应模式与协议，各协议独立加密保存凭证，配置后建议点击「试转写（发送样本音频）」验证。
+1. 火山豆包流式 ASR v3：wss://openspeech.bytedance.com/api/v3/sauc/bigmodel
+   模型示例 bigmodel；Resource ID 按账号开通规格填写（2.0 小时版 volc.seedasr.sauc.duration，1.0 小时版 volc.bigasr.sauc.duration）；支持新版 API Key 或旧版 App ID + Access Token。
+2. 阿里云百炼 DashScope：wss://dashscope.aliyuncs.com/api-ws/v1/inference
+   官网与控制台 https://bailian.console.aliyun.com/
+   模型示例 paraformer-realtime-v2 或 fun-asr-realtime；业务空间可使用 wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference。
+3. OpenAI Realtime / 百炼 Qwen3-ASR：
+   OpenAI：wss://api.openai.com/v1/realtime?intent=transcription（gpt-4o-mini-transcribe / gpt-4o-transcribe）
+   百炼：wss://dashscope.aliyuncs.com/api-ws/v1/realtime（qwen3-asr-flash-realtime）
+4. Deepgram Live：wss://api.deepgram.com/v1/listen（nova-3 / nova-2）
+5. 腾讯云实时语音识别 v2：wss://asr.cloud.tencent.com/asr/v2（16k_zh / 16k_en，填 AppID + SecretId + SecretKey）
+6. 科大讯飞实时语音转写 RTASR：wss://rtasr.xfyun.cn/v1/ws（cn / en，填 AppID + RTASR APIKey）
+7. 云端分段 HTTP：默认支持 `/audio/transcriptions`（硅基流动 SenseVoice、智谱 GLM-ASR、Groq Whisper、OpenAI、Speaches 等），亦兼容 `/chat/completions`（input_audio）。
 
 文本回答／DeepSeek
 官网与控制台 https://platform.deepseek.com/
@@ -70,7 +67,7 @@ rerankModel 可填 qwen3-rerank，rewriteModel 可填 qwen-plus，也可以分�
 一、启动
 
 1. 完整解压 ZIP，将整个文件夹放在可写的位置。
-2. 双击“启动.cmd”，通过右上角齿轮进入设置。
+2. 双击“MeetingCopilot.exe”（或“启动.cmd”），进入左侧“高级设置”。
 3. 初始所有资料路径、API 地址、模型和密钥为空，先配置需要使用的功能。
 4. 本版的设置和会话保存在同目录 data 文件夹。退出可通过托盘菜单完成。
 5. 同时运行其他版本可能占用截图快捷键，使用前退出其他 MeetingCopilot 窗口。
@@ -80,46 +77,43 @@ app/MeetingCopilot.exe 也可以直接启动，数据仍保存到便携目录。
 
 二、文本模型
 
-在设置的模型/API 分类中填写文本模型的 Base URL、模型 ID 和 API Key。
-Base URL 使用供应商提供的 OpenAI Chat Completions 兼容地址。
-模型 ID 使用账户实际可调用的完整名称，保存后进行连接测试。
-供应商下拉菜单保留原应用预设，选择后可继续修改地址和模型。
+在“高级设置 → 模型接口 → 文本大模型”中填写 Base URL、API Key 与模型 ID。
+Base URL 使用供应商提供的 OpenAI Chat Completions 兼容地址（例如 https://api.example.com/v1）。
+可点击“获取模型列表”在线拉取可用模型，也可直接手动填写模型 ID，保存后点击“测试连接”验证。
+“思考等级”默认跟随模型默认行为（不额外附带参数），可按需要单独调整为 none / minimal / low / medium / high / xhigh。
 
-语音转录后的问答、自由提问、翻译和会话备忘使用文本模型配置。
-可以先通过“自由提问”发送一句普通问题验证回答链路。
-设置顶部提供保存按钮，部分独立区域会显示自动保存状态，以界面提示为准。
+语音转录后的问答、打字提问、翻译和会话备忘均使用文本模型配置。
+验证连接成功后，即可直接进入工作台输入问题测试回答链路。
 
 三、截图与多模型
 
-在视觉/截图模型区域填写主接口的 Base URL、模型 ID、API Key。
-需要支持图片输入的 Chat Completions 兼容模型。代理按需填写。
-通过“＋”添加备用接口，各接口可分别设置启用状态、超时与代理。
-启用截图后，使用界面截图按钮或全屏、框选快捷键提交图片。
-
-面试场景按配置顺序使用接口，失败后继续尝试备用接口。
-笔试场景可以勾选“笔试截图同时回答”，分别显示各模型结果。
-停止按钮可取消进行中的请求。
-标题栏“截图开/截图关”控制截图回答。
+在“高级设置 → 模型接口 → 截图多模态模型”中开启截图问答，并填写支持图片输入的视觉接口 Base URL、模型 ID、API Key（可按接口独立配置代理与思考等级）。
+可通过“添加视觉接口”配置多个模型：
+- 面试场景按顺序调用，主接口失败时自动回退备用接口；
+- 笔试场景支持“极速识题”多模型并行对比，以及由首选视觉模型承接的“对话追问”。
 
 默认快捷键
 Ctrl+B                 呼出/隐藏窗口
 Ctrl+Shift+S           全屏截图
-Ctrl+Shift+A           框选截图
+Ctrl+Alt+A             无蒙层框选截图（按 Esc 或右键取消）
 Ctrl+Alt+M             开启/关闭多图暂存
 Ctrl+Alt+S             一次提交暂存图片
+Ctrl+Shift+9           切换/退出局部鼠标穿透
+Ctrl+Shift+8           切换不抢焦点
 Ctrl+Alt+方向键        移动窗口
 Ctrl+Alt+PageUp/PageDown 放大/缩小窗口
 
 设置中可以录制组合键或 Mouse4 / Mouse5，避免不同操作使用相同组合。
 多图最多暂存 12 张、合计约 48 MiB，退出时清空暂存队列。
 截图会保存到 Windows“图片”目录下的 MeetingCopilot 文件夹。
-界面的“截图目录”按钮可以打开实际位置。
 
 四、语音识别
 
-在语音分类中选择后端。云端实时模式填写服务支持的 WebSocket 地址、模型及密钥。
-分段云端模式使用对应音频转录接口配置。模型与后端需匹配供应商协议。
-保存并测试成功后，在主界面点击开始。需要本人声音时选择输入设备并启用麦克风。
+在“高级设置 → 语音与录制”中选择后端：
+- 云端流式实时（WebSocket）：支持火山豆包 v3、阿里云百炼 DashScope、OpenAI Realtime / Qwen3-ASR、Deepgram Live、腾讯云 v2、科大讯飞 RTASR。
+- 云端分段识别（HTTP）：支持 `/audio/transcriptions` 与 `/chat/completions`（input_audio）。
+- 断句响应速度支持“极速抢答 / 均衡推荐 / 长句连贯”三档，默认开启 3.5 秒同题自动补充与外放双轨回声过滤。
+配置完成后点击“测试连接（握手）”或“试转写（发送样本音频）”确认正常，再到首页进入面试工作台。
 
 本地 Fun-ASR 或 MOSS
 1. 自行安装对应 Python 环境、模型及显卡依赖。

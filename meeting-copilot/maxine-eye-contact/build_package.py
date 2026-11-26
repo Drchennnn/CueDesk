@@ -58,7 +58,7 @@ def main():
     shutil.copy2(HERE / 'build.ps1', source / 'build.ps1')
     shutil.copy2(HERE / 'LICENSE.NVIDIA-Headers.txt', source / 'LICENSE.NVIDIA-Headers.txt')
     shutil.copy2(HERE.parent / 'eye-contact.cjs', source / 'eye-contact.cjs')
-    for name in ['README.txt', '安装与接入Prompt.txt', '验收结果.txt', 'launch.ps1', 'config.example.json', 'register-softcam-user.ps1']:
+    for name in ['README.txt', 'launch.ps1', 'config.example.json', 'register-softcam-user.ps1']:
         shutil.copy2(HERE / name, output / name)
     shutil.copy2(HERE / 'config.example.json', output / 'config.json')
     (output / '启动.cmd').write_bytes(

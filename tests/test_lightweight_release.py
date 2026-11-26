@@ -54,7 +54,7 @@ class LightweightReleaseChecks(unittest.TestCase):
         }
         for name in ['Engine.cs', 'MaxineSdk.cs', 'DirectShowCamera.cs', 'build.ps1',
                      'LICENSE.NVIDIA-Headers.txt', 'LICENSE.softcam.txt', 'register-softcam-user.ps1',
-                     'README.txt', '安装与接入Prompt.txt', '验收结果.txt', 'launch.ps1', 'bin/EyeContactEngine.exe']:
+                     'README.txt', 'launch.ps1', 'bin/EyeContactEngine.exe']:
             files[project / 'maxine-eye-contact' / name] = 'synthetic source or license'
         files[project / 'maxine-eye-contact/config.example.json'] = '{"sdkDirectory":"","deviceName":""}'
         for file, text in files.items():

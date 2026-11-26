@@ -33,8 +33,7 @@ MC_EYE_ENGINE_DIR 和 MC_EYE_SDK_DIR 可显式覆盖资源位置。
 项目源码目录则直接运行 build.ps1，产物为 bin\EyeContactEngine.exe。
 运行仍需 NVIDIA SDK 的 DLL、GPU 对应模型、NVIDIA 显卡驱动及 VC++ x64 运行库。
 
-SDK 管理器按实际显卡架构选择资源包。自有引擎使用 NVIDIA AR SDK 0.8.7.0 的调用接口。
-实机验收设备为 RTX 3060 Laptop GPU，使用 SM86 模型。
+SDK 管理器按实际显卡架构自动选择对应 SM 资源包。自有引擎使用 NVIDIA AR SDK 0.8.7.0 的调用接口。
 自定义已有 SDK 可通过 config.json 的 sdkDirectory 或 MC_EYE_SDK_DIR 环境变量指定。
 独立包在找到有效的显式 SDK 或包内 runtime/sdk 时可直接启动引擎。
 本地 SDK 推理通过 DLL 调用，配置项中无需填写云端 API 密钥。
@@ -58,4 +57,3 @@ Softcam 源码与许可 https://github.com/tshino/softcam
 
 SDK 下载包中的许可与第三方许可随解包资源保留。离线包将其保存在 runtime/sdk 中。
 7-Zip 许可位于 runtime/tools/maxine/License.txt。
-真实摄像头对照图片属于本机验收资料，发布包包含源码和运行依赖。

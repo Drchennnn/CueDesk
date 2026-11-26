@@ -314,8 +314,6 @@ def main():
     shutil.copy2(HERE / 'configure-rag.cjs', rag / 'configure-rag.cjs')
     shutil.copy2(HERE / '配置指南.txt', destination / '配置指南.txt')
     shutil.copy2(HERE / 'README.txt', destination / 'README.txt')
-    shutil.copy2(PROJECT / 'maxine-eye-contact/安装与接入Prompt.txt', destination / '眼神矫正接入Prompt.txt')
-    shutil.copy2(PROJECT / 'maxine-eye-contact/验收结果.txt', destination / '眼神矫正验收.txt')
     shutil.copy2(ROOT / 'licenses/MeetingCopilot-LICENSE.txt', destination / 'LICENSE.MeetingCopilot.txt')
     status = verify(destination, args.include_sdk)
     manifest = {str(file.relative_to(destination)).replace('\\', '/'): hashlib.sha256(file.read_bytes()).hexdigest()

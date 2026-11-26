@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { PassThrough, Writable } = require('node:stream');
-const { createEyeContact, validateSettings, helperArguments } = require('./eye-contact.cjs');
+const { createEyeContact, validateSettings, helperArguments } = require('../meeting-copilot/eye-contact.cjs');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const vm = require('node:vm');
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -253,7 +253,8 @@ function localPlatform(t, registration = {registered: false, dll: '', name: ''})
     fs.writeFileSync(path.join(sdk, 'models', name), 'synthetic model fixture');
   }
   const scripts = [];
-  const context = {module: {exports: {}}, __dirname,
+  const mcDir = path.resolve(__dirname, '../meeting-copilot');
+  const context = {module: {exports: {}}, __dirname: mcDir,
     process: {resourcesPath: resources, env: {}}, Buffer, console, setTimeout, clearTimeout,
     require(name) {
       if (name === 'node:child_process') return {
@@ -267,10 +268,11 @@ function localPlatform(t, registration = {registered: false, dll: '', name: ''})
           else callback(Error('Unexpected camera registration attempt'), '', '');
         }
       };
+      if (name.startsWith('./') || name.startsWith('../')) return require(path.resolve(mcDir, name));
       return require(name);
     }
   };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'eye-contact.cjs'), 'utf8'), context);
+  vm.runInNewContext(fs.readFileSync(path.join(mcDir, 'eye-contact.cjs'), 'utf8'), context);
   return {root, resources, engine, sdk, scripts, create: context.module.exports.createWindowsPlatform};
 }
 

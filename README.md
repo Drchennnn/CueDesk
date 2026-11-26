@@ -172,7 +172,7 @@ node --test tests/*.test.cjs
 python meeting-copilot/release/build_portable_next.py --output releases/MeetingCopilot-V3.2-build --overwrite
 ```
 
-打包后双击输出目录中的 `MeetingCopilot.exe` 即可运行。[完整功能清单与测试指南](./MeetingCopilot-V3.2功能清单与测试指南.md)
+打包后双击输出目录中的 `MeetingCopilot.exe` 即可运行。
 
 ## 隐私、设备与许可
 
