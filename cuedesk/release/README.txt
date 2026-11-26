@@ -1,6 +1,6 @@
-MeetingCopilot Integrated Next (V3.2)
+CueDesk 面试台 v1.0.0 (2026-11-26)
 
-完整解压到可写目录后，双击「MeetingCopilot.exe」（或「启动.cmd」）即可启动。
+完整解压到可写目录后，双击「CueDesk.exe」（或「启动.cmd」）即可启动。
 运行环境面向 Windows 10/11 x64，已内置 Electron 运行时与独立 data 目录。
 
 核心功能

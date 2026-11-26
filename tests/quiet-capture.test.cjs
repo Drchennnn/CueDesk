@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createCaptureService, createCaptureSettings } = require('../meeting-copilot/quiet-capture.cjs');
+const { createCaptureService, createCaptureSettings } = require('../cuedesk/quiet-capture.cjs');
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'quiet-region-test-'));

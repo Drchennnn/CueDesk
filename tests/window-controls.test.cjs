@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createWindowControls, DEFAULT_BINDINGS } = require('../meeting-copilot/window-controls.cjs');
+const { createWindowControls, DEFAULT_BINDINGS } = require('../cuedesk/window-controls.cjs');
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-window-controls-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

@@ -23,7 +23,7 @@ function loadMainSource() {
   const py = `
 import importlib.util, sys
 from pathlib import Path
-spec = importlib.util.spec_from_file_location("asar_util", r"${path.resolve(__dirname, '../meeting-copilot/release/asar_util.py').replace(/\\/g, '\\\\')}")
+spec = importlib.util.spec_from_file_location("asar_util", r"${path.resolve(__dirname, '../cuedesk/release/asar_util.py').replace(/\\/g, '\\\\')}")
 asar_util = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(asar_util)
 raw = Path(r"${baselineAsar.replace(/\\/g, '\\\\')}").read_bytes()
@@ -60,11 +60,11 @@ function fixture(mode = 'interview', enabled = true, key = 'test-text-key', libr
       return built;
     }
   };
-  const evidenceMod = require('../meeting-copilot/v2/evidence.cjs');
+  const evidenceMod = require('../cuedesk/v2/evidence.cjs');
   const context = {
     AbortController, console: { log() {}, error() {}, warn() {} },
     path,
-    process: { resourcesPath: path.resolve(__dirname, '../meeting-copilot') },
+    process: { resourcesPath: path.resolve(__dirname, '../cuedesk') },
     require: (id) => {
       if (String(id).includes('evidence.cjs')) return evidenceMod;
       return require(id);

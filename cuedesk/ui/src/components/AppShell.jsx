@@ -46,7 +46,7 @@ export function AppShell({
       <header className="mc-shell-titlebar">
         <div className="mc-shell-brand">
           <img className="mc-brand-mark" src={appIconUrl} alt="" draggable={false} />
-          <span>MeetingCopilot</span>
+          <span>CueDesk</span>
           {activeSession && (
             <button
               type="button"

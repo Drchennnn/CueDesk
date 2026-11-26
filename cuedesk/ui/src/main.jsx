@@ -1115,7 +1115,7 @@ function App() {
   if (!settings) {
     return (
       <div className="mc-shell" style={{ alignItems: 'center', justifyContent: 'center', fontSize: 13, color: 'var(--text-muted)' }}>
-        正在加载 MeetingCopilot…
+        正在加载 CueDesk…
       </div>
     );
   }

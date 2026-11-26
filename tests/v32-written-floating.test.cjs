@@ -6,15 +6,15 @@ const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-const { createWorkbenchPrefs } = require('../meeting-copilot/tools/workbench-prefs.cjs');
+const { createWorkbenchPrefs } = require('../cuedesk/tools/workbench-prefs.cjs');
 const {
   createWorkbenchWindow,
   WRITTEN_DEFAULT,
   WRITTEN_MIN,
   WRITTEN_MINI_DEFAULT,
   WRITTEN_MINI_MIN
-} = require('../meeting-copilot/tools/workbench-window.cjs');
-const { createRouter } = require('../meeting-copilot/multimodal-router.cjs');
+} = require('../cuedesk/tools/workbench-window.cjs');
+const { createRouter } = require('../cuedesk/multimodal-router.cjs');
 
 function tmpDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-v32-written-'));
@@ -240,7 +240,7 @@ test('multimodal-router supports multimodal follow-up history, custom writtenPro
 });
 
 test('sessionModel buildWrittenHistory preserves screenshots and extracts primary model answer', async () => {
-  const mod = await import(pathToFileURL(path.resolve(__dirname, '../meeting-copilot/ui/src/core/sessionModel.js')).href);
+  const mod = await import(pathToFileURL(path.resolve(__dirname, '../cuedesk/ui/src/core/sessionModel.js')).href);
   const tinyPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
   let sess = mod.createEmptySession({ name: '笔试', scene: 'written' });
   sess = mod.addQuestionWithAttempt(sess, { requestId: 'r1', prompt: '截图提问', kind: 'shot', images: [tinyPng], forceSelect: true });
@@ -256,13 +256,13 @@ test('sessionModel buildWrittenHistory preserves screenshots and extracts primar
 });
 
 test('V3.2 static invariants: WrittenCompactView reuses GearPopover/CodingPrefsPopover/clickThrough without app-region drag', () => {
-  const wf = fs.readFileSync(path.resolve(__dirname, '../meeting-copilot/ui/src/components/WrittenCompactView.jsx'), 'utf8');
-  const mainJsx = fs.readFileSync(path.resolve(__dirname, '../meeting-copilot/ui/src/main.jsx'), 'utf8');
-  const homeJsx = fs.readFileSync(path.resolve(__dirname, '../meeting-copilot/ui/src/components/HomeView.jsx'), 'utf8');
-  const tooltipJs = fs.readFileSync(path.resolve(__dirname, '../meeting-copilot/ui/src/core/globalTooltip.js'), 'utf8');
-  const sharedJsx = fs.readFileSync(path.resolve(__dirname, '../meeting-copilot/ui/src/components/SharedWidgets.jsx'), 'utf8');
-  const settingsJsx = fs.readFileSync(path.resolve(__dirname, '../meeting-copilot/ui/src/components/SettingsView.jsx'), 'utf8');
-  const css = fs.readFileSync(path.resolve(__dirname, '../meeting-copilot/ui/src/styles/app.css'), 'utf8');
+  const wf = fs.readFileSync(path.resolve(__dirname, '../cuedesk/ui/src/components/WrittenCompactView.jsx'), 'utf8');
+  const mainJsx = fs.readFileSync(path.resolve(__dirname, '../cuedesk/ui/src/main.jsx'), 'utf8');
+  const homeJsx = fs.readFileSync(path.resolve(__dirname, '../cuedesk/ui/src/components/HomeView.jsx'), 'utf8');
+  const tooltipJs = fs.readFileSync(path.resolve(__dirname, '../cuedesk/ui/src/core/globalTooltip.js'), 'utf8');
+  const sharedJsx = fs.readFileSync(path.resolve(__dirname, '../cuedesk/ui/src/components/SharedWidgets.jsx'), 'utf8');
+  const settingsJsx = fs.readFileSync(path.resolve(__dirname, '../cuedesk/ui/src/components/SettingsView.jsx'), 'utf8');
+  const css = fs.readFileSync(path.resolve(__dirname, '../cuedesk/ui/src/styles/app.css'), 'utf8');
   assert.ok(wf.includes('GearPopover'), 'WrittenCompactView must reuse GearPopover');
   assert.ok(wf.includes('CodingPrefsPopover'), 'WrittenCompactView must reuse CodingPrefsPopover');
   assert.ok(wf.includes('WorkbenchShortcutsModal'), 'WrittenCompactView must reuse WorkbenchShortcutsModal');

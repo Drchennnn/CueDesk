@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
-const { createWrittenWindow, MINIMUM } = require('../meeting-copilot/written-window.cjs');
+const { createWrittenWindow, MINIMUM } = require('../cuedesk/written-window.cjs');
 class FakeWindow extends EventEmitter {
   constructor() { super(); this.bounds = { x: 200, y: 100, width: 940, height: 560 }; this.minimum = [640, 380]; this.maximized = false; }
   isDestroyed() { return false; }

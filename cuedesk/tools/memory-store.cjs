@@ -375,7 +375,7 @@ function createMemoryStore({ getRoot, snapshotDir }) {
       `- 音频来源：${session.audioSource === 'mic' ? '麦克风' : '系统音频'}`,
       `- 录音文件（存于外部应用目录，不入 Git）：${audioTakes.length ? `${audioTakes.length} 段双轨 WAV（见 session.json）` : '本场未开启整场录音'}`,
       '',
-      '> **声明**：本文件为 MeetingCopilot 原始只读归档。下方「实时语音转写」为未校对 ASR 原文；「当场 AI 参考回答」为软件生成的实时草稿，**绝不等同于候选人真实说过的话或已具备的经历**。',
+      '> **声明**：本文件为 CueDesk 原始只读归档。下方「实时语音转写」为未校对 ASR 原文；「当场 AI 参考回答」为软件生成的实时草稿，**绝不等同于候选人真实说过的话或已具备的经历**。',
       '',
       '## 一、实时语音转写（原始未校对）',
       ''

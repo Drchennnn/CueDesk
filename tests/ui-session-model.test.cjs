@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-const CORE_DIR = path.resolve(__dirname, '../meeting-copilot/ui/src/core');
+const CORE_DIR = path.resolve(__dirname, '../cuedesk/ui/src/core');
 const FIXTURE_PATH = path.resolve(__dirname, './fixtures/synthetic-session.json');
 
 async function loadCore() {

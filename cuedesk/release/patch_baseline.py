@@ -101,7 +101,55 @@ def patch_main(raw: bytes) -> bytes:
     """Apply incremental main-process enhancements onto the verified portable baseline."""
     text = raw.decode("utf-8")
 
-    # 1. Default blank theme to light (existing userData/settings.json is unaffected)
+    # 1. Brand as CueDesk & default blank theme to light (existing userData/settings.json is unaffected)
+    text = replace_once(
+        text,
+        'electron.app.setName("MeetingCopilot");',
+        'electron.app.setName("CueDesk");',
+        "app.setName CueDesk",
+    )
+    text = replace_once(
+        text,
+        'trayNoticeTitle: "MeetingCopilot 仍在运行",',
+        'trayNoticeTitle: "CueDesk 仍在运行",',
+        "trayNoticeTitle zh",
+    )
+    text = replace_once(
+        text,
+        'trayNoticeTitle: "MeetingCopilot is still running",',
+        'trayNoticeTitle: "CueDesk is still running",',
+        "trayNoticeTitle en",
+    )
+    text = replace_once(
+        text,
+        '"MeetingCopilot Diagnostic Report"',
+        '"CueDesk Diagnostic Report"',
+        "diagnostic report title",
+    )
+    text = replace_once(
+        text,
+        'serviceName: "MeetingCopilot ASR",',
+        'serviceName: "CueDesk ASR",',
+        "ASR serviceName",
+    )
+    text = replace_once(
+        text,
+        'const RELEASES_URL = "https://github.com/JWM0203/MeetingCopilot/releases/latest";',
+        'const RELEASES_URL = "https://github.com/Drchennnn/meetingcopilot-integrated/releases/latest";',
+        "releases URL",
+    )
+    brand_anchor = 'brand: "MeetingCopilot",'
+    brand_count = text.count(brand_anchor)
+    if brand_count != 2:
+        raise ValueError(f"Expected brand anchor twice (found {brand_count})")
+    text = text.replace(brand_anchor, 'brand: "CueDesk",')
+    if text.count('path.join(electron.app.getPath("pictures"), "MeetingCopilot")') != 2:
+        raise ValueError("Expected pictures/MeetingCopilot anchor twice")
+    text = text.replace(
+        'path.join(electron.app.getPath("pictures"), "MeetingCopilot")',
+        'path.join(electron.app.getPath("pictures"), "CueDesk")',
+    )
+
     text = replace_once(
         text,
         '    "theme": "dark",',

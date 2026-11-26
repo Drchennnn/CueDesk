@@ -11,10 +11,10 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
-spec = importlib.util.spec_from_file_location('portable_build', ROOT / 'meeting-copilot/release/build_portable.py')
+spec = importlib.util.spec_from_file_location('portable_build', ROOT / 'cuedesk/release/build_portable.py')
 portable_build = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(portable_build)
-spec = importlib.util.spec_from_file_location('module_build', ROOT / 'meeting-copilot/maxine-eye-contact/build_package.py')
+spec = importlib.util.spec_from_file_location('module_build', ROOT / 'cuedesk/maxine-eye-contact/build_package.py')
 module_build = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module_build)
 

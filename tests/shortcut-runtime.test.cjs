@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { createShortcutRuntime } = require('../meeting-copilot/shortcut-runtime.cjs');
+const { createShortcutRuntime } = require('../cuedesk/shortcut-runtime.cjs');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 function fixture(t) {

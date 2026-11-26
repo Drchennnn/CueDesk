@@ -18,7 +18,7 @@ function createShortcutRuntime({ shortcuts, helperPath, getBindings, onToggle, o
   function startHost(buttons) {
     stopHost();
     const current = epoch;
-    const pipeName = `meeting-copilot-mouse-${current}-${process.pid}`;
+    const pipeName = `cuedesk-mouse-${current}-${process.pid}`;
     const pipePath = `\\\\.\\pipe\\${pipeName}`;
     return new Promise((resolve, reject) => {
       const state = { sockets: new Set(), reject, ready: false };

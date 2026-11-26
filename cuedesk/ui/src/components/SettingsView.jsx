@@ -2072,7 +2072,7 @@ export function SettingsView({
                 <div className="mc-srow mc-srow-compact">
                   <div>
                     <div className="mc-srow-label">启动时自动开启安全模式</div>
-                    <div className="mc-srow-desc">每次打开 MeetingCopilot 自动进入隐身保护状态</div>
+                    <div className="mc-srow-desc">每次打开 CueDesk 自动进入隐身保护状态</div>
                   </div>
                   <div className="mc-srow-control is-inline">
                     <Switch

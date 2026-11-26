@@ -1,10 +1,10 @@
-MeetingCopilot Maxine 眼神矫正模块
+CueDesk Maxine 眼神矫正模块
 
 项目内的 EyeContactEngine 源码负责摄像头采集、SDK 参数与逐帧推理、输出虚拟摄像头以及进程控制协议。
 NVIDIA AR SDK 的 GazeRedirection 特性负责眼神矫正模型推理，Softcam 提供 DirectShow 虚拟摄像头。
 
 处理流程
-MeetingCopilot 摄像头开关 → eye-contact.cjs → EyeContactEngine → NvAR / NvCVImage → Softcam → 会议软件。
+CueDesk 摄像头开关 → eye-contact.cjs → EyeContactEngine → NvAR / NvCVImage → Softcam → 会议软件。
 
 独立使用
 1. 解压模块包，保留 runtime 目录结构。默认轻量包包含自有引擎、Softcam、SDK 管理器及官方 7-Zip 工具。
@@ -18,7 +18,7 @@ MeetingCopilot 摄像头开关 → eye-contact.cjs → EyeContactEngine → NvAR
    脚本输出注册恢复记录的位置，恢复时运行 .\register-softcam-user.ps1 -Restore "receipt.json完整路径"。
    也可在管理员终端运行 regsvr32.exe "完整路径\runtime\engine\softcam.dll"，完成全系统注册。
 
-MeetingCopilot 集成
+CueDesk 集成
 安装目录 resources\eye-contact\engine 放置 EyeContactEngine.exe 与 softcam.dll。
 resources\tools\maxine-sdk.cjs 管理 SDK 下载、校验与解包，资源清单内置于代码。
 resources\tools\maxine 放置官方 7z.exe、7z.dll 与 License.txt。

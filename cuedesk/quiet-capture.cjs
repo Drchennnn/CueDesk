@@ -14,7 +14,7 @@ function createCaptureService({ helperPath, execFile = require('node:child_proce
     cancelled = false;
     let directory;
     try {
-      directory = await fs.promises.mkdtemp(path.join(tempRoot, 'meeting-copilot-shot-'));
+      directory = await fs.promises.mkdtemp(path.join(tempRoot, 'cuedesk-shot-'));
       const file = path.join(directory, 'screen.png');
       const hasRect = mode === 'full' && rect &&
         Number.isInteger(rect.x) && Number.isInteger(rect.y) &&

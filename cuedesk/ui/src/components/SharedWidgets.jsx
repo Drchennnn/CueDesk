@@ -1166,7 +1166,7 @@ export function QuickStartModal({ settings, asr, library, onClose, onNavigateCap
         </div>
         <div className="mc-modal-body">
           <div className="mc-alert" style={{ fontSize: 12 }}>
-            <strong>关于密钥与隐私：</strong>MeetingCopilot 为本地运行软件，不经第三方中转服务器；你的 API Key 加密存于本机，费用直接由所选模型服务商按量结算。
+            <strong>关于密钥与隐私：</strong>CueDesk 为本地运行软件，不经第三方中转服务器；你的 API Key 加密存于本机，费用直接由所选模型服务商按量结算。
           </div>
           {paths.map(p => (
             <div key={p.id} className="mc-card">

@@ -92,8 +92,10 @@ function createWindowsPlatform({ resourcesPath = process.resourcesPath || path.r
     reportSdkProgress = onProgress;
     if (!sdkDirectory && !fs.existsSync(path.join(bundledSdkDir, 'nvARPose.dll'))) {
       const dataDirectory = userDataDirectory || (settingsFile && path.dirname(settingsFile)) ||
-        path.join(process.env.LOCALAPPDATA, 'MeetingCopilot');
+        path.join(process.env.LOCALAPPDATA, 'CueDesk');
       const existingCached = findCachedSdk(path.join(dataDirectory, 'maxine-sdk')) ||
+        findCachedSdk(appData ? path.join(appData, 'CueDesk', 'maxine-sdk') : '') ||
+        findCachedSdk(process.env.APPDATA ? path.join(process.env.APPDATA, 'CueDesk', 'maxine-sdk') : '') ||
         findCachedSdk(appData ? path.join(appData, 'MeetingCopilot', 'maxine-sdk') : '') ||
         findCachedSdk(process.env.APPDATA ? path.join(process.env.APPDATA, 'MeetingCopilot', 'maxine-sdk') : '');
       if (existingCached) {

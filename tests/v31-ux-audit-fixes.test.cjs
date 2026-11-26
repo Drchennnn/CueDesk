@@ -6,12 +6,12 @@ const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-const { createKbWorkspace } = require('../meeting-copilot/tools/kb-workspace.cjs');
-const { createMemoryStore } = require('../meeting-copilot/tools/memory-store.cjs');
+const { createKbWorkspace } = require('../cuedesk/tools/kb-workspace.cjs');
+const { createMemoryStore } = require('../cuedesk/tools/memory-store.cjs');
 
 test('M05: LCS lineDiff aligns top insertion, middle deletion, append, and single edit without shifting unchanged lines', async () => {
   const { computeLineDiff } = await import(
-    pathToFileURL(path.resolve(__dirname, '../meeting-copilot/ui/src/core/lineDiff.js')).href
+    pathToFileURL(path.resolve(__dirname, '../cuedesk/ui/src/core/lineDiff.js')).href
   );
 
   // 1. Top single-line insertion (exact audit repro case!)
@@ -104,7 +104,7 @@ test('M04: archiveSessionToRole checks missing rulebook, avoids dangling refs, a
 });
 
 test('M01/M20/M21: static source invariants hold across UI components', () => {
-  const uiDir = path.resolve(__dirname, '../meeting-copilot/ui/src/components');
+  const uiDir = path.resolve(__dirname, '../cuedesk/ui/src/components');
   const shared = fs.readFileSync(path.join(uiDir, 'SharedWidgets.jsx'), 'utf8');
   const settings = fs.readFileSync(path.join(uiDir, 'SettingsView.jsx'), 'utf8');
   const home = fs.readFileSync(path.join(uiDir, 'HomeView.jsx'), 'utf8');
@@ -131,7 +131,7 @@ test('M01/M20/M21: static source invariants hold across UI components', () => {
   }
 
   // M02: WrittenCompactView never falls back to sessions[0]
-  const mainJsx = fs.readFileSync(path.resolve(__dirname, '../meeting-copilot/ui/src/main.jsx'), 'utf8');
+  const mainJsx = fs.readFileSync(path.resolve(__dirname, '../cuedesk/ui/src/main.jsx'), 'utf8');
   assert.doesNotMatch(mainJsx, /activeSession\s*\|\|\s*sessions\[0\]/);
   assert.match(home, /onEnterWrittenCompact\(\{\s*fresh:\s*true\b/);
 });

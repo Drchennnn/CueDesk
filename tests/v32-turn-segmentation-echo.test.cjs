@@ -5,10 +5,10 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-const asrAdapters = require('../meeting-copilot/tools/asr-adapters.cjs');
+const asrAdapters = require('../cuedesk/tools/asr-adapters.cjs');
 
 async function loadUiModules() {
-  const coreDir = path.resolve(__dirname, '../meeting-copilot/ui/src/core');
+  const coreDir = path.resolve(__dirname, '../cuedesk/ui/src/core');
   const [turnPolicy, sessionModel, settingsPatch] = await Promise.all([
     import(pathToFileURL(path.join(coreDir, 'turnPolicy.js')).href),
     import(pathToFileURL(path.join(coreDir, 'sessionModel.js')).href),

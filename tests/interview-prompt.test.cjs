@@ -5,8 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
-const { createInterviewPrompt } = require('../meeting-copilot/interview-prompt.cjs');
-const { createRouter } = require('../meeting-copilot/multimodal-router.cjs');
+const { createInterviewPrompt } = require('../cuedesk/interview-prompt.cjs');
+const { createRouter } = require('../cuedesk/multimodal-router.cjs');
 
 test('interview prompt saves/reloads and external edits are hot-read; invalid drafts never overwrite it', t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-prompt-'));
@@ -31,7 +31,7 @@ const patchedMain = process.env.MC_PATCHED_MAIN || path.resolve(__dirname, '../w
 test('actual patched text builders and interview multimodal share the configured prompt; written and translation stay independent', { skip: !fs.existsSync(patchedMain) && 'Run install_rich_answers_prompt.py --check to generate the real-bundle fixture' }, t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-prompt-builders-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  const router = createRouter({ directory, defaultsDirectory: path.resolve(__dirname, '../meeting-copilot/prompts'), safeStorage: { isEncryptionAvailable: () => true }, transport: () => { throw new Error('No network in tests'); } });
+  const router = createRouter({ directory, defaultsDirectory: path.resolve(__dirname, '../cuedesk/prompts'), safeStorage: { isEncryptionAvailable: () => true }, transport: () => { throw new Error('No network in tests'); } });
   router.initialize();
   router.applyPatch({ ...router.getPublic(), mode: 'interview' });
   const store = createInterviewPrompt({ file: path.join(router.promptDir, 'interview.md'), original: 'original' });

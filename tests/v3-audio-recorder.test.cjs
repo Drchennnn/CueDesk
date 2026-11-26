@@ -10,7 +10,7 @@ const {
   float32ToInt16Buffer,
   SAMPLE_RATE,
   WAV_HEADER_SIZE
-} = require('../meeting-copilot/tools/audio-recorder.cjs');
+} = require('../cuedesk/tools/audio-recorder.cjs');
 
 test('audio-recorder writes valid dual-track 16kHz PCM WAV headers and supports list/read/discard', (t) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-rec-test-'));

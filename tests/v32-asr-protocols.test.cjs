@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-const asrAdapters = require('../meeting-copilot/tools/asr-adapters.cjs');
+const asrAdapters = require('../cuedesk/tools/asr-adapters.cjs');
 
 function createMockWsFactory(handler) {
   const instances = [];
@@ -620,7 +620,7 @@ test('ASR-Protocol: 6-provider profile isolation preserves every provider withou
 });
 
 test('ASR-Protocol: settingsPatch diffs cloudProtocol, tencent appId/appKey, xfyun appId without touching unrelated UI edits', async () => {
-  const mod = await import(pathToFileURL(path.resolve(__dirname, '../meeting-copilot/ui/src/core/settingsPatch.js')).href);
+  const mod = await import(pathToFileURL(path.resolve(__dirname, '../cuedesk/ui/src/core/settingsPatch.js')).href);
   const { buildSettingsDiffPatch } = mod;
 
   const base = {

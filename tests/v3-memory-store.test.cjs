@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createMemoryStore } = require('../meeting-copilot/tools/memory-store.cjs');
+const { createMemoryStore } = require('../cuedesk/tools/memory-store.cjs');
 
 test('memory-store auto-snapshots external agent edits, supports diff, pending-fact approval, rollback, and session archiving', (t) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mem-test-'));

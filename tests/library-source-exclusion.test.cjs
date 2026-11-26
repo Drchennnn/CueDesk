@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
-const {Store,hash}=require('../meeting-copilot/v2/store.cjs');
+const {Store,hash}=require('../cuedesk/v2/store.cjs');
 test('dependency history is archived, new dependencies excluded, genuine missing sources still warn and edited role notes refresh',async t=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'mc-exclusion-'));
  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));

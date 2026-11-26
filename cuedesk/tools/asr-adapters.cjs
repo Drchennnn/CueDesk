@@ -901,7 +901,7 @@ function buildDoubaoInitPayload(cfg, language, opts = {}) {
   }
   const segProf = getSegmentationProfile(opts.segmentationMode || cfg?.segmentationMode);
   return {
-    user: { uid: 'meetingcopilot' },
+    user: { uid: 'cuedesk' },
     audio,
     request: {
       model_name: cfg.model || 'bigmodel',

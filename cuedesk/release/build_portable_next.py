@@ -30,16 +30,21 @@ spec_iu = importlib.util.spec_from_file_location("icon_util", HERE / "icon_util.
 iu = importlib.util.module_from_spec(spec_iu)
 spec_iu.loader.exec_module(iu)
 
+APP_NAME = "CueDesk"
+APP_VERSION = "1.0.0"
+RELEASE_DATE = "2026-11-26"
+
 MAIN = "out/main/index.js"
 ASR_WORKER = "out/main/asrWorker.js"
 PRELOAD = "out/preload/index.js"
+RENDERER_HTML = "out/renderer/index.html"
 RENDERER_JS = "out/renderer/assets/index-hyFYaQxP.js"
 RENDERER_CSS = "out/renderer/assets/index-BJg-OUFD.css"
 LEGACY_SETUP_HTML = "out/renderer/setup.html"
 
 RETIRED_SETUP_HTML = b"""<!doctype html>
 <html lang="zh-CN">
-<head><meta charset="UTF-8"><title>MeetingCopilot</title></head>
+<head><meta charset="UTF-8"><title>CueDesk</title></head>
 <body><p>Legacy setup wizard withdrawn; onboarding is unified inside main renderer (index.html).</p></body>
 </html>
 """
@@ -116,14 +121,22 @@ def copy_baseline_runtime(baseline: Path, destination: Path) -> None:
     if multimodal_src.is_file():
         shutil.copy2(multimodal_src, destination / "app/resources/multimodal/multimodal-router.cjs")
 
-    # Sync custom Nailong app/tray icon assets and stamp into packaged Electron EXE
+    # Rename packaged Electron shell executable to CueDesk.exe and stamp custom icon
+    old_app_exe = destination / "app/MeetingCopilot.exe"
+    app_exe = destination / "app/CueDesk.exe"
+    if old_app_exe.is_file():
+        if app_exe.exists():
+            app_exe.unlink()
+        old_app_exe.rename(app_exe)
+
+    # Sync custom app/tray icon assets and stamp into packaged Electron EXE
     assets_dir = PROJECT / "assets"
     res_dir = destination / "app/resources/resources"
     res_dir.mkdir(parents=True, exist_ok=True)
     ico_src = assets_dir / "app-icon.ico"
     if ico_src.is_file():
         shutil.copy2(ico_src, res_dir / "app-icon.ico")
-        iu.stamp_exe_icon(destination / "app/MeetingCopilot.exe", ico_src)
+        iu.stamp_exe_icon(app_exe, ico_src)
     png_src = assets_dir / "app-icon.png"
     if png_src.is_file():
         shutil.copy2(png_src, res_dir / "app-icon.png")
@@ -271,10 +284,14 @@ def main() -> None:
     main_patched = pb.patch_main(bp.asar.read_member(original, header, offset, MAIN))
     worker_patched = pb.patch_asr_worker(bp.asar.read_member(original, header, offset, ASR_WORKER))
     preload_patched = pb.patch_preload(bp.asar.read_member(original, header, offset, PRELOAD))
+    html_patched = bp.asar.read_member(original, header, offset, RENDERER_HTML).replace(
+        b"<title>MeetingCopilot</title>", b"<title>CueDesk</title>"
+    )
     replacements = {
         MAIN: main_patched,
         ASR_WORKER: worker_patched,
         PRELOAD: preload_patched,
+        RENDERER_HTML: html_patched,
         RENDERER_JS: args.ui_js.read_bytes(),
         RENDERER_CSS: args.ui_css.read_bytes(),
         LEGACY_SETUP_HTML: RETIRED_SETUP_HTML,
@@ -288,12 +305,17 @@ def main() -> None:
     defaults_settings.setdefault("ui", {})["theme"] = "light"
     bp.write_json(defaults_settings_path, defaults_settings)
     bp.write_launchers(destination)
+    for cmd_name, cmd_content in {
+        "启动.cmd": '@echo off\r\nsetlocal\r\nset "ELECTRON_RUN_AS_NODE="\r\nstart "" "%~dp0app\\CueDesk.exe"\r\n',
+        "配置向量检索.cmd": '@echo off\r\nsetlocal\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n"%~dp0app\\CueDesk.exe" "%~dp0rag\\configure-rag.cjs"\r\nif errorlevel 1 (echo Configuration failed. Please read the guide.)\r\npause\r\n',
+    }.items():
+        (destination / cmd_name).write_bytes(cmd_content.encode("ascii"))
 
-    # Compile a zero-console top-level MeetingCopilot.exe launcher carrying the custom app icon
-    launcher_cs = ROOT / "src/MeetingCopilotLauncher.cs"
+    # Compile a zero-console top-level CueDesk.exe launcher carrying the custom app icon
+    launcher_cs = ROOT / "src/CueDeskLauncher.cs"
     ico_src = PROJECT / "assets/app-icon.ico"
     if sys.platform == "win32" and launcher_cs.is_file() and ico_src.is_file():
-        iu.compile_launcher_exe(launcher_cs, ico_src, destination / "MeetingCopilot.exe")
+        iu.compile_launcher_exe(launcher_cs, ico_src, destination / "CueDesk.exe")
 
     # Copy RAG scripts and docs
     rag = destination / "rag"
@@ -318,8 +340,10 @@ def main() -> None:
     bp.write_json(
         destination / "release-manifest.json",
         {
-            "name": "MeetingCopilot Integrated Next",
-            "upstream_version": "0.2.0-beta.1",
+            "name": APP_NAME,
+            "version": APP_VERSION,
+            "release_date": RELEASE_DATE,
+            "upstream_version": "MeetingCopilot 0.2.0-beta.1",
             "baseline_asar_sha256": digest,
             "verification": status,
             "files_sha256": manifest,

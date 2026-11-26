@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
-const {resolve}=require('../meeting-copilot/v2/dialogue.cjs');
-const {classifyTurn}=require('../meeting-copilot/v2/turn-policy.cjs');
+const {resolve}=require('../cuedesk/v2/dialogue.cjs');
+const {classifyTurn}=require('../cuedesk/v2/turn-policy.cjs');
 const docs=['SRAG','IOD','九寨沟'].map(title=>({title,project_id:title,file_path:'项目资料/'+title+'.md'}));
 const run=(question,state,extra={})=>resolve({question,sessionId:'same-session',dialogueState:state,...extra},docs,'test-root-role');
 

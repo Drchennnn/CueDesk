@@ -14,8 +14,8 @@ bin/Screenshots/
 error.log
 *.png
 !docs/images/*.png
-!meeting-copilot/assets/*.png
-!meeting-copilot/ui/src/assets/*.png
+!cuedesk/assets/*.png
+!cuedesk/ui/src/assets/*.png
 *.asar
 *.bak
 *.tmp
@@ -27,8 +27,8 @@ error.log
 /analysis/
 /exports/
 /data/
-meeting-copilot/analysis/
-meeting-copilot/ui/dist/
+cuedesk/analysis/
+cuedesk/ui/dist/
 node_modules/
 Local State
 *.part

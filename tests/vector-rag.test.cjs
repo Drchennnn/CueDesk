@@ -5,10 +5,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
-const {Store} = require('../meeting-copilot/v2/store.cjs');
-const {createVectorSource} = require('../meeting-copilot/v2/vector-source.cjs');
-const {createVectorClient} = require('../meeting-copilot/v2/vector-client.cjs');
-const {createInterviewLibrary} = require('../meeting-copilot/v2/library.cjs');
+const {Store} = require('../cuedesk/v2/store.cjs');
+const {createVectorSource} = require('../cuedesk/v2/vector-source.cjs');
+const {createVectorClient} = require('../cuedesk/v2/vector-client.cjs');
+const {createInterviewLibrary} = require('../cuedesk/v2/library.cjs');
 
 async function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'vector-rag-'));
@@ -144,7 +144,7 @@ test('service failure falls back to curated keyword retrieval and preserves unkn
 });
 
 test('generic RAG methods do not acquire a personal project merely by naming RAG', () => {
-  const {resolve} = require('../meeting-copilot/v2/dialogue.cjs');
+  const {resolve} = require('../cuedesk/v2/dialogue.cjs');
   const documents = [{project_id: 'project-rag', file_path: '项目资料/SRAG.md', title: 'SRAG项目'}];
   const state = resolve({question: 'RAG的切快一般有什么方法？'}, documents, 'test');
   assert.deepEqual(state.project_ids, []);
@@ -153,6 +153,6 @@ test('generic RAG methods do not acquire a personal project merely by naming RAG
 });
 
  test('parent block linkage remains understandable in oral answers', () => {
-  const {parseAnswer}=require('../meeting-copilot/v2/evidence.cjs');
+  const {parseAnswer}=require('../cuedesk/v2/evidence.cjs');
   assert.equal(parseAnswer('按 parent_id 取出父块正文。',[],true).oral_answer,'按 父块 ID 取出父块正文。');
  });

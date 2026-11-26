@@ -4,8 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createKbWorkspace } = require('../meeting-copilot/tools/kb-workspace.cjs');
-const { parseFrontmatter } = require('../meeting-copilot/v2/store.cjs');
+const { createKbWorkspace } = require('../cuedesk/tools/kb-workspace.cjs');
+const { parseFrontmatter } = require('../cuedesk/v2/store.cjs');
 
 test('kb-workspace creates standardized role package, updates status, protects Qdrant source, and edits persona', async (t) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-kb-ws-'));

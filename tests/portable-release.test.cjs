@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const {prepare} = require('../meeting-copilot/release/portable-bootstrap.cjs');
+const {prepare} = require('../cuedesk/release/portable-bootstrap.cjs');
 
 test('portable initialization seeds an independent profile and preserves saved settings across restarts', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'meeting-portable-'));

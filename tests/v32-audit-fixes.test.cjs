@@ -9,10 +9,10 @@ const os = require('node:os');
 const zlib = require('node:zlib');
 const { pathToFileURL } = require('node:url');
 
-const asrAdapters = require('../meeting-copilot/tools/asr-adapters.cjs');
-const { createWorkbenchPrefs, DEFAULT_WORKBENCH_HOTKEYS } = require('../meeting-copilot/tools/workbench-prefs.cjs');
-const { createWorkbenchWindow } = require('../meeting-copilot/tools/workbench-window.cjs');
-const { createEyeContact } = require('../meeting-copilot/eye-contact.cjs');
+const asrAdapters = require('../cuedesk/tools/asr-adapters.cjs');
+const { createWorkbenchPrefs, DEFAULT_WORKBENCH_HOTKEYS } = require('../cuedesk/tools/workbench-prefs.cjs');
+const { createWorkbenchWindow } = require('../cuedesk/tools/workbench-window.cjs');
+const { createEyeContact } = require('../cuedesk/eye-contact.cjs');
 
 // =============================================================================
 // Mock WebSocket harness supporting binary frames, HTTP upgrade failures, & late packets
@@ -436,7 +436,7 @@ test('P2-1: resetWorkbenchHotkeys restores defaults and reports OS-occupied conf
 // =============================================================================
 
 test('P2-4: summarizeWrittenCounts counts root problems separately from follow-ups', async () => {
-  const mod = await import(pathToFileURL(path.resolve(__dirname, '../meeting-copilot/ui/src/core/sessionModel.js')).href);
+  const mod = await import(pathToFileURL(path.resolve(__dirname, '../cuedesk/ui/src/core/sessionModel.js')).href);
   let sess = mod.createEmptySession({ scene: 'written', name: '笔试' });
   sess = mod.addQuestionWithAttempt(sess, { questionId: 'q1', requestId: 'r1', prompt: '栈题截图', kind: 'shot' });
   sess = mod.addQuestionWithAttempt(sess, { questionId: 'q2', requestId: 'r2', prompt: '为什么是 12', kind: 'free', parentQuestionId: 'q1', isFollowup: true });
@@ -458,7 +458,7 @@ test('P2-4: summarizeWrittenCounts counts root problems separately from follow-u
 });
 
 test('P1-1: buildSettingsDiffPatch tracks realtime provider, resourceId, authMode, appKey independently', async () => {
-  const mod = await import(pathToFileURL(path.resolve(__dirname, '../meeting-copilot/ui/src/core/settingsPatch.js')).href);
+  const mod = await import(pathToFileURL(path.resolve(__dirname, '../cuedesk/ui/src/core/settingsPatch.js')).href);
   const base = {
     baseUrl: 'https://api.example.com/v1', model: 'm1', reasoningEffort: 'default', answerLang: 'chinese',
     visionBaseUrl: '', visionModel: '', visionProxy: '', multimodal: null,

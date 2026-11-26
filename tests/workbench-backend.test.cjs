@@ -6,11 +6,11 @@ const os = require('node:os');
 const path = require('node:path');
 const cp = require('node:child_process');
 
-const { createTemplatesStore } = require('../meeting-copilot/tools/templates-store.cjs');
-const { createWorkbenchPrefs } = require('../meeting-copilot/tools/workbench-prefs.cjs');
-const { createWorkbenchWindow, HOME_MIN, WORKBENCH_MIN } = require('../meeting-copilot/tools/workbench-window.cjs');
-const { createCaptureService } = require('../meeting-copilot/quiet-capture.cjs');
-const { createInterviewLibrary } = require('../meeting-copilot/v2/library.cjs');
+const { createTemplatesStore } = require('../cuedesk/tools/templates-store.cjs');
+const { createWorkbenchPrefs } = require('../cuedesk/tools/workbench-prefs.cjs');
+const { createWorkbenchWindow, HOME_MIN, WORKBENCH_MIN } = require('../cuedesk/tools/workbench-window.cjs');
+const { createCaptureService } = require('../cuedesk/quiet-capture.cjs');
+const { createInterviewLibrary } = require('../cuedesk/v2/library.cjs');
 
 function tmpDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-wb-test-'));
@@ -305,7 +305,7 @@ test('v2 library readDocument reads files inside root and rejects invalid ids', 
 });
 
 test('written-window does not hijack alwaysOnTop or focusable when disabled', t => {
-  const { createWrittenWindow } = require('../meeting-copilot/written-window.cjs');
+  const { createWrittenWindow } = require('../cuedesk/written-window.cjs');
   const dir = tmpDir(t);
   const scr = { getDisplayMatching: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }) };
   const host = createWrittenWindow({ file: path.join(dir, 'written.json'), screen: scr });
@@ -380,10 +380,10 @@ test('patch_baseline.py patches baseline main and preload cleanly with valid JS 
   const pyCode = `
 import importlib.util
 from pathlib import Path
-spec_pb = importlib.util.spec_from_file_location("pb", r"${path.resolve(__dirname, '../meeting-copilot/release/patch_baseline.py').replace(/\\/g, '\\\\')}")
+spec_pb = importlib.util.spec_from_file_location("pb", r"${path.resolve(__dirname, '../cuedesk/release/patch_baseline.py').replace(/\\/g, '\\\\')}")
 pb = importlib.util.module_from_spec(spec_pb)
 spec_pb.loader.exec_module(pb)
-spec_asar = importlib.util.spec_from_file_location("asar_util", r"${path.resolve(__dirname, '../meeting-copilot/release/asar_util.py').replace(/\\/g, '\\\\')}")
+spec_asar = importlib.util.spec_from_file_location("asar_util", r"${path.resolve(__dirname, '../cuedesk/release/asar_util.py').replace(/\\/g, '\\\\')}")
 asar_util = importlib.util.module_from_spec(spec_asar)
 spec_asar.loader.exec_module(asar_util)
 raw = Path(r"${baselineAsar.replace(/\\/g, '\\\\')}").read_bytes()

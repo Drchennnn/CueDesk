@@ -5,7 +5,7 @@ import struct
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-spec = importlib.util.spec_from_file_location('asar_util', ROOT / 'meeting-copilot/release/asar_util.py')
+spec = importlib.util.spec_from_file_location('asar_util', ROOT / 'cuedesk/release/asar_util.py')
 asar_util = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(asar_util)
 

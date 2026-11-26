@@ -4,8 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createInterviewLibrary } = require('../meeting-copilot/v2/library.cjs');
-const { parseFrontmatter } = require('../meeting-copilot/v2/store.cjs');
+const { createInterviewLibrary } = require('../cuedesk/v2/library.cjs');
+const { parseFrontmatter } = require('../cuedesk/v2/store.cjs');
 
 function writeFile(root, rel, content) {
   const full = path.join(root, rel);

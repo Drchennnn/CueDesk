@@ -1,4 +1,4 @@
-MeetingCopilot 整合版配置指南（V3.2）
+CueDesk 面试台配置指南（v1.0.0 · 2026-11-26）
 
 官网与地址速查
 
@@ -67,12 +67,12 @@ rerankModel 可填 qwen3-rerank，rewriteModel 可填 qwen-plus，也可以分�
 一、启动
 
 1. 完整解压 ZIP，将整个文件夹放在可写的位置。
-2. 双击“MeetingCopilot.exe”（或“启动.cmd”），进入左侧“高级设置”。
+2. 双击“CueDesk.exe”（或“启动.cmd”），进入左侧“高级设置”。
 3. 初始所有资料路径、API 地址、模型和密钥为空，先配置需要使用的功能。
 4. 本版的设置和会话保存在同目录 data 文件夹。退出可通过托盘菜单完成。
-5. 同时运行其他版本可能占用截图快捷键，使用前退出其他 MeetingCopilot 窗口。
+5. 同时运行其他版本可能占用截图快捷键，使用前退出其他 CueDesk / MeetingCopilot 窗口。
 
-app/MeetingCopilot.exe 也可以直接启动，数据仍保存到便携目录。
+app/CueDesk.exe 也可以直接启动，数据仍保存到便携目录。
 普通使用已包含 Electron 运行依赖。Python 供可选本地语音和向量检索使用。
 
 二、文本模型
@@ -105,7 +105,7 @@ Ctrl+Alt+PageUp/PageDown 放大/缩小窗口
 
 设置中可以录制组合键或 Mouse4 / Mouse5，避免不同操作使用相同组合。
 多图最多暂存 12 张、合计约 48 MiB，退出时清空暂存队列。
-截图会保存到 Windows“图片”目录下的 MeetingCopilot 文件夹。
+截图会保存到 Windows“图片”目录下的 CueDesk 文件夹。
 
 四、语音识别
 

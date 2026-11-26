@@ -7,8 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-const mr = require('../meeting-copilot/tools/model-reasoning.cjs');
-const { createRouter } = require('../meeting-copilot/multimodal-router.cjs');
+const mr = require('../cuedesk/tools/model-reasoning.cjs');
+const { createRouter } = require('../cuedesk/multimodal-router.cjs');
 
 test('model-reasoning builds safe reasoning_effort fields and maps DashScope hosts cleanly', () => {
   assert.equal(mr.normalizeReasoningEffort(''), 'default');
@@ -125,7 +125,7 @@ test('multimodal-router persists per-endpoint reasoningEffort and exposes getEnd
 });
 
 test('settingsPatch diffs llm.reasoningEffort and SettingsView has zero vendor presets', async () => {
-  const mod = await import(pathToFileURL(path.resolve(__dirname, '../meeting-copilot/ui/src/core/settingsPatch.js')).href);
+  const mod = await import(pathToFileURL(path.resolve(__dirname, '../cuedesk/ui/src/core/settingsPatch.js')).href);
   const base = {
     baseUrl: 'https://beefapi.com/v1',
     model: 'gpt-6.1-sol',
@@ -136,7 +136,7 @@ test('settingsPatch diffs llm.reasoningEffort and SettingsView has zero vendor p
   const patch = mod.buildSettingsDiffPatch(base, { ...base, reasoningEffort: 'medium' }, { includeSections: ['llm'] });
   assert.deepEqual(patch, { llm: { reasoningEffort: 'medium' } });
 
-  const settingsSrc = fs.readFileSync(path.resolve(__dirname, '../meeting-copilot/ui/src/components/SettingsView.jsx'), 'utf8');
+  const settingsSrc = fs.readFileSync(path.resolve(__dirname, '../cuedesk/ui/src/components/SettingsView.jsx'), 'utf8');
   assert.equal(settingsSrc.includes('服务商预设'), false, 'SettingsView must not show hardcoded vendor presets');
   assert.equal(settingsSrc.includes('renderProviderSelect'), false, 'renderProviderSelect must be removed');
   assert.ok(settingsSrc.includes('获取模型列表'), 'SettingsView must expose dynamic model list fetcher');

@@ -4,9 +4,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createInterviewLibrary } = require('../meeting-copilot/v2/library.cjs');
-const { materialStatus, fallbackMessages } = require('../meeting-copilot/v2/material-status.cjs');
-const { parseAnswer, createAnswerStream } = require('../meeting-copilot/v2/evidence.cjs');
+const { createInterviewLibrary } = require('../cuedesk/v2/library.cjs');
+const { materialStatus, fallbackMessages } = require('../cuedesk/v2/material-status.cjs');
+const { parseAnswer, createAnswerStream } = require('../cuedesk/v2/evidence.cjs');
 
 async function setup(t, role = '') {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-project-fallback-'));

@@ -8,8 +8,8 @@ const cp = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 
 const ROOT = path.resolve(__dirname, '..');
-const UI_JS = path.join(ROOT, 'meeting-copilot/ui/dist/index-hyFYaQxP.js');
-const UI_CSS = path.join(ROOT, 'meeting-copilot/ui/dist/index-BJg-OUFD.css');
+const UI_JS = path.join(ROOT, 'cuedesk/ui/dist/index-hyFYaQxP.js');
+const UI_CSS = path.join(ROOT, 'cuedesk/ui/dist/index-BJg-OUFD.css');
 const BASELINE_ASAR = path.join(ROOT, 'releases/MeetingCopilot/app/resources/app.asar');
 
 test('3-layer IPC contract: every window.mc call in renderer exists in preload, and every preload channel exists in main', t => {
@@ -28,10 +28,10 @@ test('3-layer IPC contract: every window.mc call in renderer exists in preload, 
   const py = `
 import importlib.util
 from pathlib import Path
-spec_pb = importlib.util.spec_from_file_location("pb", r"${path.join(ROOT, 'meeting-copilot/release/patch_baseline.py').replace(/\\/g, '\\\\')}")
+spec_pb = importlib.util.spec_from_file_location("pb", r"${path.join(ROOT, 'cuedesk/release/patch_baseline.py').replace(/\\/g, '\\\\')}")
 pb = importlib.util.module_from_spec(spec_pb)
 spec_pb.loader.exec_module(pb)
-spec_asar = importlib.util.spec_from_file_location("asar_util", r"${path.join(ROOT, 'meeting-copilot/release/asar_util.py').replace(/\\/g, '\\\\')}")
+spec_asar = importlib.util.spec_from_file_location("asar_util", r"${path.join(ROOT, 'cuedesk/release/asar_util.py').replace(/\\/g, '\\\\')}")
 asar_util = importlib.util.module_from_spec(spec_asar)
 spec_asar.loader.exec_module(asar_util)
 raw = Path(r"${BASELINE_ASAR.replace(/\\/g, '\\\\')}").read_bytes()
@@ -68,7 +68,7 @@ Path(r"${preloadFile.replace(/\\/g, '\\\\')}").write_bytes(pb.patch_preload(asar
   assert.deepEqual(missingInPreload, [], `Renderer calls missing in preload: ${missingInPreload.join(', ')}`);
 
   // Verify every literal string IPC channel invoked/sent/listened by preload exists in main or its tool modules
-  const exportCode = fs.readFileSync(path.join(ROOT, 'meeting-copilot/interview-export.cjs'), 'utf8');
+  const exportCode = fs.readFileSync(path.join(ROOT, 'cuedesk/interview-export.cjs'), 'utf8');
   const combinedMain = `${mainCode}\n${exportCode}`;
   const literalChannels = new Set();
   for (const m of apiBlock.matchAll(/ipcRenderer\.(?:invoke|send|on)\(\s*"([^"]+)"/g)) {
@@ -87,7 +87,7 @@ test('case save-error & back-vs-finish: strict session persistence surfaces disk
     serializeSessionsForDisk,
     migrateSessionsFile,
     getActiveAttempt
-  } = await import(pathToFileURL(path.join(ROOT, 'meeting-copilot/ui/src/core/sessionModel.js')).href);
+  } = await import(pathToFileURL(path.join(ROOT, 'cuedesk/ui/src/core/sessionModel.js')).href);
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-save-err-'));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -143,7 +143,7 @@ test('case save-error & back-vs-finish: strict session persistence surfaces disk
 });
 
 test('blank portable-bootstrap seeds light theme while preserving existing dark theme user configs', t => {
-  const bootstrap = require(path.join(ROOT, 'meeting-copilot/release/portable-bootstrap.cjs'));
+  const bootstrap = require(path.join(ROOT, 'cuedesk/release/portable-bootstrap.cjs'));
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-boot-'));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 

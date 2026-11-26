@@ -8,7 +8,7 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { Readable, PassThrough } = require('node:stream');
 const { EventEmitter } = require('node:events');
-const { createMaxineSdk, MANIFEST, selectGpu } = require('../meeting-copilot/maxine-sdk.cjs');
+const { createMaxineSdk, MANIFEST, selectGpu } = require('../cuedesk/maxine-sdk.cjs');
 
 const CONTENT = Buffer.from('fixture official SDK installer bytes for Range and integrity tests');
 const MD5 = crypto.createHash('md5').update(CONTENT).digest('hex');
