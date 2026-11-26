@@ -15,6 +15,7 @@ import {
   mergeQuestions,
   migrateSessionsFile,
   regenerateQuestion,
+  reviseQuestionWithAttempt,
   selectAttempt,
   selectQuestion,
   serializeSessionsForDisk,
@@ -23,11 +24,12 @@ import {
 } from './core/sessionModel.js';
 import {
   appendManualDraft,
-  classifyTurn,
   clearManualDraft,
   commitManualDraft,
   createManualDraftState,
-  handleAudioSourceSwitch
+  createTurnAggregator,
+  handleAudioSourceSwitch,
+  isEchoOfRecentThem
 } from './core/turnPolicy.js';
 import { createAudioController } from './core/audioController.js';
 import { installGlobalTooltip } from './core/globalTooltip.js';
@@ -162,6 +164,7 @@ function App() {
   const [secondaryMicActive, setSecondaryMicActive] = useState(false);
   const [recordingState, setRecordingState] = useState({ active: false, durationSec: 0, themBytes: 0, meBytes: 0 });
   const [partials, setPartials] = useState({});
+  const [pendingTurnText, setPendingTurnText] = useState('');
   const [manualDraft, setManualDraft] = useState(createManualDraftState);
   const [modal, setModal] = useState(null); // 'health' | 'quickstart' | 'diagnostics' | 'help' | null
   const [writtenError, setWrittenError] = useState('');
@@ -180,7 +183,7 @@ function App() {
   const audioRef = useRef(null);
   const e2eSamplesRef = useRef([]);
   const memoChainRef = useRef(new Map());
-  const autoTurnTimerRef = useRef(null);
+  const turnAggregatorRef = useRef(null);
   const focusSeqRef = useRef(0);
   const actionsRef = useRef({});
 
@@ -266,13 +269,18 @@ function App() {
     });
   }, [buildLibraryOverrideFor]);
 
-  const handleAskText = useCallback((promptText, sourceSegmentIds = [], { mode = 'free', forceSelect = true } = {}) => {
+  const handleAskText = useCallback((promptText, sourceSegmentIds = [], { mode = 'free', forceSelect = true, questionId } = {}) => {
     const sid = activeSessionIdRef.current;
     const cur = sessionsRef.current.find(s => s.id === sid);
     const clean = String(promptText || '').trim();
-    if (!cur || !clean) return;
+    if (!cur || !clean) return null;
+    if (mode === 'free') {
+      turnAggregatorRef.current?.notifyManualQuestion();
+    }
+    const qid = questionId || createId('q');
     const requestId = createId('req');
     patchSessionById(cur.id, (s) => addQuestionWithAttempt(s, {
+      questionId: qid,
       requestId,
       prompt: clean,
       kind: mode === 'continuous' || mode === 'segment' ? 'segment' : 'free',
@@ -280,6 +288,36 @@ function App() {
       forceSelect
     }));
     dispatchLlmAsk(cur, { requestId, mode, prompt: clean });
+    return qid;
+  }, [dispatchLlmAsk, patchSessionById]);
+
+  const handleReviseAutoQuestion = useCallback(({ questionId, fullPrompt, addedSegmentIds = [] }) => {
+    const sid = activeSessionIdRef.current;
+    const cur = sessionsRef.current.find(s => s.id === sid);
+    const clean = String(fullPrompt || '').trim();
+    if (!cur || !questionId || !clean) return;
+    const existing = cur.questions.find(q => q.id === questionId);
+    if (!existing) return;
+    const requestId = createId('req');
+    let toCancel = [];
+    patchSessionById(cur.id, (s) => {
+      const revised = reviseQuestionWithAttempt(s, questionId, {
+        nextPrompt: clean,
+        addedSegmentIds,
+        requestId
+      });
+      toCancel = revised.cancelledRequestIds;
+      return revised.session;
+    });
+    // Also cancel any active streaming requests from current ref snapshot immediately
+    const liveCancel = new Set([
+      ...toCancel,
+      ...existing.attempts.filter(a => a.status === 'streaming').map(a => a.requestId).filter(Boolean)
+    ]);
+    for (const rid of liveCancel) {
+      window.mc.llmCancel(rid);
+    }
+    dispatchLlmAsk(cur, { requestId, mode: 'continuous', prompt: clean, excludeQuestionId: questionId });
   }, [dispatchLlmAsk, patchSessionById]);
 
   const handleRegenerateQuestion = useCallback((questionId) => {
@@ -500,6 +538,24 @@ function App() {
     const onLibEvt = () => { void window.mc.getInterviewLibrary().then(setLibrary).catch(() => {}); };
     window.addEventListener('mc-library-updated', onLibEvt);
 
+    turnAggregatorRef.current?.dispose?.();
+    turnAggregatorRef.current = createTurnAggregator({
+      getMode: () => settingsRef.current?.asr?.segmentationMode || 'balanced',
+      onBufferChange: (text) => setPendingTurnText(text),
+      onDispatch: ({ prompt, sourceSegmentIds }) => {
+        const sid = activeSessionIdRef.current;
+        const latestSess = sessionsRef.current.find(s => s.id === sid);
+        if (!latestSess || latestSess.transcriptionMode !== 'auto') return null;
+        return handleAskText(prompt, sourceSegmentIds, { mode: 'continuous', forceSelect: false });
+      },
+      onRevise: ({ questionId, fullPrompt, addedSegmentIds }) => {
+        const sid = activeSessionIdRef.current;
+        const latestSess = sessionsRef.current.find(s => s.id === sid);
+        if (!latestSess || latestSess.transcriptionMode !== 'auto') return;
+        handleReviseAutoQuestion({ questionId, fullPrompt, addedSegmentIds });
+      }
+    });
+
     const handleAsr = (ev) => {
       if (ev.kind === 'ready') {
         setAsr({ phase: 'ready', workerState: 'idle', ep: ev.ep, gpuSuspect: ev.gpuSuspect });
@@ -513,6 +569,19 @@ function App() {
         setAsr(prev => ({ ...prev, phase: ev.fatal ? 'error' : prev.phase, lastError: ev.message }));
       } else if (ev.kind === 'partial') {
         setPartials(prev => ({ ...prev, [ev.speaker]: ev.text }));
+        const sid = activeSessionIdRef.current;
+        const cur = sessionsRef.current.find(s => s.id === sid);
+        if (cur && cur.transcriptionMode === 'auto') {
+          if ((ev.speaker ?? 'them') === 'them') {
+            turnAggregatorRef.current?.onPartial(ev.text);
+          } else if (ev.speaker === 'me' && String(ev.text || '').trim().length >= 3) {
+            const guardOn = cur.audioSource === 'system' && settingsRef.current?.asr?.echoGuard !== false;
+            const echo = guardOn ? isEchoOfRecentThem(ev.text, cur.segments, Date.now()) : { isEcho: false };
+            if (!echo.isEcho) {
+              turnAggregatorRef.current?.onMeSpeech();
+            }
+          }
+        }
       } else if (ev.kind === 'segment') {
         setPartials(prev => ({ ...prev, [ev.speaker]: undefined }));
         if (ev.timings) {
@@ -531,27 +600,28 @@ function App() {
         const sid = activeSessionIdRef.current;
         const cur = sessionsRef.current.find(s => s.id === sid);
         if (cur) {
+          const speaker = ev.speaker === 'me' ? 'me' : 'them';
+          const segTs = ev.timings?.speechEndTs || Date.now();
+          // Text-level speaker echo deduplication for external speaker playback in system-audio mode
+          if (speaker === 'me' && cur.audioSource === 'system' && settingsRef.current?.asr?.echoGuard !== false) {
+            const echo = isEchoOfRecentThem(ev.text, cur.segments, segTs);
+            if (echo.isEcho) return;
+          }
           const segId = cur.nextSegmentId || 1;
           patchSessionById(cur.id, (s) => appendSegment(s, {
             id: segId,
-            speaker: ev.speaker,
+            speaker,
             text: ev.text,
             startTs: ev.timings?.speechStartTs,
             endTs: ev.timings?.speechEndTs
           }));
-          if ((ev.speaker ?? 'them') === 'them') {
+          if (speaker === 'me') {
+            turnAggregatorRef.current?.onMeSpeech();
+          } else {
             if (cur.transcriptionMode === 'manual') {
-              setManualDraft(prev => appendManualDraft(prev, { id: segId, text: ev.text, endTs: ev.timings?.speechEndTs }));
+              setManualDraft(prev => appendManualDraft(prev, { id: segId, text: ev.text, endTs: segTs }));
             } else if (cur.transcriptionMode === 'auto') {
-              const verdict = classifyTurn(ev.text);
-              if (verdict.action === 'answer') {
-                clearTimeout(autoTurnTimerRef.current);
-                autoTurnTimerRef.current = setTimeout(() => {
-                  const latestSess = sessionsRef.current.find(s => s.id === cur.id);
-                  if (!latestSess || latestSess.transcriptionMode !== 'auto') return;
-                  handleAskText(ev.text, [segId], { mode: 'continuous', forceSelect: false });
-                }, 1050);
-              }
+              turnAggregatorRef.current?.onSegment({ id: segId, text: ev.text, ts: segTs });
             }
           }
         }
@@ -590,7 +660,7 @@ function App() {
 
     return () => {
       alive = false;
-      clearTimeout(autoTurnTimerRef.current);
+      turnAggregatorRef.current?.dispose?.();
       offWritten?.();
       offWin?.();
       offPrefs?.();
@@ -603,7 +673,7 @@ function App() {
       offTray?.();
       window.removeEventListener('mc-library-updated', onLibEvt);
     };
-  }, [batchController, enqueueMemoUpdate, handleAskText, patchSessionById]);
+  }, [batchController, enqueueMemoUpdate, handleAskText, handleReviseAutoQuestion, patchSessionById]);
 
   // Install global SuiSi-style custom tooltip & native tooltip privacy guard
   useEffect(() => installGlobalTooltip(document), []);
@@ -756,6 +826,7 @@ function App() {
     setSessions(list => [session, ...list]);
     setActiveSessionId(session.id);
     activeSessionIdRef.current = session.id;
+    turnAggregatorRef.current?.reset();
     setManualDraft({ ...createManualDraftState(), audioSource: session.audioSource });
     if (typeof config.autoSaveOnClose === 'boolean') {
       void handleUpdateWorkbenchPrefs({ autoSaveOnClose: config.autoSaveOnClose });
@@ -815,7 +886,7 @@ function App() {
   }, []);
 
   const finalizeCloseSession = useCallback(async (discardCurrent = false) => {
-    clearTimeout(autoTurnTimerRef.current);
+    turnAggregatorRef.current?.reset();
     try { await window.mc.stopRecording?.(); } catch {}
     await stopCaptureNow();
     const closingId = activeSessionIdRef.current;
@@ -1104,6 +1175,7 @@ function App() {
         secondaryMicActive={secondaryMicActive}
         recordingState={recordingState}
         partials={partials}
+        pendingTurnText={pendingTurnText}
         manualDraft={manualDraft}
         workbenchPrefs={workbenchPrefs}
         windowState={windowState}
@@ -1122,17 +1194,26 @@ function App() {
         onSelectAttempt={(qid, aid) => patchSessionById(activeSession.id, s => selectAttempt(s, qid, aid))}
         onJumpLatest={() => patchSessionById(activeSession.id, s => jumpToLatestQuestion(s))}
         onMergeQuestions={(srcId, dstId) => patchSessionById(activeSession.id, s => mergeQuestions(s, srcId, dstId))}
-        onClearSessionContent={() => patchSessionById(activeSession.id, s => ({ ...s, questions: [], segments: [], selectedQuestionId: null, unreadQuestionIds: [] }))}
+        onClearSessionContent={() => {
+          turnAggregatorRef.current?.reset();
+          patchSessionById(activeSession.id, s => ({ ...s, questions: [], segments: [], selectedQuestionId: null, unreadQuestionIds: [] }));
+        }}
         onCommitManualDraft={() => {
           const committed = commitManualDraft(manualDraft);
           setManualDraft(committed.nextState);
           if (committed.prompt) handleAskText(committed.prompt, committed.sourceSegmentIds, { mode: 'segment', forceSelect: true });
         }}
         onClearManualDraft={() => setManualDraft(prev => clearManualDraft(prev))}
-        onChangeSessionMeta={(patch) => patchSessionById(activeSession.id, s => ({ ...s, ...patch }))}
+        onChangeSessionMeta={(patch) => {
+          if (patch.transcriptionMode !== undefined) turnAggregatorRef.current?.reset();
+          patchSessionById(activeSession.id, s => ({ ...s, ...patch }));
+        }}
         onTranslateSegment={handleTranslateSegment}
         onTranslateAnswer={handleTranslateAnswer}
-        onClearTranscript={() => patchSessionById(activeSession.id, s => ({ ...s, segments: [] }))}
+        onClearTranscript={() => {
+          turnAggregatorRef.current?.reset();
+          patchSessionById(activeSession.id, s => ({ ...s, segments: [] }));
+        }}
         onUpdatePrefs={handleUpdateWorkbenchPrefs}
         onSetAlwaysOnTop={(on) => window.mc.setAlwaysOnTop(on).then(setWindowState)}
         onSetPreventFocus={(on) => window.mc.setPreventFocus(on).then(setWindowState)}

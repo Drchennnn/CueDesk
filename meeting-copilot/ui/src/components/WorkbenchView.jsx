@@ -106,6 +106,7 @@ export function WorkbenchView({
   secondaryMicActive,
   recordingState,
   partials,
+  pendingTurnText = '',
   manualDraft,
   workbenchPrefs,
   windowState,
@@ -882,6 +883,7 @@ export function WorkbenchView({
                             <span>
                               #{q.ordinal}
                               {q.mergedFromOrdinals?.length > 1 && ` (合并 ${q.mergedFromOrdinals.join('+')})`}
+                              {q.revisedCount > 0 && ' · 已自动补充'}
                               {q.kind === 'shot' || q.kind === 'batch' ? ' · 截图' : ''}
                             </span>
                             <span className="mc-qcard-extra" style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
@@ -897,10 +899,14 @@ export function WorkbenchView({
                     })
                   )}
 
-                  {partials?.them && (
+                  {(partials?.them || (session.transcriptionMode === 'auto' && pendingTurnText)) && (
                     <div style={{ padding: '6px 10px', borderRadius: 8, border: '1px dashed var(--border-strong)', fontSize: 12, color: 'var(--text-muted)' }}>
-                      <strong style={{ fontSize: 11 }}>实时识别中…</strong>
-                      <div>{partials.them}</div>
+                      <strong style={{ fontSize: 11 }}>
+                        {pendingTurnText ? '正在聚合完整提问…' : '实时识别中…'}
+                      </strong>
+                      <div>
+                        {[pendingTurnText, partials?.them].filter(Boolean).join(pendingTurnText && partials?.them ? ' ' : '')}
+                      </div>
                     </div>
                   )}
 
@@ -1447,7 +1453,7 @@ export function WorkbenchView({
         onClose={() => setModePopoverOpen(false)}
       >
         {[
-          ['auto', '自动提问', '识别到面试官完整提问自动生成回答'],
+          ['auto', '自动提问', '智能断句聚合，3.5 秒内补充自动同题修订'],
           ['manual', '手动累计发送', '先累计对方转写，点击发送后再建题'],
           ['transcript-only', '仅转写', '只记录转写不自动调用大模型']
         ].map(([id, title, desc]) => (
@@ -1472,7 +1478,9 @@ export function WorkbenchView({
         ))}
         <div className="mc-dropdown-sep" />
         <div style={{ padding: '4px 8px', fontSize: 10.5, color: 'var(--text-faint)' }}>
-          {asrCaps.supportsRevision ? '当前 ASR 支持同题修订协议' : '当前 ASR 返回临时/最终转写，不自动修订旧题'}
+          {asrCaps.supportsRevision
+            ? '已启用服务端 + 本地同题修订'
+            : '已启用本地低延迟话轮聚合与 3.5s 同题自动补充'}
         </div>
       </AnchoredPopover>
 

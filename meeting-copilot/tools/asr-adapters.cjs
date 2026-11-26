@@ -104,6 +104,99 @@ const HANDSHAKE_TIMEOUT_MS = 10000;
 const PCM_CHUNK_BYTES = 6400; // 200ms @ 16kHz 16-bit mono PCM
 const XFYUN_CHUNK_BYTES = 1280; // 40ms @ 16kHz 16-bit mono PCM (iFlytek recommended)
 
+const SEGMENTATION_PROFILES = Object.freeze({
+  fast: Object.freeze({
+    id: 'fast',
+    labelZh: '极速抢答（停顿短、首字最快）',
+    doubaoEndWindowMs: 450,
+    dashscopeSilenceMs: 450,
+    qwenSilenceMs: 450,
+    openaiSilenceMs: 400,
+    deepgramEndpointingMs: 250
+  }),
+  balanced: Object.freeze({
+    id: 'balanced',
+    labelZh: '均衡（推荐 · 低延迟且不易碎句）',
+    doubaoEndWindowMs: 650,
+    dashscopeSilenceMs: 700,
+    qwenSilenceMs: 600,
+    openaiSilenceMs: 550,
+    deepgramEndpointingMs: 350
+  }),
+  long: Object.freeze({
+    id: 'long',
+    labelZh: '长句连贯（适合思考停顿多的面试官）',
+    doubaoEndWindowMs: 1100,
+    dashscopeSilenceMs: 1100,
+    qwenSilenceMs: 950,
+    openaiSilenceMs: 900,
+    deepgramEndpointingMs: 700
+  })
+});
+
+function normalizeSegmentationMode(mode) {
+  const m = String(mode || '').trim().toLowerCase();
+  if (m === 'fast' || m === 'long' || m === 'balanced') return m;
+  return 'balanced';
+}
+
+function getSegmentationProfile(mode) {
+  return SEGMENTATION_PROFILES[normalizeSegmentationMode(mode)] || SEGMENTATION_PROFILES.balanced;
+}
+
+function computePcmRms(pcm) {
+  const len = pcm?.length || 0;
+  if (!len) return 0;
+  let sum = 0;
+  for (let i = 0; i < len; i++) {
+    const v = pcm[i];
+    sum += v * v;
+  }
+  return Math.sqrt(sum / len);
+}
+
+/**
+ * Lightweight cross-channel echo gate for Windows speaker-playback interviews:
+ * When system loopback ("them") is actively outputting interviewer audio, acoustic
+ * leakage into the user's mic ("me") tends to rise in lockstep at moderate RMS.
+ * Suppressing idle-stream wakeups during active "them" output avoids opening a
+ * redundant cloud ASR stream for speaker echo while still letting loud near-field
+ * barge-in speech through.
+ */
+function createCrossChannelEchoGate({
+  hangoverMs = 260,
+  themActiveRms = 0.012,
+  meBargeInFloorRms = 0.06,
+  meToThemRatio = 1.5
+} = {}) {
+  let lastThemActiveAt = 0;
+  let recentThemRms = 0;
+
+  return {
+    observeThem({ rms = 0, speechActive = false, now = Date.now() } = {}) {
+      if (speechActive || rms >= themActiveRms) {
+        lastThemActiveAt = now;
+        recentThemRms = recentThemRms > 0 ? (recentThemRms * 0.55 + rms * 0.45) : rms;
+      } else if (now - lastThemActiveAt > hangoverMs) {
+        recentThemRms *= 0.6;
+        if (recentThemRms < 0.001) recentThemRms = 0;
+      }
+    },
+    shouldSuppressMe({ rms = 0, meStreamOpen = false, now = Date.now() } = {}) {
+      const themActive = (now - lastThemActiveAt) <= hangoverMs && recentThemRms >= themActiveRms;
+      if (!themActive) return false;
+      const bargeInThreshold = Math.max(meBargeInFloorRms, recentThemRms * meToThemRatio);
+      if (rms >= bargeInThreshold) return false;
+      // Suppress waking up an idle "me" stream from speaker echo; once "me" is genuinely open,
+      // let text-level echo deduplication handle edge overlap cleanly without cutting user speech.
+      return !meStreamOpen;
+    },
+    getState() {
+      return { lastThemActiveAt, recentThemRms };
+    }
+  };
+}
+
 function isLocalWsUrl(url) {
   return /^ws:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/i.test(String(url || '').trim());
 }
@@ -795,7 +888,7 @@ function buildDoubaoHeaders(cfg, connectId) {
   return headers;
 }
 
-function buildDoubaoInitPayload(cfg, language) {
+function buildDoubaoInitPayload(cfg, language, opts = {}) {
   const audio = {
     format: 'pcm',
     codec: 'raw',
@@ -806,6 +899,7 @@ function buildDoubaoInitPayload(cfg, language) {
   if (language === 'english' && /nostream/i.test(String(cfg?.baseUrl || ''))) {
     audio.language = 'en-US';
   }
+  const segProf = getSegmentationProfile(opts.segmentationMode || cfg?.segmentationMode);
   return {
     user: { uid: 'meetingcopilot' },
     audio,
@@ -815,16 +909,18 @@ function buildDoubaoInitPayload(cfg, language) {
       enable_punc: true,
       enable_ddc: false,
       show_utterances: true,
-      result_type: 'single'
+      result_type: 'single',
+      end_window_size: segProf.doubaoEndWindowMs
     }
   };
 }
 
 class DoubaoRtSession {
-  constructor(cfg, cb, language, WebSocketImpl) {
+  constructor(cfg, cb, language, WebSocketImpl, opts = {}) {
     this.cfg = cfg;
     this.cb = cb;
     this.language = language || 'auto';
+    this.sessionOpts = opts || {};
     this.connectId = crypto.randomUUID();
     this.requestId = this.connectId;
     this.seq = 1;
@@ -858,7 +954,10 @@ class DoubaoRtSession {
     this.ws.on('open', () => {
       if (this.aborted || this.closed) return;
       try {
-        const initFrame = encodeDoubaoFullClientRequest(buildDoubaoInitPayload(cfg, this.language), this.seq);
+        const initFrame = encodeDoubaoFullClientRequest(
+          buildDoubaoInitPayload(cfg, this.language, this.sessionOpts),
+          this.seq
+        );
         this.seq += 1;
         this.ws.send(initFrame);
       } catch (e) {
@@ -1123,7 +1222,7 @@ class DoubaoRealtimeEngine {
   async warmup() { return 0; }
 
   openSession(cb, opts = {}) {
-    return new DoubaoRtSession(this.cfg, cb, opts.language, this.WebSocketImpl);
+    return new DoubaoRtSession(this.cfg, cb, opts.language, this.WebSocketImpl, opts);
   }
 }
 
@@ -1131,10 +1230,36 @@ class DoubaoRealtimeEngine {
 // 2. Aliyun DashScope WebSocket Realtime Adapter (also covers local FunASR/MOSS)
 // =============================================================================
 
+function buildDashScopeRunTaskPayload(cfg, taskId, language, opts = {}) {
+  const hints = languageHintsDashScope(language);
+  const segProf = getSegmentationProfile(opts.segmentationMode || cfg?.segmentationMode);
+  const supportsSilenceTuning = !isLocalWsUrl(cfg?.baseUrl) && !/-v1$/i.test(String(cfg?.model || '').trim());
+  return {
+    header: { action: 'run-task', task_id: taskId, streaming: 'duplex' },
+    payload: {
+      task_group: 'audio',
+      task: 'asr',
+      function: 'recognition',
+      model: cfg.model,
+      parameters: {
+        format: 'pcm',
+        sample_rate: 16000,
+        ...(supportsSilenceTuning ? {
+          semantic_punctuation_enabled: false,
+          max_sentence_silence: segProf.dashscopeSilenceMs
+        } : {}),
+        ...(hints ? { language_hints: hints } : {})
+      },
+      input: {}
+    }
+  };
+}
+
 class DashScopeRtSession {
-  constructor(cfg, cb, language, WebSocketImpl) {
+  constructor(cfg, cb, language, WebSocketImpl, opts = {}) {
     this.cfg = cfg;
     this.cb = cb;
+    this.sessionOpts = opts || {};
     this.taskId = crypto.randomUUID();
     this.requestId = this.taskId;
     this.started = false;
@@ -1156,22 +1281,7 @@ class DashScopeRtSession {
 
     this.ws.on('open', () => {
       if (this.aborted || this.closed) return;
-      const hints = languageHintsDashScope(language);
-      const runTask = {
-        header: { action: 'run-task', task_id: this.taskId, streaming: 'duplex' },
-        payload: {
-          task_group: 'audio',
-          task: 'asr',
-          function: 'recognition',
-          model: cfg.model,
-          parameters: {
-            format: 'pcm',
-            sample_rate: 16000,
-            ...(hints ? { language_hints: hints } : {})
-          },
-          input: {}
-        }
-      };
+      const runTask = buildDashScopeRunTaskPayload(cfg, this.taskId, language, this.sessionOpts);
       this.ws.send(JSON.stringify(runTask));
     });
 
@@ -1319,7 +1429,7 @@ class DashScopeRealtimeEngine {
   async warmup() { return 0; }
 
   openSession(cb, opts = {}) {
-    return new DashScopeRtSession(this.cfg, cb, opts.language, this.WebSocketImpl);
+    return new DashScopeRtSession(this.cfg, cb, opts.language, this.WebSocketImpl, opts);
   }
 }
 
@@ -1345,9 +1455,10 @@ function buildOpenAiRealtimeUrl(cfg) {
   }
 }
 
-function buildOpenAiRealtimeInitEvent(cfg, language) {
+function buildOpenAiRealtimeInitEvent(cfg, language, opts = {}) {
   const isDash = isDashScopeRealtimeDialect(cfg);
   const isoLang = languageIso639(language);
+  const segProf = getSegmentationProfile(opts.segmentationMode || cfg?.segmentationMode);
   if (isDash) {
     return {
       event_id: `mc_${crypto.randomUUID().slice(0, 12)}`,
@@ -1360,7 +1471,7 @@ function buildOpenAiRealtimeInitEvent(cfg, language) {
         turn_detection: {
           type: 'server_vad',
           threshold: 0.2,
-          silence_duration_ms: 600
+          silence_duration_ms: segProf.qwenSilenceMs
         }
       }
     };
@@ -1377,17 +1488,18 @@ function buildOpenAiRealtimeInitEvent(cfg, language) {
         type: 'server_vad',
         threshold: 0.5,
         prefix_padding_ms: 300,
-        silence_duration_ms: 500
+        silence_duration_ms: segProf.openaiSilenceMs
       }
     }
   };
 }
 
 class OpenAiRealtimeSession {
-  constructor(cfg, cb, language, WebSocketImpl) {
+  constructor(cfg, cb, language, WebSocketImpl, opts = {}) {
     this.cfg = cfg;
     this.cb = cb;
     this.language = language || 'auto';
+    this.sessionOpts = opts || {};
     this.isDash = isDashScopeRealtimeDialect(cfg);
     this.targetRate = this.isDash ? 16000 : 24000;
     this.requestId = '';
@@ -1423,7 +1535,7 @@ class OpenAiRealtimeSession {
     this.ws.on('open', () => {
       if (this.aborted || this.closed) return;
       try {
-        this.ws.send(JSON.stringify(buildOpenAiRealtimeInitEvent(cfg, this.language)));
+        this.ws.send(JSON.stringify(buildOpenAiRealtimeInitEvent(cfg, this.language, this.sessionOpts)));
       } catch (e) {
         this.fail(e);
       }
@@ -1628,7 +1740,7 @@ class OpenAiRealtimeEngine {
   async warmup() { return 0; }
 
   openSession(cb, opts = {}) {
-    return new OpenAiRealtimeSession(this.cfg, cb, opts.language, this.WebSocketImpl);
+    return new OpenAiRealtimeSession(this.cfg, cb, opts.language, this.WebSocketImpl, opts);
   }
 }
 
@@ -1636,9 +1748,10 @@ class OpenAiRealtimeEngine {
 // 4. Deepgram Live Streaming WS Adapter (Nova-3 / Nova-2 / Flux)
 // =============================================================================
 
-function buildDeepgramUrl(cfg, language) {
+function buildDeepgramUrl(cfg, language, opts = {}) {
   const raw = String(cfg?.baseUrl || 'wss://api.deepgram.com/v1/listen').trim();
   const model = String(cfg?.model || 'nova-3').trim();
+  const segProf = getSegmentationProfile(opts.segmentationMode || cfg?.segmentationMode);
   try {
     const u = new URL(raw);
     if (!u.searchParams.has('model')) u.searchParams.set('model', model);
@@ -1648,7 +1761,7 @@ function buildDeepgramUrl(cfg, language) {
     if (!u.searchParams.has('interim_results')) u.searchParams.set('interim_results', 'true');
     if (!u.searchParams.has('smart_format')) u.searchParams.set('smart_format', 'true');
     if (!u.searchParams.has('punctuate')) u.searchParams.set('punctuate', 'true');
-    if (!u.searchParams.has('endpointing')) u.searchParams.set('endpointing', '300');
+    if (!u.searchParams.has('endpointing')) u.searchParams.set('endpointing', String(segProf.deepgramEndpointingMs));
     if (!u.searchParams.has('language')) {
       if (language === 'english') u.searchParams.set('language', 'en');
       else if (language === 'chinese') u.searchParams.set('language', 'zh-CN');
@@ -1662,7 +1775,7 @@ function buildDeepgramUrl(cfg, language) {
 }
 
 class DeepgramRtSession {
-  constructor(cfg, cb, language, WebSocketImpl) {
+  constructor(cfg, cb, language, WebSocketImpl, opts = {}) {
     this.cfg = cfg;
     this.cb = cb;
     this.requestId = '';
@@ -1675,7 +1788,7 @@ class DeepgramRtSession {
     this.lastInterim = '';
     this.finishResolve = null;
 
-    const wsUrl = buildDeepgramUrl(cfg, language);
+    const wsUrl = buildDeepgramUrl(cfg, language, opts);
     this.ws = new WebSocketImpl(wsUrl, {
       headers: cfg.apiKey ? { Authorization: `Token ${cfg.apiKey}` } : {},
       handshakeTimeout: HANDSHAKE_TIMEOUT_MS
@@ -1866,7 +1979,7 @@ class DeepgramRealtimeEngine {
   async warmup() { return 0; }
 
   openSession(cb, opts = {}) {
-    return new DeepgramRtSession(this.cfg, cb, opts.language, this.WebSocketImpl);
+    return new DeepgramRtSession(this.cfg, cb, opts.language, this.WebSocketImpl, opts);
   }
 }
 
@@ -2160,6 +2273,12 @@ function buildXfyunSignedUrl(cfg, opts = {}) {
   } else if (langParam && langParam !== 'cn') {
     qs.set('lang', langParam);
   }
+  const explicitVadMdn = opts.vadMdn !== undefined
+    ? String(opts.vadMdn)
+    : (opts.channel === 'them' ? '2' : '');
+  if (explicitVadMdn === '1' || explicitVadMdn === '2') {
+    qs.set('vadMdn', explicitVadMdn);
+  }
   return {
     url: `${baseRaw}?${qs.toString()}`,
     ts,
@@ -2185,10 +2304,10 @@ function extractXfyunResultText(parsedData) {
 }
 
 class XfyunRtSession {
-  constructor(cfg, cb, language, WebSocketImpl) {
+  constructor(cfg, cb, language, WebSocketImpl, opts = {}) {
     this.cfg = cfg;
     this.cb = cb;
-    const signed = buildXfyunSignedUrl(cfg, { language });
+    const signed = buildXfyunSignedUrl(cfg, { language, channel: opts.channel, vadMdn: opts.vadMdn });
     this.requestId = '';
     this.started = false;
     this.closing = false;
@@ -2395,7 +2514,7 @@ class XfyunRealtimeEngine {
   async warmup() { return 0; }
 
   openSession(cb, opts = {}) {
-    return new XfyunRtSession(this.cfg, cb, opts.language, this.WebSocketImpl);
+    return new XfyunRtSession(this.cfg, cb, opts.language, this.WebSocketImpl, opts);
   }
 }
 
@@ -2999,7 +3118,12 @@ module.exports = {
   REALTIME_PROVIDER_IDS,
   REALTIME_PROVIDERS,
   SEGMENT_PROTOCOLS,
+  SEGMENTATION_PROFILES,
   DOUBAO_PROTO,
+  normalizeSegmentationMode,
+  getSegmentationProfile,
+  computePcmRms,
+  createCrossChannelEchoGate,
   inferRealtimeProvider,
   inferSegmentProtocol,
   isDashScopeRealtimeDialect,
@@ -3015,6 +3139,7 @@ module.exports = {
   decodeDoubaoServerPacket,
   buildDoubaoHeaders,
   buildDoubaoInitPayload,
+  buildDashScopeRunTaskPayload,
   buildOpenAiRealtimeUrl,
   buildOpenAiRealtimeInitEvent,
   buildDeepgramUrl,

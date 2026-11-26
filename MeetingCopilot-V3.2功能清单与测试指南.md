@@ -153,6 +153,10 @@ python meeting-copilot/release/build_portable_next.py --output releases/MeetingC
      - **`openai-transcriptions`（默认推荐）**：`POST {Base URL}/audio/transcriptions`（`multipart/form-data` 上传 16kHz WAV），原生适配**硅基流动**（`FunAudioLLM/SenseVoiceSmall`、`TeleAI/TeleSpeechASR`）、**智谱**（`glm-asr-2512`）、**Groq**（`whisper-large-v3-turbo`）、**OpenAI**（`gpt-4o-mini-transcribe`/`whisper-1`）、**Fireworks / Together / One-API / New-API 中转站**以及本地免 Key `faster-whisper-server` / `Speaches` / `whisper.cpp`。
      - **`chat-audio`（兼容旧版）**：`POST {Base URL}/chat/completions`（Base64 `input_audio`），兼容 `gpt-4o-audio-preview` / `qwen-audio-turbo`。
      - 支持点击**「获取模型」**动态拉取模型列表，并支持直接点击**「试转写（发送样本音频）」**端到端验证识别文本与耗时。
+   - **低延迟三层断句、同题自动补充与外放回声过滤**：
+     - **断句响应速度三档（`极速抢答` / `均衡推荐` / `长句连贯`）**：直接联动豆包 `end_window_size`（`450 / 650 / 1100ms`）、百炼 Paraformer `max_sentence_silence`（`450 / 700 / 1100ms`）、Qwen3-ASR `silence_duration_ms`（`450 / 600 / 950ms`）、Deepgram `endpointing`（`250 / 350 / 700ms`），讯飞 RTASR 在系统音频通道自动采用近场 `vadMdn=2`；支持实时热更新，修改时不会重启本地 Whisper。
+     - **前端无损话轮聚合 + 3.5s 同题自动修订**：彻底取消旧版 1050ms 死等与防抖丢前半句行为；按 A/B/C/D 四级语义动态等待（明确问句仅 `120~180ms` 立刻触发，背景铺垫短等 `480~620ms` 合并下文，未完句进入缓冲绝不丢弃，寒暄词自动忽略）；若抢答后 `3.5 秒` 内面试官继续补充限定条件且本人未开口、未切题，自动拼入原题并原地取消重答（题卡显示 `已自动补充`，不裂成多张碎题卡）。
+     - **外放双轨回声过滤（默认开启）**：在 Windows 系统音频 + 本人麦克风模式下，通过 Worker 跨声道能量门控 + 前端 3.5 秒文本回声去重，自动屏蔽扬声器外放串入麦克风的面试官声音，不增加系统音频侧延迟。
    - **双级验证与分阶段诊断**：实时流式提供**「测试连接（握手）」**与**「试转写（发送样本音频）」**；HTTP 分段提供**「试转写（发送样本音频）」**。发生错误时明确区分失败阶段（本地配置 / 建连 / 鉴权 / 握手 / 音频帧 / 转写定稿）、展示脱敏后的服务商原始错误码与请求 ID（如 `X-Tt-Logid`），不再折叠成模糊的 `UNKNOWN_ERROR`。
    - 同时保留本地实时模型（FunASR / Moss，需另配 Python 环境）、本地 Whisper ONNX 分段、麦克风实时音量电平测试与双轨 WAV 录音目录选择。
 3. **摄像头与眼神矫正（4 层状态诊断）**：

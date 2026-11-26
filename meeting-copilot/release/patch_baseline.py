@@ -268,7 +268,9 @@ def patch_main(raw: bytes) -> bytes:
           apiKeyHint: d.asr.cloud?.apiKeyHint,
           verification: d.asr.cloud?.verification
         },
-        realtime: require(path.join(process.resourcesPath, "tools", "asr-adapters.cjs")).publicRealtimeSettings(d.asr.realtime),''',
+        realtime: require(path.join(process.resourcesPath, "tools", "asr-adapters.cjs")).publicRealtimeSettings(d.asr.realtime),
+        segmentationMode: d.asr.segmentationMode || "balanced",
+        echoGuard: d.asr.echoGuard !== false,''',
         "SettingsStore getPublic per-provider realtime & cloud segment protocol",
     )
 
@@ -316,6 +318,8 @@ def patch_main(raw: bytes) -> bytes:
       modelId: opts.modelId,
       ep: opts.ep,
       language: opts.language,
+      segmentationMode: opts.segmentationMode,
+      echoGuard: opts.echoGuard,
       cloud: opts.cloud,
       toolsDir: opts.toolsDir
     });''',
@@ -389,7 +393,7 @@ def patch_main(raw: bytes) -> bytes:
       };
       const check = asrAdapters.validateRealtimeConfig(candidate);
       if (check.ok) {
-        cloud = check.normalized;
+        cloud = { ...check.normalized, segmentationMode: a.segmentationMode || "balanced" };
       }
     } else if (backend === "cloud") {
       const segKey = settings.getCloudAsrApiKey() ?? "";
@@ -410,6 +414,8 @@ def patch_main(raw: bytes) -> bytes:
       modelId: MODEL_ID,
       ep: whisperExecutionProvidersForPlatform(process.platform),
       language: a.language,
+      segmentationMode: a.segmentationMode || "balanced",
+      echoGuard: a.echoGuard !== false,
       cloud,
       toolsDir: path.join(process.resourcesPath, "tools")
     };
@@ -436,6 +442,23 @@ def patch_main(raw: bytes) -> bytes:
       }
     }''',
         "buildAsrOptions + startAsr pluggable realtime validation",
+    )
+
+    text = replace_once(
+        text,
+        '''      } else if (patch.asr?.language) {
+        asr.setLanguage(patch.asr.language);
+      }''',
+        '''      } else if (patch.asr && (patch.asr.language !== void 0 || patch.asr.segmentationMode !== void 0 || patch.asr.echoGuard !== void 0)) {
+        if (patch.asr.language) asr.setLanguage(patch.asr.language);
+        asr.send({
+          type: "config",
+          ...(patch.asr.language !== void 0 ? { language: patch.asr.language } : {}),
+          ...(patch.asr.segmentationMode !== void 0 ? { segmentationMode: patch.asr.segmentationMode } : {}),
+          ...(patch.asr.echoGuard !== void 0 ? { echoGuard: patch.asr.echoGuard !== false } : {})
+        });
+      }''',
+        "settings:set live forward segmentationMode & echoGuard to asrWorker",
     )
 
     text = replace_once(
@@ -1456,7 +1479,18 @@ def patch_asr_worker(raw: bytes) -> bytes:
 
     text = replace_once(
         text,
-        '''    if (init.backend === "cloud-realtime") {
+        '''let language = "auto";''',
+        '''let language = "auto";
+let segmentationMode = "balanced";
+let echoGuard = true;
+let echoGate = null;''',
+        "asrWorker segmentationMode & echoGuard state",
+    )
+
+    text = replace_once(
+        text,
+        '''    language = init.language;
+    if (init.backend === "cloud-realtime") {
       if (!init.cloud) throw new Error("cloud streaming ASR is not configured");
       engine = await aliyunRealtimeEngine.AliyunRealtimeEngine.load(init.cloud);
       post({ type: "ready", loadMs: 0, warmMs: 0, ep: "cloud-rt", gpuSuspect: false });
@@ -1464,17 +1498,24 @@ def patch_asr_worker(raw: bytes) -> bytes:
       if (!init.cloud) throw new Error("cloud ASR is not configured");
       engine = await aliyunRealtimeEngine.CloudAsrEngine.load(init.cloud);
       post({ type: "ready", loadMs: 0, warmMs: 0, ep: "cloud", gpuSuspect: false });''',
-        '''    if (init.backend === "cloud-realtime") {
+        '''    language = init.language;
+    segmentationMode = init.segmentationMode || "balanced";
+    echoGuard = init.echoGuard !== false;
+    const toolsDir = init.toolsDir || path.join(process.resourcesPath || "", "tools");
+    let asrAdaptersMod = null;
+    try {
+      asrAdaptersMod = require(path.join(toolsDir, "asr-adapters.cjs"));
+      echoGate = asrAdaptersMod.createCrossChannelEchoGate();
+    } catch {}
+    if (init.backend === "cloud-realtime") {
       if (!init.cloud) throw new Error("cloud streaming ASR is not configured");
-      const toolsDir = init.toolsDir || path.join(process.resourcesPath || "", "tools");
-      const asrAdapters = require(path.join(toolsDir, "asr-adapters.cjs"));
+      const asrAdapters = asrAdaptersMod || require(path.join(toolsDir, "asr-adapters.cjs"));
       const WebSocket = require("ws");
-      engine = await asrAdapters.createRealtimeEngine(init.cloud, { WebSocket });
+      engine = await asrAdapters.createRealtimeEngine({ ...init.cloud, segmentationMode }, { WebSocket });
       post({ type: "ready", loadMs: 0, warmMs: 0, ep: "cloud-rt", gpuSuspect: false });
     } else if (init.backend === "cloud") {
       if (!init.cloud) throw new Error("cloud ASR is not configured");
-      const toolsDir = init.toolsDir || path.join(process.resourcesPath || "", "tools");
-      const asrAdapters = require(path.join(toolsDir, "asr-adapters.cjs"));
+      const asrAdapters = asrAdaptersMod || require(path.join(toolsDir, "asr-adapters.cjs"));
       engine = await asrAdapters.createSegmentEngine(init.cloud);
       post({ type: "ready", loadMs: 0, warmMs: 0, ep: "cloud", gpuSuspect: false });''',
         "asrWorker pluggable realtime & HTTP segment engine load",
@@ -1565,12 +1606,12 @@ function ensureStream(ch) {
         if (!shuttingDown) post({ type: "error", message: `streaming ASR (${ch}): ${message}`, fatal: false });
       }
     },
-    { language }
+    { language, segmentationMode, channel: ch }
   );
   for (const c of ring[ch]) session.push(c.pcm);
   ring[ch] = [];
   streams[ch] = session;
-  console.log(`[worker] stream open ch=${ch} gen=${gen}`);
+  console.log(`[worker] stream open ch=${ch} gen=${gen} seg=${segmentationMode}`);
 }
 function closeStream(ch, discard = false) {
   const s = streams[ch];
@@ -1585,6 +1626,57 @@ function closeStream(ch, discard = false) {
   }
 }''',
         "asrWorker streamGen stale-session guard",
+    )
+
+    text = replace_once(
+        text,
+        '''function handleStreamingPcm(pcm, ch, captureTs) {
+  const events = vads[ch].push(pcm, captureTs);
+  for (const ev of events) {
+    if (ev.type === "speech-start") {
+      lastSpeechAt[ch] = Date.now();
+      post({ type: "status", state: "speech", queuedSegments: 0 });
+      ensureStream(ch);
+    } else if (ev.type === "segment") {
+      post({ type: "status", state: "listening", queuedSegments: 0 });
+    }
+  }''',
+        '''function handleStreamingPcm(pcm, ch, captureTs) {
+  const level = rms(pcm);
+  const nowTs = Date.now();
+  const events = vads[ch].push(pcm, captureTs);
+  if (ch === "them") {
+    echoGate?.observeThem({ rms: level, speechActive: vads.them.state === "speech", now: nowTs });
+  }
+  const suppressMeEcho = Boolean(
+    ch === "me" &&
+    echoGuard &&
+    echoGate?.shouldSuppressMe({ rms: level, meStreamOpen: Boolean(streams.me), now: nowTs })
+  );
+  for (const ev of events) {
+    if (ev.type === "speech-start") {
+      if (suppressMeEcho) continue;
+      lastSpeechAt[ch] = nowTs;
+      post({ type: "status", state: "speech", queuedSegments: 0 });
+      ensureStream(ch);
+    } else if (ev.type === "segment") {
+      post({ type: "status", state: "listening", queuedSegments: 0 });
+    }
+  }''',
+        "asrWorker cross-channel echo gate in handleStreamingPcm",
+    )
+
+    text = replace_once(
+        text,
+        '''    case "config":
+      if (msg.language) language = msg.language;
+      break;''',
+        '''    case "config":
+      if (msg.language) language = msg.language;
+      if (msg.segmentationMode) segmentationMode = msg.segmentationMode;
+      if (msg.echoGuard !== void 0) echoGuard = msg.echoGuard !== false;
+      break;''',
+        "asrWorker live config update for segmentationMode & echoGuard",
     )
 
     text = replace_once(

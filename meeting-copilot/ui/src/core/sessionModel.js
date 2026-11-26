@@ -61,6 +61,7 @@ function normalizeQuestion(raw, index, seenIds) {
     isFollowup: Boolean(raw?.isFollowup || raw?.parentQuestionId),
     sourceSegmentIds: Array.isArray(raw?.sourceSegmentIds) ? raw.sourceSegmentIds.filter(n => Number.isFinite(Number(n))).map(Number) : [],
     mergedFromOrdinals: Array.isArray(raw?.mergedFromOrdinals) ? raw.mergedFromOrdinals.filter(n => Number.isFinite(Number(n))).map(Number) : [],
+    revisedCount: Number.isFinite(Number(raw?.revisedCount)) ? Math.max(0, Math.floor(Number(raw.revisedCount))) : 0,
     createdAt: Number.isFinite(Number(raw?.createdAt)) ? Number(raw.createdAt) : Date.now(),
     updatedAt: Number.isFinite(Number(raw?.updatedAt)) ? Number(raw.updatedAt) : Date.now(),
     activeAttemptId,
@@ -304,6 +305,7 @@ export function addQuestionWithAttempt(session, {
     isFollowup: Boolean(isFollowup || cleanParentId),
     sourceSegmentIds: Array.isArray(sourceSegmentIds) ? [...sourceSegmentIds] : [],
     mergedFromOrdinals: [],
+    revisedCount: 0,
     createdAt: now,
     updatedAt: now,
     activeAttemptId: attempt.id,
@@ -366,6 +368,97 @@ export function regenerateQuestion(session, questionId, { requestId = createId('
     ...session,
     updatedAt: now,
     questions
+  };
+}
+
+/**
+ * Revise an auto-dispatched question in-place when the interviewer appends a
+ * qualifier within the speculative revision window (no duplicate question card).
+ * If the current streaming attempt has barely emitted text (< 40 chars), replace
+ * it seamlessly; otherwise keep the earlier attempt as v1 and start v2.
+ */
+export function reviseQuestionWithAttempt(session, questionId, {
+  nextPrompt,
+  addedSegmentIds = [],
+  requestId = createId('req'),
+  replaceInPlaceThresholdChars = 40
+} = {}) {
+  const idx = session.questions.findIndex(q => q.id === questionId);
+  if (idx < 0) return { session, cancelledRequestIds: [] };
+  const now = Date.now();
+  const target = session.questions[idx];
+  const cancelledRequestIds = target.attempts
+    .filter(a => a.status === 'streaming')
+    .map(a => a.requestId)
+    .filter(Boolean);
+
+  const activeAtt = getActiveAttempt(target);
+  const canReplaceInPlace = Boolean(
+    activeAtt &&
+    activeAtt.status === 'streaming' &&
+    String(activeAtt.text || '').trim().length < replaceInPlaceThresholdChars
+  );
+
+  const nextAttempt = {
+    id: requestId,
+    requestId,
+    createdAt: now,
+    completedAt: null,
+    status: 'streaming',
+    text: '',
+    error: '',
+    statusText: '',
+    evidence: [],
+    citations: [],
+    unknownFacts: [],
+    privateNotes: [],
+    diagnostics: [],
+    dialogueState: null,
+    modelResults: [],
+    images: [],
+    translation: '',
+    translationError: ''
+  };
+
+  let nextAttempts;
+  if (canReplaceInPlace) {
+    nextAttempts = target.attempts
+      .filter(a => a.id !== activeAtt.id)
+      .map(a => (a.status === 'streaming' ? { ...a, status: 'cancelled', completedAt: now, statusText: '' } : a));
+    nextAttempts.push(nextAttempt);
+  } else {
+    nextAttempts = target.attempts.map(a =>
+      a.status === 'streaming' ? { ...a, status: 'cancelled', completedAt: now, statusText: '' } : a
+    );
+    nextAttempts.push(nextAttempt);
+  }
+
+  const mergedSegIds = [
+    ...new Set([
+      ...(Array.isArray(target.sourceSegmentIds) ? target.sourceSegmentIds : []),
+      ...(Array.isArray(addedSegmentIds) ? addedSegmentIds.filter(n => Number.isFinite(Number(n))).map(Number) : [])
+    ])
+  ];
+
+  const updatedQuestion = {
+    ...target,
+    prompt: String(nextPrompt || target.prompt).trim() || target.prompt,
+    sourceSegmentIds: mergedSegIds,
+    revisedCount: (Number(target.revisedCount) || 0) + 1,
+    updatedAt: now,
+    activeAttemptId: nextAttempt.id,
+    attempts: nextAttempts
+  };
+
+  const questions = session.questions.slice();
+  questions[idx] = updatedQuestion;
+  return {
+    session: {
+      ...session,
+      updatedAt: now,
+      questions
+    },
+    cancelledRequestIds
   };
 }
 

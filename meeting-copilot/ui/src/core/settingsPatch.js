@@ -44,6 +44,12 @@ export function buildSettingsDiffPatch(baseline, current, {
     const asrDiff = {};
     if (current.language !== baseline.language) asrDiff.language = current.language;
     if (current.asrBackend !== baseline.asrBackend) asrDiff.backend = current.asrBackend;
+    if ((current.segmentationMode ?? 'balanced') !== (baseline.segmentationMode ?? 'balanced')) {
+      asrDiff.segmentationMode = current.segmentationMode || 'balanced';
+    }
+    if ((current.echoGuard !== false) !== (baseline.echoGuard !== false)) {
+      asrDiff.echoGuard = current.echoGuard !== false;
+    }
 
     const cloudChanged = (current.cloudProtocol ?? 'openai-transcriptions') !== (baseline.cloudProtocol ?? 'openai-transcriptions') ||
       current.cloudBaseUrl !== baseline.cloudBaseUrl ||

@@ -46,6 +46,12 @@ const SEGMENT_PROTOCOL_OPTIONS = [
   { value: 'chat-audio', label: '音频对话 /chat/completions（input_audio · 兼容 gpt-4o-audio / qwen-audio）' }
 ];
 
+const SEGMENTATION_MODE_OPTIONS = [
+  { value: 'fast', label: '极速抢答（云端 450ms + 前端 120ms · 首字最快）' },
+  { value: 'balanced', label: '均衡推荐（云端 650ms + 前端 180ms + 同题自动修订）' },
+  { value: 'long', label: '长句连贯（云端 1100ms + 前端 320ms · 适合思考停顿多的面试官）' }
+];
+
 const REALTIME_META = {
   dashscope: {
     shortName: '百炼 DashScope',
@@ -681,6 +687,8 @@ export function SettingsView({
 
   const [asrBackend, setAsrBackend] = useState(settings.asr.backend || 'cloud-realtime');
   const [language, setLanguage] = useState(settings.asr.language || 'auto');
+  const [segmentationMode, setSegmentationMode] = useState(settings.asr.segmentationMode || 'balanced');
+  const [echoGuard, setEchoGuard] = useState(settings.asr.echoGuard !== false);
   const [cloudProtocol, setCloudProtocol] = useState(inferSegmentProtocolClient(settings.asr.cloud));
   const [cloudBaseUrl, setCloudBaseUrl] = useState(settings.asr.cloud?.baseUrl || '');
   const [cloudModel, setCloudModel] = useState(settings.asr.cloud?.model || '');
@@ -743,6 +751,8 @@ export function SettingsView({
       multimodal: s.multimodal,
       asrBackend: s.asr.backend || 'cloud-realtime',
       language: s.asr.language || 'auto',
+      segmentationMode: s.asr.segmentationMode || 'balanced',
+      echoGuard: s.asr.echoGuard !== false,
       cloudProtocol: inferSegmentProtocolClient(s.asr.cloud),
       cloudBaseUrl: s.asr.cloud?.baseUrl || '',
       cloudModel: s.asr.cloud?.model || '',
@@ -775,7 +785,7 @@ export function SettingsView({
     llmProviderId: 'custom',
     visionBaseUrl, visionModel, visionProxy,
     multimodal: mmConfig,
-    asrBackend, language, cloudProtocol, cloudBaseUrl, cloudModel,
+    asrBackend, language, segmentationMode, echoGuard, cloudProtocol, cloudBaseUrl, cloudModel,
     rtProvider, rtBaseUrl, rtModel, rtResourceId, rtAuthMode, rtAppId, rtAppKey, rtLocalModel,
     asrProviderId: asrBackend === 'cloud-realtime'
       ? rtProvider
@@ -788,7 +798,7 @@ export function SettingsView({
     interviewPrompt: baselineRef.current.interviewPrompt
   }), [
     baseUrl, model, reasoningEffort, answerLang, visionBaseUrl, visionModel, visionProxy, mmConfig,
-    asrBackend, language, cloudProtocol, cloudBaseUrl, cloudModel,
+    asrBackend, language, segmentationMode, echoGuard, cloudProtocol, cloudBaseUrl, cloudModel,
     rtProvider, rtBaseUrl, rtModel, rtResourceId, rtAuthMode, rtAppId, rtAppKey, rtLocalModel,
     themDeviceId, micDeviceId, hotkey, hotkeyShot, hotkeyRegion,
     theme, fontScale, uiLang, autoLaunch
@@ -1920,6 +1930,32 @@ export function SettingsView({
                         { value: 'english', label: 'English' }
                       ]}
                     />
+                  </div>
+                </div>
+
+                <div className="mc-srow">
+                  <div>
+                    <div className="mc-srow-label">断句响应速度与智能修订</div>
+                    <div className="mc-srow-desc">同步调节豆包 end_window_size / 百炼 max_sentence_silence 与前端话轮缓冲；若刚抢答后 3.5 秒内面试官继续补充，自动合并到同一题重答</div>
+                  </div>
+                  <div className="mc-srow-control">
+                    <CustomSelect
+                      className="mc-select"
+                      ariaLabel="断句响应速度"
+                      value={segmentationMode}
+                      onChange={setSegmentationMode}
+                      options={SEGMENTATION_MODE_OPTIONS}
+                    />
+                  </div>
+                </div>
+
+                <div className="mc-srow mc-srow-compact">
+                  <div>
+                    <div className="mc-srow-label">外放双轨回声过滤（推荐开启）</div>
+                    <div className="mc-srow-desc">电脑外放开会时自动压制并去重串入本人麦克风的面试官声音，不影响正常说话且不增加系统音频延迟</div>
+                  </div>
+                  <div className="mc-srow-control is-inline">
+                    <Switch checked={echoGuard} onChange={setEchoGuard} aria-label="外放双轨回声过滤" />
                   </div>
                 </div>
               </section>
