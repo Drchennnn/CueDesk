@@ -19,7 +19,7 @@
 - **防截屏与隐私保护**：支持系统防截屏（`SetWindowDisplayAffinity`）、安全模式虚拟 SVG 光标，以及全局自定义白底圆角 Tooltip（自动接管所有原生 `title`，杜绝系统黑框 Tooltip 在防截屏模式下泄漏）。
 
 ### 2. 面试助手（实时双栏工作台 + 双轨录音）
-- **极简首配与会前自检**：新用户仅配好文本大模型即可立即开始提问；支持独立文本 LLM、多模态视觉、云端/本地实时 ASR（FunASR / Moss）按需配置与一键连测。
+- **极简首配与全自定义模型/转录适配**：新用户仅配好文本大模型即可立即开始提问；文本与多模态视觉模型支持纯自定义 Base URL + 动态拉取 `/models` + 可选思考等级；语音转写支持 **6 大流式 WebSocket 协议族**（阿里云百炼 DashScope、火山豆包 SAUC v3、OpenAI Realtime / 阿里 Qwen3-ASR 实时、Deepgram Live、腾讯云实时 ASR v2、科大讯飞 RTASR，各协议独立加密保存密钥）与 **2 大分段 HTTP 协议族**（标准 `/audio/transcriptions` 兼容硅基流动 / 智谱 / Groq / OpenAI / 本地 Whisper 服务，及兼容 `chat/completions input_audio`），均支持内置样本音频端到端「试转写」。
 - **双栏实时工作台**：左栏实时语音转写与问题卡片（支持拖拽/合并/回看历史题不串答），右栏流式作答 + 编程偏好（常规 / Coding、语言、ACM / 核心代码、精简 / 全面）。
 - **双轨本地 WAV 录音**：内置 `audio-recorder.cjs`，会中可手动一键录制 16kHz PCM 双轨音频至独立录音目录，不阻塞问答主链路。
 - **三栏辅助抽屉**：会中可随时展开「知识库原文 / 滚动备忘 / 检索证据来源 / 导出整理」。
@@ -62,6 +62,8 @@ meetingcopilot-integrated/
 │   │   ├── build.mjs
 │   │   └── package.json
 │   ├── tools/                        # V3.2 Electron 主进程控制器模块
+│   │   ├── asr-adapters.cjs          # 6 大流式 WS + 2 大分段 HTTP 语音转写协议适配器与试转写
+│   │   ├── model-reasoning.cjs       # 通用思考等级参数路由（reasoning_effort / enable_thinking）
 │   │   ├── workbench-window.cjs      # 首页 / 面试工作台 / 笔试浮窗 / 极简条窗口状态机
 │   │   ├── workbench-prefs.cjs       # 窗口几何、透明度、编程偏好与笔试配置持久化
 │   │   ├── audio-recorder.cjs        # 双轨 16kHz PCM WAV 录音器

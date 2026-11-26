@@ -139,11 +139,22 @@ python meeting-copilot/release/build_portable_next.py --output releases/MeetingC
    - **获取模型列表**：参考 CC Switch 交互，支持一键经由主进程向当前 Base URL 拉取 `/models`（无 CORS 限制、支持复用已加密保存的密钥与接口代理、自动兼容 `/models` 与 `/v1/models`），并在内联可筛选列表中点击填入；同时也支持随时手动输入任意模型 ID。
    - **思考等级（可选）**：文本模型与每个视觉接口均支持独立配置 `跟随模型默认（不传参数）` / `none` / `minimal` / `low` / `medium` / `high` / `xhigh`。默认不附带任何额外参数以保证 100% 兼容普通非思考模型；选非默认时向标准 OpenAI 兼容接口（OpenAI / Codex / Gemini OpenAI 兼容 / One-API / New-API / OpenRouter 等）透传 `reasoning_effort`，对阿里云百炼域名自动映射为 `enable_thinking` + `thinking_budget`，并在 OpenAI `o1/o3/o4/gpt-5/gpt-6` 思考态下自动省略不兼容的 `temperature`。
    - **建议用法**：实时面试优先保持「默认」或 `none`/`low` 保证首字速度；笔试难题或多模型并行时可按接口分别设为 `medium`/`high`；若个别中转或旧模型报错不支持思考参数，切回「跟随模型默认」即可。
-2. **语音与录制（可插拔实时 ASR 适配层 + 试转写）**：
-   - **云端流式实时 ASR（WebSocket）**：支持在**「阿里云百炼（DashScope WebSocket）」**与**「火山豆包流式 ASR v3（SAUC 二进制协议）」**之间自由切换；两家协议的配置（地址、模型、豆包 `X-Api-Resource-Id`、鉴权方式与加密密钥）**按服务商独立保存**，来回切换无需重填、绝不串用 Key，旧版百炼配置自动无损迁移。
-   - **豆包流式 v3 接入说明**：支持新版控制台单 Key（`X-Api-Key` + `X-Api-Resource-Id`，如豆包 2.0 小时版 `volc.seedasr.sauc.duration`、1.0 小时版 `volc.bigasr.sauc.duration`）及旧版控制台 `X-Api-App-Key` + `X-Api-Access-Key`；缺失 `Resource ID` 时本地即时提示。
-   - **双级验证与分阶段诊断**：提供**「测试连接（握手）」**与**「试转写（发送样本音频）」**（经由当前实时适配器发送内置 16kHz 样本音频并展示真实转写文本与耗时）。发生错误时明确区分失败阶段（本地配置 / 建连 / 鉴权 / 握手 / 音频帧 / 转写定稿）、展示脱敏后的服务商原始错误码与请求 ID（如 `X-Tt-Logid`），不再折叠成模糊的 `UNKNOWN_ERROR`。
-   - 同时保留云端分段 ASR（支持获取模型列表）、本地实时模型（FunASR / Moss，需另配 Python 环境）、麦克风实时音量电平测试与双轨 WAV 录音目录选择。
+2. **语音与录制（6 大流式 WebSocket + 2 大分段 HTTP 协议族 + 试转写）**：
+   - **云端流式实时 ASR（WebSocket · 6 大协议族）**：采用「底层协议族选择 + 纯自定义地址/模型/密钥」设计，各协议独立加密保存配置与密钥，来回切换绝不串用或覆盖：
+     | 协议族 | 覆盖服务与典型模型 | 默认地址 / 关键鉴权字段 |
+     | --- | --- | --- |
+     | **阿里云百炼 DashScope** | `paraformer-realtime-v2`、`fun-asr-realtime`、本地 FunASR/MOSS | `wss://dashscope.aliyuncs.com/api-ws/v1/inference`（`Authorization: Bearer`） |
+     | **火山豆包流式 ASR v3** | `bigmodel`（SAUC 二进制 + Gzip 帧） | `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel` + 必填 `Resource ID`（2.0 `volc.seedasr.sauc.duration` / 1.0 `volc.bigasr.sauc.duration`），支持新版 `X-Api-Key` 与旧版 `App ID + Access Token` |
+     | **OpenAI Realtime 转写协议** | OpenAI `gpt-4o-mini-transcribe` / `gpt-4o-transcribe`（自动 16k→24k 重采样）& 阿里百炼 `qwen3-asr-flash-realtime`（自动 16k 直传） | `wss://api.openai.com/v1/realtime?intent=transcription` 或 `wss://dashscope.aliyuncs.com/api-ws/v1/realtime`（`Authorization: Bearer`） |
+     | **Deepgram Live 流式协议** | `nova-3`、`nova-2`、`nova-2-general` | `wss://api.deepgram.com/v1/listen`（`Authorization: Token`） |
+     | **腾讯云实时语音识别 v2** | `16k_zh`、`16k_zh_large`、`16k_en`、`16k_zh-PY` | `wss://asr.cloud.tencent.com/asr/v2` + `AppID` + `SecretId` + `SecretKey`（自动 HMAC-SHA1 字典序签名） |
+     | **科大讯飞实时语音转写（RTASR）** | `cn`、`en` 等实时转写语种 | `wss://rtasr.xfyun.cn/v1/ws` + `AppID` + `RTASR APIKey`（自动 `MD5_HEX + HMAC-SHA1` 签名，1280B/帧发送） |
+   - **云端分段识别（HTTP · 2 大协议族）**：
+     - **`openai-transcriptions`（默认推荐）**：`POST {Base URL}/audio/transcriptions`（`multipart/form-data` 上传 16kHz WAV），原生适配**硅基流动**（`FunAudioLLM/SenseVoiceSmall`、`TeleAI/TeleSpeechASR`）、**智谱**（`glm-asr-2512`）、**Groq**（`whisper-large-v3-turbo`）、**OpenAI**（`gpt-4o-mini-transcribe`/`whisper-1`）、**Fireworks / Together / One-API / New-API 中转站**以及本地免 Key `faster-whisper-server` / `Speaches` / `whisper.cpp`。
+     - **`chat-audio`（兼容旧版）**：`POST {Base URL}/chat/completions`（Base64 `input_audio`），兼容 `gpt-4o-audio-preview` / `qwen-audio-turbo`。
+     - 支持点击**「获取模型」**动态拉取模型列表，并支持直接点击**「试转写（发送样本音频）」**端到端验证识别文本与耗时。
+   - **双级验证与分阶段诊断**：实时流式提供**「测试连接（握手）」**与**「试转写（发送样本音频）」**；HTTP 分段提供**「试转写（发送样本音频）」**。发生错误时明确区分失败阶段（本地配置 / 建连 / 鉴权 / 握手 / 音频帧 / 转写定稿）、展示脱敏后的服务商原始错误码与请求 ID（如 `X-Tt-Logid`），不再折叠成模糊的 `UNKNOWN_ERROR`。
+   - 同时保留本地实时模型（FunASR / Moss，需另配 Python 环境）、本地 Whisper ONNX 分段、麦克风实时音量电平测试与双轨 WAV 录音目录选择。
 3. **摄像头与眼神矫正（4 层状态诊断）**：
    - 摄像头选择、预览画面、4 层分项状态面板（1. 虚拟设备注册 / 2. 引擎推理状态与 FPS / 3. 应用内设备枚举列表 / 4. 首帧画面检查）与一键「复制诊断」。
    - 支持宽容虚拟摄像头名称匹配；若 Windows 已完成 `DirectShow Softcam` 注册但本应用运行期间尚未刷新 Chromium 设备列表，会清晰说明外部会议软件已可直接识别并提供「重启应用刷新列表」按钮，不再误报组件缺失。

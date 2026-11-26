@@ -33,9 +33,94 @@ const REASONING_EFFORT_OPTIONS = [
 ];
 
 const REALTIME_PROTOCOL_OPTIONS = [
-  { value: 'dashscope', label: '阿里云百炼（DashScope WebSocket）' },
-  { value: 'doubao', label: '火山豆包流式 ASR v3（SAUC 二进制协议）' }
+  { value: 'dashscope', label: '阿里云百炼 DashScope（Paraformer / Fun-ASR）' },
+  { value: 'doubao', label: '火山豆包流式 ASR v3（SAUC 二进制协议）' },
+  { value: 'openai-realtime', label: 'OpenAI Realtime 转写协议（兼容 OpenAI & 阿里 Qwen3-ASR 实时）' },
+  { value: 'deepgram', label: 'Deepgram Live 流式协议（Nova-3 / Nova-2）' },
+  { value: 'tencent', label: '腾讯云实时语音识别（WebSocket v2）' },
+  { value: 'xfyun', label: '科大讯飞实时语音转写（RTASR）' }
 ];
+
+const SEGMENT_PROTOCOL_OPTIONS = [
+  { value: 'openai-transcriptions', label: 'OpenAI 标准 /audio/transcriptions（兼容硅基流动 / 智谱 / Groq / OpenAI / 中转站）' },
+  { value: 'chat-audio', label: '音频对话 /chat/completions（input_audio · 兼容 gpt-4o-audio / qwen-audio）' }
+];
+
+const REALTIME_META = {
+  dashscope: {
+    shortName: '百炼 DashScope',
+    defaultBaseUrl: 'wss://dashscope.aliyuncs.com/api-ws/v1/inference',
+    defaultModel: 'paraformer-realtime-v2',
+    urlDesc: '常用：wss://dashscope.aliyuncs.com/api-ws/v1/inference（也支持自定义中转 / 本地 ws://127.0.0.1）',
+    urlPlaceholder: 'wss://dashscope.aliyuncs.com/api-ws/v1/inference',
+    modelLabel: 'Realtime 模型名',
+    modelDesc: '例如：paraformer-realtime-v2 / fun-asr-realtime',
+    modelPlaceholder: 'paraformer-realtime-v2 / fun-asr-realtime',
+    keyLabel: '百炼实时 ASR API Key',
+    keyPlaceholder: 'sk-...'
+  },
+  doubao: {
+    shortName: '火山豆包',
+    defaultBaseUrl: 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel',
+    defaultModel: 'bigmodel',
+    defaultResourceId: 'volc.seedasr.sauc.duration',
+    urlDesc: '常用：wss://openspeech.bytedance.com/api/v3/sauc/bigmodel（或 bigmodel_async）',
+    urlPlaceholder: 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel',
+    modelLabel: '模型名（model_name）',
+    modelDesc: '豆包流式大模型固定为 bigmodel（具体 1.0/2.0 版本由上方 Resource ID 决定）',
+    modelPlaceholder: 'bigmodel',
+    keyLabel: '豆包 API Key（X-Api-Key）',
+    keyPlaceholder: '填写豆包 API Key / Access Token'
+  },
+  'openai-realtime': {
+    shortName: 'OpenAI / Qwen Realtime',
+    defaultBaseUrl: 'wss://api.openai.com/v1/realtime?intent=transcription',
+    defaultModel: 'gpt-4o-mini-transcribe',
+    urlDesc: 'OpenAI：wss://api.openai.com/v1/realtime?intent=transcription；阿里百炼 Qwen3-ASR：wss://dashscope.aliyuncs.com/api-ws/v1/realtime（自动适配 16kHz/24kHz）',
+    urlPlaceholder: 'wss://api.openai.com/v1/realtime?intent=transcription',
+    modelLabel: 'Realtime 转写模型名',
+    modelDesc: '例如：gpt-4o-mini-transcribe / gpt-4o-transcribe / qwen3-asr-flash-realtime',
+    modelPlaceholder: 'gpt-4o-mini-transcribe / qwen3-asr-flash-realtime',
+    keyLabel: 'Realtime API Key（Bearer）',
+    keyPlaceholder: 'sk-...'
+  },
+  deepgram: {
+    shortName: 'Deepgram',
+    defaultBaseUrl: 'wss://api.deepgram.com/v1/listen',
+    defaultModel: 'nova-3',
+    urlDesc: '常用：wss://api.deepgram.com/v1/listen（可自定义 EU/自托管节点，鉴权头 Authorization: Token）',
+    urlPlaceholder: 'wss://api.deepgram.com/v1/listen',
+    modelLabel: 'Deepgram 模型名',
+    modelDesc: '例如：nova-3（多语种推荐） / nova-2 / nova-2-general',
+    modelPlaceholder: 'nova-3',
+    keyLabel: 'Deepgram API Key',
+    keyPlaceholder: '填写 Deepgram Console API Key'
+  },
+  tencent: {
+    shortName: '腾讯云 ASR',
+    defaultBaseUrl: 'wss://asr.cloud.tencent.com/asr/v2',
+    defaultModel: '16k_zh',
+    urlDesc: '常用：wss://asr.cloud.tencent.com/asr/v2（自动拼接 /{AppID} 并计算 HMAC-SHA1 实时签名）',
+    urlPlaceholder: 'wss://asr.cloud.tencent.com/asr/v2',
+    modelLabel: '引擎模型（engine_model_type）',
+    modelDesc: '例如：16k_zh（中英自由说） / 16k_zh_large（大模型） / 16k_en / 16k_zh-PY',
+    modelPlaceholder: '16k_zh',
+    keyLabel: '腾讯云 SecretKey',
+    keyPlaceholder: '填写腾讯云 API SecretKey（加密保存，用于计算签名）'
+  },
+  xfyun: {
+    shortName: '科大讯飞 RTASR',
+    defaultBaseUrl: 'wss://rtasr.xfyun.cn/v1/ws',
+    defaultModel: 'cn',
+    urlDesc: '常用：wss://rtasr.xfyun.cn/v1/ws（自动按 MD5+HMAC-SHA1 计算 signa 签名，1280B/帧发送）',
+    urlPlaceholder: 'wss://rtasr.xfyun.cn/v1/ws',
+    modelLabel: '语言参数（lang）',
+    modelDesc: '默认 cn（中文/中英混合），英文可填 en；其他语种填讯飞 lang 代码',
+    modelPlaceholder: 'cn / en',
+    keyLabel: '科大讯飞 RTASR APIKey',
+    keyPlaceholder: '填写讯飞「实时语音转写」专用 APIKey'
+  }
+};
 
 const DOUBAO_AUTH_MODE_OPTIONS = [
   { value: 'api-key', label: '新版 API Key（X-Api-Key，推荐）' },
@@ -54,30 +139,43 @@ const STAGE_LABELS = {
 
 function inferRealtimeProviderClient(rt = {}) {
   const p = String(rt?.provider || '').trim().toLowerCase();
-  if (p === 'doubao') return 'doubao';
-  if (p === 'dashscope') return 'dashscope';
+  if (p === 'doubao' || p === 'volcengine' || p === 'seedasr') return 'doubao';
+  if (p === 'openai-realtime' || p === 'openai' || p === 'qwen-realtime') return 'openai-realtime';
+  if (p === 'deepgram') return 'deepgram';
+  if (p === 'tencent' || p === 'qcloud') return 'tencent';
+  if (p === 'xfyun' || p === 'iflytek' || p === 'rtasr') return 'xfyun';
+  if (p === 'dashscope' || p === 'aliyun' || p === 'bailian') return 'dashscope';
   const u = String(rt?.baseUrl || '').toLowerCase();
   if (u.includes('openspeech.bytedance.com') || u.includes('bytepluses.com') || u.includes('/api/v3/sauc') || String(rt?.resourceId || '').startsWith('volc.')) {
     return 'doubao';
   }
+  if (u.includes('api.deepgram.com') || u.includes('/v1/listen')) return 'deepgram';
+  if (u.includes('asr.cloud.tencent.com')) return 'tencent';
+  if (u.includes('rtasr.xfyun.cn') || u.includes('xfyun.cn')) return 'xfyun';
+  if (u.includes('/v1/realtime') || u.includes('intent=transcription') || String(rt?.model || '').toLowerCase().includes('qwen3-asr')) {
+    return 'openai-realtime';
+  }
   return 'dashscope';
 }
 
+function inferSegmentProtocolClient(cloud = {}) {
+  const explicit = String(cloud?.protocol || '').trim().toLowerCase();
+  if (explicit === 'chat-audio' || explicit === 'chat-completions') return 'chat-audio';
+  if (explicit === 'openai-transcriptions' || explicit === 'transcriptions' || explicit === 'multipart') return 'openai-transcriptions';
+  const u = String(cloud?.baseUrl || '').trim().toLowerCase();
+  const m = String(cloud?.model || '').trim().toLowerCase();
+  if (u.endsWith('/chat/completions') || /audio-preview|qwen.*audio|omni/i.test(m)) return 'chat-audio';
+  return 'openai-transcriptions';
+}
+
 function realtimeProfileDefaults(provider) {
-  if (provider === 'doubao') {
-    return {
-      baseUrl: 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel',
-      model: 'bigmodel',
-      resourceId: 'volc.seedasr.sauc.duration',
-      authMode: 'api-key',
-      appKey: ''
-    };
-  }
+  const meta = REALTIME_META[provider] || REALTIME_META.dashscope;
   return {
-    baseUrl: 'wss://dashscope.aliyuncs.com/api-ws/v1/inference',
-    model: 'paraformer-realtime-v2',
-    resourceId: '',
+    baseUrl: provider === 'dashscope' ? '' : meta.defaultBaseUrl,
+    model: provider === 'dashscope' ? '' : meta.defaultModel,
+    resourceId: provider === 'doubao' ? (meta.defaultResourceId || 'volc.seedasr.sauc.duration') : '',
     authMode: 'api-key',
+    appId: '',
     appKey: ''
   };
 }
@@ -88,11 +186,12 @@ function readRealtimeProfile(settings, provider) {
   if (fromMap && typeof fromMap === 'object') {
     const def = realtimeProfileDefaults(provider);
     return {
-      baseUrl: fromMap.baseUrl || (provider === 'doubao' ? def.baseUrl : ''),
-      model: fromMap.model || (provider === 'doubao' ? def.model : ''),
+      baseUrl: fromMap.baseUrl || (provider === 'dashscope' ? '' : def.baseUrl),
+      model: fromMap.model || (provider === 'dashscope' ? '' : def.model),
       resourceId: provider === 'doubao' ? (fromMap.resourceId ?? def.resourceId) : '',
       authMode: fromMap.authMode === 'app-access' ? 'app-access' : 'api-key',
-      appKey: fromMap.appKey || '',
+      appId: (provider === 'tencent' || provider === 'xfyun') ? (fromMap.appId || '') : '',
+      appKey: (provider === 'doubao' || provider === 'tencent') ? (fromMap.appKey || '') : '',
       apiKeySet: Boolean(fromMap.apiKeySet),
       apiKeyHint: fromMap.apiKeyHint,
       verification: fromMap.verification
@@ -105,6 +204,7 @@ function readRealtimeProfile(settings, provider) {
       model: rt.model || '',
       resourceId: rt.resourceId || '',
       authMode: rt.authMode === 'app-access' ? 'app-access' : 'api-key',
+      appId: rt.appId || '',
       appKey: rt.appKey || '',
       apiKeySet: Boolean(rt.apiKeySet),
       apiKeyHint: rt.apiKeyHint,
@@ -581,8 +681,10 @@ export function SettingsView({
 
   const [asrBackend, setAsrBackend] = useState(settings.asr.backend || 'cloud-realtime');
   const [language, setLanguage] = useState(settings.asr.language || 'auto');
+  const [cloudProtocol, setCloudProtocol] = useState(inferSegmentProtocolClient(settings.asr.cloud));
   const [cloudBaseUrl, setCloudBaseUrl] = useState(settings.asr.cloud?.baseUrl || '');
   const [cloudModel, setCloudModel] = useState(settings.asr.cloud?.model || '');
+  const [cloudTestState, setCloudTestState] = useState({ running: false, result: null, error: '', showDetail: false });
   const initialRtProvider = inferRealtimeProviderClient(settings.asr.realtime);
   const initialRtProfile = readRealtimeProfile(settings, initialRtProvider);
   const [rtProvider, setRtProvider] = useState(initialRtProvider);
@@ -590,6 +692,7 @@ export function SettingsView({
   const [rtModel, setRtModel] = useState(initialRtProfile.model || '');
   const [rtResourceId, setRtResourceId] = useState(initialRtProfile.resourceId || '');
   const [rtAuthMode, setRtAuthMode] = useState(initialRtProfile.authMode || 'api-key');
+  const [rtAppId, setRtAppId] = useState(initialRtProfile.appId || '');
   const [rtAppKey, setRtAppKey] = useState(initialRtProfile.appKey || '');
   const [rtLocalModel, setRtLocalModel] = useState(settings.asr.localRealtime?.model || 'fun-asr-nano');
   const [rtTestState, setRtTestState] = useState({ running: null, result: null, error: '', showDetail: false });
@@ -640,6 +743,7 @@ export function SettingsView({
       multimodal: s.multimodal,
       asrBackend: s.asr.backend || 'cloud-realtime',
       language: s.asr.language || 'auto',
+      cloudProtocol: inferSegmentProtocolClient(s.asr.cloud),
       cloudBaseUrl: s.asr.cloud?.baseUrl || '',
       cloudModel: s.asr.cloud?.model || '',
       rtProvider: p,
@@ -647,6 +751,7 @@ export function SettingsView({
       rtModel: prof.model || '',
       rtResourceId: prof.resourceId || '',
       rtAuthMode: prof.authMode || 'api-key',
+      rtAppId: prof.appId || '',
       rtAppKey: prof.appKey || '',
       rtLocalModel: s.asr.localRealtime?.model || 'fun-asr-nano',
       asrProviderId: s.asr.providerId || '',
@@ -670,12 +775,12 @@ export function SettingsView({
     llmProviderId: 'custom',
     visionBaseUrl, visionModel, visionProxy,
     multimodal: mmConfig,
-    asrBackend, language, cloudBaseUrl, cloudModel,
-    rtProvider, rtBaseUrl, rtModel, rtResourceId, rtAuthMode, rtAppKey, rtLocalModel,
+    asrBackend, language, cloudProtocol, cloudBaseUrl, cloudModel,
+    rtProvider, rtBaseUrl, rtModel, rtResourceId, rtAuthMode, rtAppId, rtAppKey, rtLocalModel,
     asrProviderId: asrBackend === 'cloud-realtime'
       ? rtProvider
       : asrBackend === 'cloud'
-        ? providerIdForEndpoint(cloudBaseUrl.trim(), cloudModel.trim(), 'asr-segment')
+        ? (cloudProtocol || providerIdForEndpoint(cloudBaseUrl.trim(), cloudModel.trim(), 'asr-segment'))
         : '',
     themDeviceId, micDeviceId,
     hotkey, hotkeyShot, hotkeyRegion,
@@ -683,8 +788,8 @@ export function SettingsView({
     interviewPrompt: baselineRef.current.interviewPrompt
   }), [
     baseUrl, model, reasoningEffort, answerLang, visionBaseUrl, visionModel, visionProxy, mmConfig,
-    asrBackend, language, cloudBaseUrl, cloudModel,
-    rtProvider, rtBaseUrl, rtModel, rtResourceId, rtAuthMode, rtAppKey, rtLocalModel,
+    asrBackend, language, cloudProtocol, cloudBaseUrl, cloudModel,
+    rtProvider, rtBaseUrl, rtModel, rtResourceId, rtAuthMode, rtAppId, rtAppKey, rtLocalModel,
     themDeviceId, micDeviceId, hotkey, hotkeyShot, hotkeyRegion,
     theme, fontScale, uiLang, autoLaunch
   ]);
@@ -770,6 +875,7 @@ export function SettingsView({
     setRtModel(targetProfile.model || '');
     setRtResourceId(targetProfile.resourceId || '');
     setRtAuthMode(targetProfile.authMode || 'api-key');
+    setRtAppId(targetProfile.appId || '');
     setRtAppKey(targetProfile.appKey || '');
     rtKey.reset();
     setRtTestState({ running: null, result: null, error: '', showDetail: false });
@@ -785,7 +891,8 @@ export function SettingsView({
       model: rtModel.trim(),
       resourceId: rtProvider === 'doubao' ? rtResourceId.trim() : '',
       authMode: rtProvider === 'doubao' ? rtAuthMode : 'api-key',
-      appKey: rtProvider === 'doubao' ? rtAppKey.trim() : '',
+      appId: (rtProvider === 'tencent' || rtProvider === 'xfyun') ? rtAppId.trim() : '',
+      appKey: (rtProvider === 'doubao' || rtProvider === 'tencent') ? rtAppKey.trim() : '',
       language,
       slot: 'asr-realtime',
       ...(candidate ? { candidateApiKey: candidate } : { useStoredKey: true })
@@ -801,6 +908,30 @@ export function SettingsView({
       onSaved?.(refreshed);
     } catch (err) {
       setRtTestState({ running: null, result: null, error: err.message || '测试请求失败', showDetail: false });
+    }
+  };
+
+  const runSegmentTranscribe = async () => {
+    const candidate = sanitizeApiKeyInput(cloudKey.value).value;
+    const req = {
+      capability: 'asr-segment',
+      protocol: cloudProtocol,
+      providerId: cloudProtocol,
+      baseUrl: cloudBaseUrl.trim(),
+      model: cloudModel.trim(),
+      language,
+      slot: 'asr-cloud',
+      ...(candidate ? { candidateApiKey: candidate } : { useStoredKey: true })
+    };
+    setCloudTestState({ running: true, result: null, error: '', showDetail: false });
+    try {
+      const result = await window.mc.providerTest(req);
+      setCloudTestState({ running: false, result, error: '', showDetail: false });
+      const refreshed = await window.mc.getSettings();
+      setLive(refreshed);
+      onSaved?.(refreshed);
+    } catch (err) {
+      setCloudTestState({ running: false, result: null, error: err.message || '试转写请求失败', showDetail: false });
     }
   };
 
@@ -1285,21 +1416,29 @@ export function SettingsView({
 
                 {asrBackend === 'cloud-realtime' && (() => {
                   const rtProf = readRealtimeProfile(live, rtProvider);
+                  const rtMeta = REALTIME_META[rtProvider] || REALTIME_META.dashscope;
                   const rtApiKeySet = Boolean(rtProf?.apiKeySet);
                   const rtHint = rtProf?.apiKeyHint;
                   const rtCandidate = sanitizeApiKeyInput(rtKey.value).value;
+                  const isLocalWs = /^ws:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/i.test(rtBaseUrl.trim());
                   const missingResource = rtProvider === 'doubao' && !rtResourceId.trim();
-                  const missingAppKey = rtProvider === 'doubao' && rtAuthMode === 'app-access' && !rtAppKey.trim();
-                  const missingModel = rtProvider === 'dashscope' && !rtModel.trim();
-                  const missingKey = !rtKey.pendingDelete && !rtCandidate && !rtApiKeySet && !/^ws:\/\/(?:127\.0\.0\.1|localhost)/i.test(rtBaseUrl.trim());
+                  const missingAppId = (rtProvider === 'tencent' || rtProvider === 'xfyun') && !rtAppId.trim();
+                  const missingAppKey =
+                    (rtProvider === 'doubao' && rtAuthMode === 'app-access' && !rtAppKey.trim()) ||
+                    (rtProvider === 'tencent' && !rtAppKey.trim() && !isLocalWs);
+                  const missingModel = (rtProvider === 'dashscope' || rtProvider === 'openai-realtime') && !rtModel.trim();
+                  const missingKey = !rtKey.pendingDelete && !rtCandidate && !rtApiKeySet && !isLocalWs;
                   const canRunRtTest = Boolean(rtBaseUrl.trim()) && !rtKey.pendingDelete && !rtTestState.running;
+                  const keyLabel = rtProvider === 'doubao'
+                    ? (rtAuthMode === 'app-access' ? 'Access Token（X-Api-Access-Key）' : rtMeta.keyLabel)
+                    : rtMeta.keyLabel;
 
                   return (
                     <>
                       <div className="mc-srow">
                         <div>
                           <div className="mc-srow-label">实时流式协议</div>
-                          <div className="mc-srow-desc">不同流式厂商使用独立二进制/JSON 协议；各协议配置与加密密钥分别保存，切换互不覆盖</div>
+                          <div className="mc-srow-desc">选择底层 WebSocket 协议族，地址与模型可完全自定义；各协议配置与加密密钥分别独立保存，切换互不覆盖</div>
                         </div>
                         <div className="mc-srow-control">
                           <CustomSelect
@@ -1315,21 +1454,16 @@ export function SettingsView({
                       <div className="mc-srow">
                         <div>
                           <div className="mc-srow-label">WebSocket 地址</div>
-                          <div className="mc-srow-desc">
-                            {rtProvider === 'doubao'
-                              ? '常用：wss://openspeech.bytedance.com/api/v3/sauc/bigmodel（或 bigmodel_async）'
-                              : '常用：wss://dashscope.aliyuncs.com/api-ws/v1/inference'}
-                          </div>
+                          <div className="mc-srow-desc">{rtMeta.urlDesc}</div>
                         </div>
                         <div className="mc-srow-control">
                           <input
                             className="mc-input"
+                            aria-label="实时 ASR WebSocket 地址"
                             value={rtBaseUrl}
                             onChange={e => setRtBaseUrl(e.target.value)}
                             spellCheck={false}
-                            placeholder={rtProvider === 'doubao'
-                              ? 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel'
-                              : 'wss://dashscope.aliyuncs.com/api-ws/v1/inference'}
+                            placeholder={rtMeta.urlPlaceholder}
                           />
                         </div>
                       </div>
@@ -1346,6 +1480,7 @@ export function SettingsView({
                             <div className="mc-srow-control">
                               <input
                                 className="mc-input"
+                                aria-label="豆包 Resource ID"
                                 value={rtResourceId}
                                 onChange={e => setRtResourceId(e.target.value)}
                                 spellCheck={false}
@@ -1384,6 +1519,7 @@ export function SettingsView({
                               <div className="mc-srow-control">
                                 <input
                                   className="mc-input"
+                                  aria-label="豆包 App ID"
                                   value={rtAppKey}
                                   onChange={e => setRtAppKey(e.target.value)}
                                   spellCheck={false}
@@ -1400,39 +1536,97 @@ export function SettingsView({
                         </>
                       )}
 
+                      {rtProvider === 'tencent' && (
+                        <>
+                          <div className="mc-srow">
+                            <div>
+                              <div className="mc-srow-label">腾讯云 AppID</div>
+                              <div className="mc-srow-desc">在腾讯云控制台「账号信息」中查看的数字 AppID，用于拼接 /asr/v2/{'{AppID}'}</div>
+                            </div>
+                            <div className="mc-srow-control">
+                              <input
+                                className="mc-input"
+                                aria-label="腾讯云 AppID"
+                                value={rtAppId}
+                                onChange={e => setRtAppId(e.target.value)}
+                                spellCheck={false}
+                                placeholder="例如：1300000000"
+                              />
+                              {missingAppId && (
+                                <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>请填写腾讯云数字 AppID</div>
+                              )}
+                            </div>
+                          </div>
+                          <div className="mc-srow">
+                            <div>
+                              <div className="mc-srow-label">腾讯云 SecretId</div>
+                              <div className="mc-srow-desc">在「访问管理 → API 密钥管理」获取，与下方 SecretKey 共同参与签名</div>
+                            </div>
+                            <div className="mc-srow-control">
+                              <input
+                                className="mc-input"
+                                aria-label="腾讯云 SecretId"
+                                value={rtAppKey}
+                                onChange={e => setRtAppKey(e.target.value)}
+                                spellCheck={false}
+                                placeholder="AKID..."
+                              />
+                              {missingAppKey && (
+                                <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>请填写腾讯云 SecretId</div>
+                              )}
+                            </div>
+                          </div>
+                        </>
+                      )}
+
+                      {rtProvider === 'xfyun' && (
+                        <div className="mc-srow">
+                          <div>
+                            <div className="mc-srow-label">科大讯飞 AppID</div>
+                            <div className="mc-srow-desc">在讯飞开放平台「实时语音转写（RTASR）」应用详情页复制 AppID</div>
+                          </div>
+                          <div className="mc-srow-control">
+                            <input
+                              className="mc-input"
+                              aria-label="科大讯飞 AppID"
+                              value={rtAppId}
+                              onChange={e => setRtAppId(e.target.value)}
+                              spellCheck={false}
+                              placeholder="填写讯飞应用 AppID"
+                            />
+                            {missingAppId && (
+                              <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>请填写科大讯飞 AppID</div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
                       <div className="mc-srow">
                         <div>
-                          <div className="mc-srow-label">{rtProvider === 'doubao' ? '模型名（model_name）' : 'Realtime 模型名'}</div>
-                          <div className="mc-srow-desc">
-                            {rtProvider === 'doubao'
-                              ? '豆包流式大模型固定为 bigmodel（具体 1.0/2.0 版本由上方 Resource ID 决定）'
-                              : '例如：paraformer-realtime-v2 / fun-asr-realtime'}
-                          </div>
+                          <div className="mc-srow-label">{rtMeta.modelLabel}</div>
+                          <div className="mc-srow-desc">{rtMeta.modelDesc}</div>
                         </div>
                         <div className="mc-srow-control">
                           <input
                             className="mc-input"
+                            aria-label={rtMeta.modelLabel}
                             value={rtModel}
                             onChange={e => setRtModel(e.target.value)}
                             spellCheck={false}
-                            placeholder={rtProvider === 'doubao' ? 'bigmodel' : 'paraformer-realtime-v2 / fun-asr-realtime'}
+                            placeholder={rtMeta.modelPlaceholder}
                           />
                           {missingModel && (
-                            <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>请填写百炼实时识别模型名</div>
+                            <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>请填写当前实时协议的模型名</div>
                           )}
                         </div>
                       </div>
 
                       <div className="mc-srow">
                         <div>
-                          <div className="mc-srow-label">
-                            {rtProvider === 'doubao'
-                              ? (rtAuthMode === 'app-access' ? 'Access Token（X-Api-Access-Key）' : '豆包 API Key（X-Api-Key）')
-                              : '百炼实时 ASR API Key'}
-                          </div>
+                          <div className="mc-srow-label">{keyLabel}</div>
                           <div className="mc-srow-desc">
                             {rtApiKeySet && !rtKey.editing && !rtKey.pendingDelete
-                              ? `已按「${rtProvider === 'doubao' ? '豆包' : '百炼'}」独立加密保存${rtHint ? `（尾号 ••••${rtHint}）` : ''}；切换服务商互不覆盖`
+                              ? `已按「${rtMeta.shortName}」独立加密保存${rtHint ? `（尾号 ••••${rtHint}）` : ''}；切换协议互不覆盖`
                               : '仅加密保存于本机，自动清理首尾空格'}
                           </div>
                         </div>
@@ -1458,12 +1652,13 @@ export function SettingsView({
                           ) : (
                             <input
                               className="mc-input"
+                              aria-label={keyLabel}
                               type="password"
                               autoComplete="off"
                               spellCheck={false}
                               value={rtKey.value}
                               onChange={e => rtKey.setValue(e.target.value)}
-                              placeholder={rtApiKeySet ? '输入新密钥以替换，留空保留原密钥' : (rtProvider === 'doubao' ? '填写豆包 API Key / Access Token' : 'sk-...')}
+                              placeholder={rtApiKeySet ? '输入新密钥以替换，留空保留原密钥' : rtMeta.keyPlaceholder}
                             />
                           )}
 
@@ -1541,34 +1736,175 @@ export function SettingsView({
                   );
                 })()}
 
-                {asrBackend === 'cloud' && (
-                  <>
-                    <div className="mc-srow">
-                      <div><div className="mc-srow-label">云端分段 Base URL</div></div>
-                      <div className="mc-srow-control"><input className="mc-input" value={cloudBaseUrl} onChange={e => setCloudBaseUrl(e.target.value)} spellCheck={false} placeholder="https://.../v1" /></div>
-                    </div>
-                    <div className="mc-srow">
-                      <div><div className="mc-srow-label">云端分段模型名</div></div>
-                      <div className="mc-srow-control">
-                        <ModelPickerField
-                          value={cloudModel}
-                          onChange={setCloudModel}
-                          placeholder="例如：whisper-1 / sensevoice"
-                          ariaLabel="云端分段模型名"
-                          baseUrl={cloudBaseUrl}
-                          apiKey={sanitizeApiKeyInput(cloudKey.value).value}
-                          slot="asr-cloud"
-                          compact
-                        />
+                {asrBackend === 'cloud' && (() => {
+                  const cloudPub = live?.asr?.cloud || {};
+                  const cloudApiKeySet = Boolean(cloudPub.apiKeySet);
+                  const cloudHint = cloudPub.apiKeyHint;
+                  const cloudCandidate = sanitizeApiKeyInput(cloudKey.value).value;
+                  const isLocalHttp = /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/i.test(cloudBaseUrl.trim());
+                  const canTestCloud = Boolean(cloudBaseUrl.trim() && cloudModel.trim()) && !cloudKey.pendingDelete && !cloudTestState.running;
+
+                  return (
+                    <>
+                      <div className="mc-srow">
+                        <div>
+                          <div className="mc-srow-label">HTTP 请求协议</div>
+                          <div className="mc-srow-desc">推荐标准 /audio/transcriptions（兼容硅基流动 SenseVoice、智谱 GLM-ASR、Groq、OpenAI、One-API 及本地 Whisper 服务）</div>
+                        </div>
+                        <div className="mc-srow-control">
+                          <CustomSelect
+                            className="mc-select"
+                            ariaLabel="云端分段 HTTP 协议"
+                            value={cloudProtocol}
+                            onChange={(v) => { setCloudProtocol(v); setCloudTestState({ running: false, result: null, error: '', showDetail: false }); }}
+                            options={SEGMENT_PROTOCOL_OPTIONS}
+                          />
+                        </div>
                       </div>
-                    </div>
-                    {renderKeySlotRow('云端分段 ASR Key', cloudKey, 'asr-cloud', {
-                      capability: 'asr-segment',
-                      providerId: providerIdForEndpoint(cloudBaseUrl.trim(), cloudModel.trim(), 'asr-segment'),
-                      baseUrl: cloudBaseUrl, model: cloudModel, slot: 'asr-cloud'
-                    })}
-                  </>
-                )}
+
+                      <div className="mc-srow">
+                        <div>
+                          <div className="mc-srow-label">云端分段 Base URL</div>
+                          <div className="mc-srow-desc">
+                            {cloudProtocol === 'chat-audio'
+                              ? '将请求 {Base URL}/chat/completions（传入 Base64 WAV input_audio）'
+                              : '将请求 {Base URL}/audio/transcriptions（multipart 上传 16kHz WAV），如 https://api.siliconflow.cn/v1'}
+                          </div>
+                        </div>
+                        <div className="mc-srow-control">
+                          <input
+                            className="mc-input"
+                            aria-label="云端分段 Base URL"
+                            value={cloudBaseUrl}
+                            onChange={e => setCloudBaseUrl(e.target.value)}
+                            spellCheck={false}
+                            placeholder="https://api.siliconflow.cn/v1 或 https://api.groq.com/openai/v1"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="mc-srow">
+                        <div>
+                          <div className="mc-srow-label">云端分段模型名</div>
+                          <div className="mc-srow-desc">可手动输入模型 ID，或点击右侧按钮拉取该接口模型列表</div>
+                        </div>
+                        <div className="mc-srow-control">
+                          <ModelPickerField
+                            value={cloudModel}
+                            onChange={setCloudModel}
+                            placeholder={cloudProtocol === 'chat-audio'
+                              ? '例如：gpt-4o-audio-preview / qwen-audio-turbo'
+                              : '例如：FunAudioLLM/SenseVoiceSmall / glm-asr-2512 / whisper-large-v3-turbo'}
+                            ariaLabel="云端分段模型名"
+                            baseUrl={cloudBaseUrl}
+                            apiKey={cloudCandidate}
+                            slot="asr-cloud"
+                            compact
+                          />
+                        </div>
+                      </div>
+
+                      <div className="mc-srow">
+                        <div>
+                          <div className="mc-srow-label">云端分段 ASR API Key</div>
+                          <div className="mc-srow-desc">
+                            {cloudApiKeySet && !cloudKey.editing && !cloudKey.pendingDelete
+                              ? `已安全加密保存${cloudHint ? `（尾号 ••••${cloudHint}）` : ''}；不编辑时不会覆盖`
+                              : '仅保存在本机，本地 http://127.0.0.1 服务可留空'}
+                          </div>
+                        </div>
+                        <div className="mc-srow-control">
+                          {cloudApiKeySet && !cloudKey.editing && !cloudKey.pendingDelete ? (
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                              <span className="mc-badge mc-badge-ok">已配置</span>
+                              <button type="button" className="mc-btn mc-btn-sm" onClick={() => cloudKey.setEditing(true)}>更换</button>
+                              {cloudKey.confirming ? (
+                                <>
+                                  <button type="button" className="mc-btn mc-btn-sm mc-btn-danger" onClick={() => { cloudKey.setPendingDelete(true); cloudKey.setConfirming(false); }}>确认清除</button>
+                                  <button type="button" className="mc-btn mc-btn-sm" onClick={() => cloudKey.setConfirming(false)}>取消</button>
+                                </>
+                              ) : (
+                                <button type="button" className="mc-btn mc-btn-sm" onClick={() => cloudKey.setConfirming(true)}>清除</button>
+                              )}
+                            </div>
+                          ) : cloudKey.pendingDelete ? (
+                            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                              <span className="mc-badge mc-badge-err">待清除</span>
+                              <button type="button" className="mc-btn mc-btn-sm" onClick={cloudKey.reset}>撤销</button>
+                            </div>
+                          ) : (
+                            <input
+                              className="mc-input"
+                              aria-label="云端分段 ASR API Key"
+                              type="password"
+                              autoComplete="off"
+                              spellCheck={false}
+                              value={cloudKey.value}
+                              onChange={e => cloudKey.setValue(e.target.value)}
+                              placeholder={cloudApiKeySet ? '输入新密钥以替换，留空保留原密钥' : (isLocalHttp ? '本地服务可留空' : 'sk-...')}
+                            />
+                          )}
+
+                          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+                            <button
+                              type="button"
+                              className="mc-btn mc-btn-sm mc-btn-primary"
+                              disabled={!canTestCloud}
+                              title="向当前 HTTP 分段接口上传内置 16kHz 样本 WAV，验证鉴权、协议与真实识别文本"
+                              onClick={() => void runSegmentTranscribe()}
+                            >
+                              {cloudTestState.running ? '试转写中…' : '试转写（发送样本音频）'}
+                            </button>
+                            {cloudPub?.verification?.lastTestAt && (
+                              <span className="mc-field-hint">
+                                上次：{cloudPub.verification.lastTestOk ? `成功 (${cloudPub.verification.latencyMs ?? '?'}ms)` : `失败 (${cloudPub.verification.lastTestCode || 'ERR'})`}
+                              </span>
+                            )}
+                          </div>
+
+                          {cloudTestState.error && (
+                            <div className="mc-alert mc-alert-err" role="alert">{cloudTestState.error}</div>
+                          )}
+
+                          {cloudTestState.result && (
+                            <div
+                              className={`mc-alert ${cloudTestState.result.ok ? 'mc-alert-ok' : 'mc-alert-err'}`}
+                              role="status"
+                              style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 10px' }}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                                <strong>
+                                  {cloudTestState.result.messageZh}
+                                  {typeof cloudTestState.result.latencyMs === 'number' ? ` · ${cloudTestState.result.latencyMs} ms` : ''}
+                                </strong>
+                                {!cloudTestState.result.ok && (
+                                  <button
+                                    type="button"
+                                    className="mc-link-subtle"
+                                    style={{ fontSize: 11.5, flexShrink: 0 }}
+                                    onClick={() => setCloudTestState(prev => ({ ...prev, showDetail: !prev.showDetail }))}
+                                  >
+                                    {cloudTestState.showDetail ? '收起诊断' : '展开诊断'}
+                                  </button>
+                                )}
+                              </div>
+                              {cloudTestState.result.hintZh && (
+                                <div style={{ fontSize: 12, opacity: 0.92 }}>{cloudTestState.result.hintZh}</div>
+                              )}
+                              {!cloudTestState.result.ok && cloudTestState.showDetail && (
+                                <div style={{ fontSize: 11.5, opacity: 0.88, marginTop: 2, fontFamily: 'var(--font-mono)' }}>
+                                  阶段：{STAGE_LABELS[cloudTestState.result.stage] || cloudTestState.result.stage} · 错误类型：{cloudTestState.result.code}
+                                  {cloudTestState.result.rawCode ? ` · 原始码：${cloudTestState.result.rawCode}` : ''}
+                                  {cloudTestState.result.requestId ? ` · 请求 ID：${cloudTestState.result.requestId}` : ''}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
 
                 <div className="mc-srow mc-srow-compact">
                   <div><div className="mc-srow-label">识别语言偏好</div></div>

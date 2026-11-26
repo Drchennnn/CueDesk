@@ -942,10 +942,12 @@ export function ServiceHealthModal({
         model: settings.asr.realtime.model || '',
         resourceId: settings.asr.realtime.resourceId || '',
         authMode: settings.asr.realtime.authMode || 'api-key',
+        appId: settings.asr.realtime.appId || '',
         appKey: settings.asr.realtime.appKey || '',
         slot: 'asr-realtime'
       } : settings?.asr?.backend === 'cloud' && settings?.asr?.cloud?.baseUrl ? {
         capability: 'asr-segment',
+        protocol: settings.asr.cloud.protocol || 'openai-transcriptions',
         providerId: settings.asr.providerId || 'custom',
         baseUrl: settings.asr.cloud.baseUrl,
         model: settings.asr.cloud.model || '',
@@ -1129,7 +1131,7 @@ export function QuickStartModal({ settings, asr, library, onClose, onNavigateCap
         ? '你的回答模型已配好，只需补充语音识别即可开启实时听写（无需重填文本模型）。'
         : health.asr.ready
           ? '语音识别已就绪，开启会议时可选择系统音频或本地麦克风采集。'
-          : '支持阿里云百炼实时流式、云端分段或本地 FunASR/Whisper 语音识别。',
+          : '支持百炼 / 豆包 / 腾讯云 / 科大讯飞 / OpenAI Realtime / Deepgram 实时流式，及硅基流动 / 智谱 / Groq / OpenAI 分段或本地 Whisper 语音识别。',
       badge: health.asr.ready ? { cls: 'mc-badge-ok', text: '已就绪' } : { cls: '', text: '按需配置' },
       actionLabel: '配置语音识别',
       target: 'asr'

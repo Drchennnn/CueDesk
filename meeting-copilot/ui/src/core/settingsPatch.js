@@ -45,11 +45,13 @@ export function buildSettingsDiffPatch(baseline, current, {
     if (current.language !== baseline.language) asrDiff.language = current.language;
     if (current.asrBackend !== baseline.asrBackend) asrDiff.backend = current.asrBackend;
 
-    const cloudChanged = current.cloudBaseUrl !== baseline.cloudBaseUrl ||
+    const cloudChanged = (current.cloudProtocol ?? 'openai-transcriptions') !== (baseline.cloudProtocol ?? 'openai-transcriptions') ||
+      current.cloudBaseUrl !== baseline.cloudBaseUrl ||
       current.cloudModel !== baseline.cloudModel ||
       keys.cloud !== undefined;
     if (cloudChanged) {
       asrDiff.cloud = {
+        protocol: current.cloudProtocol || 'openai-transcriptions',
         baseUrl: current.cloudBaseUrl.trim(),
         model: current.cloudModel.trim(),
         ...(keys.cloud !== undefined ? { apiKey: keys.cloud } : {})
@@ -61,6 +63,7 @@ export function buildSettingsDiffPatch(baseline, current, {
       current.rtModel !== baseline.rtModel ||
       (current.rtResourceId ?? '') !== (baseline.rtResourceId ?? '') ||
       (current.rtAuthMode ?? 'api-key') !== (baseline.rtAuthMode ?? 'api-key') ||
+      (current.rtAppId ?? '') !== (baseline.rtAppId ?? '') ||
       (current.rtAppKey ?? '') !== (baseline.rtAppKey ?? '') ||
       keys.realtime !== undefined;
     if (rtChanged) {
@@ -73,6 +76,13 @@ export function buildSettingsDiffPatch(baseline, current, {
           resourceId: String(current.rtResourceId || '').trim(),
           authMode: current.rtAuthMode === 'app-access' ? 'app-access' : 'api-key',
           appKey: String(current.rtAppKey || '').trim()
+        } : {}),
+        ...(provider === 'tencent' ? {
+          appId: String(current.rtAppId || '').trim(),
+          appKey: String(current.rtAppKey || '').trim()
+        } : {}),
+        ...(provider === 'xfyun' ? {
+          appId: String(current.rtAppId || '').trim()
         } : {}),
         ...(keys.realtime !== undefined ? { apiKey: keys.realtime } : {})
       };

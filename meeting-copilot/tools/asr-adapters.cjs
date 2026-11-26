@@ -3,13 +3,23 @@
 const crypto = require('node:crypto');
 const zlib = require('node:zlib');
 
+const REALTIME_PROVIDER_IDS = Object.freeze([
+  'dashscope',
+  'doubao',
+  'openai-realtime',
+  'deepgram',
+  'tencent',
+  'xfyun'
+]);
+
 const REALTIME_PROVIDERS = Object.freeze({
   dashscope: Object.freeze({
     id: 'dashscope',
-    labelZh: '阿里云百炼（DashScope WebSocket）',
+    labelZh: '阿里云百炼 DashScope（Paraformer / Fun-ASR）',
     defaultBaseUrl: 'wss://dashscope.aliyuncs.com/api-ws/v1/inference',
     defaultModel: 'paraformer-realtime-v2',
     needsResourceId: false,
+    needsAppId: false,
     supportsAuthModes: false
   }),
   doubao: Object.freeze({
@@ -19,7 +29,56 @@ const REALTIME_PROVIDERS = Object.freeze({
     defaultModel: 'bigmodel',
     defaultResourceId: 'volc.seedasr.sauc.duration',
     needsResourceId: true,
+    needsAppId: false,
     supportsAuthModes: true
+  }),
+  'openai-realtime': Object.freeze({
+    id: 'openai-realtime',
+    labelZh: 'OpenAI Realtime 转写协议（兼容 OpenAI & 阿里 Qwen3-ASR 实时）',
+    defaultBaseUrl: 'wss://api.openai.com/v1/realtime?intent=transcription',
+    defaultModel: 'gpt-4o-mini-transcribe',
+    needsResourceId: false,
+    needsAppId: false,
+    supportsAuthModes: false
+  }),
+  deepgram: Object.freeze({
+    id: 'deepgram',
+    labelZh: 'Deepgram Live 流式协议（Nova-3 / Nova-2）',
+    defaultBaseUrl: 'wss://api.deepgram.com/v1/listen',
+    defaultModel: 'nova-3',
+    needsResourceId: false,
+    needsAppId: false,
+    supportsAuthModes: false
+  }),
+  tencent: Object.freeze({
+    id: 'tencent',
+    labelZh: '腾讯云实时语音识别（WebSocket v2）',
+    defaultBaseUrl: 'wss://asr.cloud.tencent.com/asr/v2',
+    defaultModel: '16k_zh',
+    needsResourceId: false,
+    needsAppId: true,
+    needsSecretId: true,
+    supportsAuthModes: false
+  }),
+  xfyun: Object.freeze({
+    id: 'xfyun',
+    labelZh: '科大讯飞实时语音转写（RTASR）',
+    defaultBaseUrl: 'wss://rtasr.xfyun.cn/v1/ws',
+    defaultModel: 'cn',
+    needsResourceId: false,
+    needsAppId: true,
+    supportsAuthModes: false
+  })
+});
+
+const SEGMENT_PROTOCOLS = Object.freeze({
+  'openai-transcriptions': Object.freeze({
+    id: 'openai-transcriptions',
+    labelZh: 'OpenAI 标准 /audio/transcriptions（兼容硅基流动 / 智谱 / Groq / OpenAI / 中转站）'
+  }),
+  'chat-audio': Object.freeze({
+    id: 'chat-audio',
+    labelZh: '音频对话 /chat/completions（input_audio · 兼容 gpt-4o-audio / qwen-audio）'
   })
 });
 
@@ -43,15 +102,36 @@ const DOUBAO_PROTO = Object.freeze({
 const FINISH_TIMEOUT_MS = 5000;
 const HANDSHAKE_TIMEOUT_MS = 10000;
 const PCM_CHUNK_BYTES = 6400; // 200ms @ 16kHz 16-bit mono PCM
+const XFYUN_CHUNK_BYTES = 1280; // 40ms @ 16kHz 16-bit mono PCM (iFlytek recommended)
 
 function isLocalWsUrl(url) {
   return /^ws:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/i.test(String(url || '').trim());
 }
 
+function isLocalHttpUrl(url) {
+  return /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/i.test(String(url || '').trim());
+}
+
+function isDashScopeRealtimeDialect(cfg = {}) {
+  const url = String(cfg?.baseUrl || '').trim().toLowerCase();
+  const model = String(cfg?.model || '').trim().toLowerCase();
+  return (
+    url.includes('dashscope') ||
+    url.includes('aliyuncs.com') ||
+    url.includes('maas.aliyuncs.com') ||
+    model.startsWith('qwen')
+  );
+}
+
 function inferRealtimeProvider(cfg = {}) {
   const explicit = String(cfg?.provider || '').trim().toLowerCase();
   if (explicit === 'doubao' || explicit === 'volcengine' || explicit === 'seedasr') return 'doubao';
+  if (explicit === 'openai-realtime' || explicit === 'openai' || explicit === 'qwen-realtime') return 'openai-realtime';
+  if (explicit === 'deepgram') return 'deepgram';
+  if (explicit === 'tencent' || explicit === 'qcloud') return 'tencent';
+  if (explicit === 'xfyun' || explicit === 'iflytek' || explicit === 'rtasr') return 'xfyun';
   if (explicit === 'dashscope' || explicit === 'aliyun' || explicit === 'bailian') return 'dashscope';
+
   const url = String(cfg?.baseUrl || '').trim().toLowerCase();
   const resId = String(cfg?.resourceId || '').trim().toLowerCase();
   if (
@@ -62,7 +142,31 @@ function inferRealtimeProvider(cfg = {}) {
   ) {
     return 'doubao';
   }
+  if (url.includes('api.deepgram.com') || url.includes('/v1/listen')) return 'deepgram';
+  if (url.includes('asr.cloud.tencent.com')) return 'tencent';
+  if (url.includes('rtasr.xfyun.cn') || url.includes('xfyun.cn')) return 'xfyun';
+  if (
+    url.includes('/v1/realtime') ||
+    url.includes('intent=transcription') ||
+    String(cfg?.model || '').toLowerCase().includes('qwen3-asr')
+  ) {
+    return 'openai-realtime';
+  }
   return 'dashscope';
+}
+
+function inferSegmentProtocol(cfg = {}) {
+  const explicit = String(cfg?.protocol || '').trim().toLowerCase();
+  if (explicit === 'chat-audio' || explicit === 'chat-completions') return 'chat-audio';
+  if (explicit === 'openai-transcriptions' || explicit === 'transcriptions' || explicit === 'multipart') {
+    return 'openai-transcriptions';
+  }
+  const url = String(cfg?.baseUrl || '').trim().toLowerCase();
+  const model = String(cfg?.model || '').trim().toLowerCase();
+  if (url.endsWith('/chat/completions') || /audio-preview|qwen.*audio|omni/i.test(model)) {
+    return 'chat-audio';
+  }
+  return 'openai-transcriptions';
 }
 
 function sanitizeDiagnosticText(text, secrets = []) {
@@ -76,7 +180,9 @@ function sanitizeDiagnosticText(text, secrets = []) {
   }
   out = out
     .replace(/Bearer\s+[A-Za-z0-9._\-]{8,}/gi, 'Bearer [REDACTED]')
+    .replace(/Token\s+[A-Za-z0-9._\-]{8,}/gi, 'Token [REDACTED]')
     .replace(/(X-Api-(?:Key|Access-Key|App-Key)\s*[:=]\s*)([^\s,;'"}\]]+)/gi, '$1[REDACTED]')
+    .replace(/((?:signature|signa|secretid|api_key)\s*=\s*)([^&\s'"]+)/gi, '$1[REDACTED]')
     .replace(/\bsk-[A-Za-z0-9_\-]{8,}\b/g, 'sk-[REDACTED]');
   return out.slice(0, 600);
 }
@@ -91,16 +197,63 @@ function f32ToPcm16(pcm) {
   return buf;
 }
 
+function resampleF32Linear(pcm, fromRate, toRate) {
+  if (!pcm || pcm.length === 0 || fromRate === toRate) return pcm;
+  const ratio = fromRate / toRate;
+  const outLen = Math.max(1, Math.round(pcm.length / ratio));
+  const out = new Float32Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const pos = i * ratio;
+    const idx = Math.floor(pos);
+    const frac = pos - idx;
+    const s0 = pcm[idx] ?? 0;
+    const s1 = pcm[Math.min(idx + 1, pcm.length - 1)] ?? s0;
+    out[i] = s0 + (s1 - s0) * frac;
+  }
+  return out;
+}
+
+function encodeWav16kMono(pcm, sampleRate = 16000) {
+  const dataLen = (pcm?.length || 0) * 2;
+  const buf = Buffer.allocUnsafe(44 + dataLen);
+  buf.write('RIFF', 0, 'ascii');
+  buf.writeUInt32LE(36 + dataLen, 4);
+  buf.write('WAVE', 8, 'ascii');
+  buf.write('fmt ', 12, 'ascii');
+  buf.writeUInt32LE(16, 16);
+  buf.writeUInt16LE(1, 20);
+  buf.writeUInt16LE(1, 22);
+  buf.writeUInt32LE(sampleRate, 24);
+  buf.writeUInt32LE(sampleRate * 2, 28);
+  buf.writeUInt16LE(2, 32);
+  buf.writeUInt16LE(16, 34);
+  buf.write('data', 36, 'ascii');
+  buf.writeUInt32LE(dataLen, 40);
+  let off = 44;
+  for (let i = 0; i < (pcm?.length || 0); i++) {
+    const s = Math.max(-1, Math.min(1, pcm[i]));
+    buf.writeInt16LE(s < 0 ? (s * 32768) | 0 : (s * 32767) | 0, off);
+    off += 2;
+  }
+  return buf;
+}
+
 function languageHintsDashScope(language) {
   if (language === 'chinese') return ['zh'];
   if (language === 'english') return ['en'];
   return undefined;
 }
 
+function languageIso639(language) {
+  if (language === 'chinese') return 'zh';
+  if (language === 'english') return 'en';
+  return undefined;
+}
+
 function makeStructuredError({
   stage = 'connect',
   code = 'UNKNOWN_ERROR',
-  messageZh = '实时语音识别连接失败',
+  messageZh = '语音识别连接失败',
   hintZh = '请检查接口地址、鉴权字段与网络环境后重试。',
   rawCode = '',
   requestId = '',
@@ -130,17 +283,17 @@ function validateRealtimeConfig(cfg = {}) {
   const apiKey = String(cfg?.apiKey || '').trim();
   const resourceId = String(cfg?.resourceId || '').trim();
   const authMode = String(cfg?.authMode || 'api-key').trim() === 'app-access' ? 'app-access' : 'api-key';
+  const appId = String(cfg?.appId || '').trim();
   const appKey = String(cfg?.appKey || '').trim();
 
   if (!baseUrl) {
+    const meta = REALTIME_PROVIDERS[provider] || REALTIME_PROVIDERS.dashscope;
     return {
       ok: false,
       stage: 'config',
       code: 'MISSING_ENDPOINT',
       messageZh: '未填写实时 ASR WebSocket 地址',
-      hintZh: provider === 'doubao'
-        ? '请填写豆包流式 ASR 地址，例如 wss://openspeech.bytedance.com/api/v3/sauc/bigmodel'
-        : '请填写阿里云百炼 WebSocket 地址，例如 wss://dashscope.aliyuncs.com/api-ws/v1/inference'
+      hintZh: `请填写 WebSocket 地址，例如 ${meta.defaultBaseUrl}`
     };
   }
   if (!/^wss?:\/\//i.test(baseUrl)) {
@@ -148,10 +301,11 @@ function validateRealtimeConfig(cfg = {}) {
       ok: false,
       stage: 'config',
       code: 'MISSING_ENDPOINT',
-      messageZh: `实时 ASR 地址协议无效（需以 ws:// 或 wss:// 开头）`,
+      messageZh: '实时 ASR 地址协议无效（需以 ws:// 或 wss:// 开头）',
       hintZh: '请检查地址是否误填为 https://，流式实时识别需使用 wss:// 地址。'
     };
   }
+
   if (provider === 'doubao') {
     if (!resourceId) {
       return {
@@ -183,6 +337,94 @@ function validateRealtimeConfig(cfg = {}) {
     return { ok: true, provider, normalized: { provider, baseUrl, model: model || 'bigmodel', resourceId, authMode, appKey, apiKey } };
   }
 
+  if (provider === 'tencent') {
+    if (!appId) {
+      return {
+        ok: false,
+        stage: 'config',
+        code: 'MISSING_APP_ID',
+        messageZh: '缺少腾讯云 AppID',
+        hintZh: '请在腾讯云语音识别控制台「账号信息」复制数字 AppID 填入。'
+      };
+    }
+    if (!appKey && !isLocalWsUrl(baseUrl)) {
+      return {
+        ok: false,
+        stage: 'config',
+        code: 'MISSING_APP_KEY',
+        messageZh: '缺少腾讯云 SecretId',
+        hintZh: '请在腾讯云「访问管理 → API 密钥管理」获取 SecretId 与 SecretKey。'
+      };
+    }
+    if (!apiKey && !isLocalWsUrl(baseUrl)) {
+      return {
+        ok: false,
+        stage: 'config',
+        code: 'INVALID_KEY',
+        messageZh: '未填写腾讯云 SecretKey',
+        hintZh: '请在密钥栏填写对应的 SecretKey 用于计算 HMAC-SHA1 实时签名。'
+      };
+    }
+    return { ok: true, provider, normalized: { provider, baseUrl, model: model || '16k_zh', appId, appKey, apiKey } };
+  }
+
+  if (provider === 'xfyun') {
+    if (!appId) {
+      return {
+        ok: false,
+        stage: 'config',
+        code: 'MISSING_APP_ID',
+        messageZh: '缺少科大讯飞 AppID',
+        hintZh: '请在讯飞开放平台「实时语音转写」应用详情页复制 AppID。'
+      };
+    }
+    if (!apiKey && !isLocalWsUrl(baseUrl)) {
+      return {
+        ok: false,
+        stage: 'config',
+        code: 'INVALID_KEY',
+        messageZh: '未填写科大讯飞实时语音转写 APIKey',
+        hintZh: '请填写讯飞「实时语音转写（RTASR）」专用的 APIKey（非语音听写 IAT 的 APISecret）。'
+      };
+    }
+    return { ok: true, provider, normalized: { provider, baseUrl, model: model || 'cn', appId, apiKey } };
+  }
+
+  if (provider === 'openai-realtime') {
+    if (!model) {
+      return {
+        ok: false,
+        stage: 'config',
+        code: 'MISSING_MODEL',
+        messageZh: '未填写 Realtime 转写模型名',
+        hintZh: '例如 OpenAI 填 gpt-4o-mini-transcribe / gpt-4o-transcribe，阿里云百炼填 qwen3-asr-flash-realtime。'
+      };
+    }
+    if (!apiKey && !isLocalWsUrl(baseUrl)) {
+      return {
+        ok: false,
+        stage: 'config',
+        code: 'INVALID_KEY',
+        messageZh: '未填写 Realtime API Key',
+        hintZh: '请填写 OpenAI / 百炼或中转站 API Key（sk-...）后再试。'
+      };
+    }
+    return { ok: true, provider, normalized: { provider, baseUrl, model, apiKey } };
+  }
+
+  if (provider === 'deepgram') {
+    if (!apiKey && !isLocalWsUrl(baseUrl)) {
+      return {
+        ok: false,
+        stage: 'config',
+        code: 'INVALID_KEY',
+        messageZh: '未填写 Deepgram API Key',
+        hintZh: '请在 Deepgram Console 生成 API Key 后填入（请求头使用 Authorization: Token）。'
+      };
+    }
+    return { ok: true, provider, normalized: { provider, baseUrl, model: model || 'nova-3', apiKey } };
+  }
+
   // DashScope (and local FunASR/MOSS sidecar over ws://127.0.0.1)
   if (!model) {
     return {
@@ -203,6 +445,51 @@ function validateRealtimeConfig(cfg = {}) {
     };
   }
   return { ok: true, provider, normalized: { provider, baseUrl, model, apiKey } };
+}
+
+function validateSegmentConfig(cfg = {}) {
+  const protocol = inferSegmentProtocol(cfg);
+  const baseUrl = String(cfg?.baseUrl || '').trim();
+  const model = String(cfg?.model || '').trim();
+  const apiKey = String(cfg?.apiKey || '').trim();
+
+  if (!baseUrl) {
+    return {
+      ok: false,
+      stage: 'config',
+      code: 'MISSING_ENDPOINT',
+      messageZh: '未填写云端分段 ASR Base URL',
+      hintZh: '例如硅基流动 https://api.siliconflow.cn/v1、智谱 https://open.bigmodel.cn/api/paas/v4、Groq https://api.groq.com/openai/v1 或任意中转站 /v1。'
+    };
+  }
+  if (!/^https?:\/\//i.test(baseUrl)) {
+    return {
+      ok: false,
+      stage: 'config',
+      code: 'MISSING_ENDPOINT',
+      messageZh: '云端分段 ASR 地址需以 http:// 或 https:// 开头',
+      hintZh: '流式 wss:// 地址请切换到「云端流式实时（WebSocket）」配置。'
+    };
+  }
+  if (!model) {
+    return {
+      ok: false,
+      stage: 'config',
+      code: 'MISSING_MODEL',
+      messageZh: '未填写分段转录模型名',
+      hintZh: '可点击「获取模型」拉取，或手动填入如 FunAudioLLM/SenseVoiceSmall、glm-asr-2512、whisper-large-v3-turbo、gpt-4o-mini-transcribe。'
+    };
+  }
+  if (!apiKey && !isLocalHttpUrl(baseUrl)) {
+    return {
+      ok: false,
+      stage: 'config',
+      code: 'INVALID_KEY',
+      messageZh: '未填写云端分段 ASR API Key',
+      hintZh: '请填写有效 API Key（本地 http://127.0.0.1 服务可留空）。'
+    };
+  }
+  return { ok: true, protocol, normalized: { protocol, baseUrl, model, apiKey } };
 }
 
 function classifyRealtimeError(err, ctx = {}) {
@@ -245,10 +532,10 @@ function classifyRealtimeError(err, ctx = {}) {
       connected,
       stage: connected ? 'transcribe' : 'connect',
       code: 'TIMEOUT',
-      messageZh: connected ? '已连接，但等待转写结果超时' : '连接实时语音服务超时',
+      messageZh: connected ? '已连接，但等待转写结果超时' : '连接语音识别服务超时',
       hintZh: connected
-        ? '握手已成功，但服务端未在超时时间内返回最终文本；请检查音频格式、Resource ID 或稍后重试。'
-        : '请检查网络连通性、WebSocket 地址是否正确，或确认系统代理未拦截 wss 连接。',
+        ? '握手已成功，但服务端未在超时时间内返回最终文本；请检查音频格式、模型/资源配置或稍后重试。'
+        : '请检查网络连通性、接口地址是否正确，或确认代理未拦截连接。',
       rawCode: rawCode || 'TIMEOUT',
       requestId,
       retryable: true
@@ -257,21 +544,24 @@ function classifyRealtimeError(err, ctx = {}) {
 
   if (
     statusCode === 401 ||
-    /45000010|invalid[\s_-]?api[\s_-]?key|unauthorized|authentication|auth\s*fail|signature|invalid\s*token|access[\s_-]?key/i.test(lower) ||
-    /^45000010$/i.test(rawCode)
+    /45000010|4002|10105|10106|10107|10110|invalid[\s_-]?api[\s_-]?key|unauthorized|authentication|auth\s*fail|signature|invalid\s*token|access[\s_-]?key|illegal\s*access/i.test(lower) ||
+    /^(?:45000010|4002|10105|10106|10107|10110)$/i.test(rawCode)
   ) {
+    const hintMap = {
+      doubao: '请确认控制台密钥类型：新版单 Key 选「API Key（X-Api-Key）」；旧版选「App ID + Access Token」并核对两个字段。',
+      tencent: '请核对腾讯云 AppID、SecretId 与 SecretKey 是否成套对应，且本机系统时间准确（签名依赖当前时间戳）。',
+      xfyun: '请核对讯飞 AppID 与「实时语音转写（RTASR）」专用 APIKey，并确认本机系统时间准确。',
+      deepgram: '请核对 Deepgram API Key 是否有效（需具有 listen 权限）。',
+      'openai-realtime': '请核对 API Key 是否有权限调用 Realtime 接口（OpenAI 或百炼对应地域 Key）。'
+    };
     return {
       ok: false,
       provider,
       connected,
       stage: 'auth',
       code: 'AUTH_FAILED',
-      messageZh: provider === 'doubao'
-        ? '豆包鉴权失败：密钥无效或鉴权模式不匹配'
-        : '实时 ASR 鉴权失败：API Key 无效或已过期',
-      hintZh: provider === 'doubao'
-        ? '请确认控制台密钥类型：新版单 Key 请选「API Key（X-Api-Key）」；旧版请选「App ID + Access Token」并核对两个字段。'
-        : '请检查百炼 API Key 是否完整、无多余空格，且属于对应地域控制台。',
+      messageZh: '鉴权失败：密钥无效、签名不匹配或无权限',
+      hintZh: hintMap[provider] || '请检查 API Key 是否完整、无多余空格，且属于对应控制台与地域。',
       rawCode: rawCode || 'AUTH_FAILED',
       requestId,
       retryable: false
@@ -280,8 +570,8 @@ function classifyRealtimeError(err, ctx = {}) {
 
   if (
     statusCode === 403 ||
-    /45000030|40000005|resource.*not|not\s*granted|permission|accessdenied|forbidden|quota|arrearage|insufficient|unsubscribed|not\s*activated|model.*not.*found/i.test(lower) ||
-    /^(?:45000030|40000005|AccessDenied|Arrearage)$/i.test(rawCode)
+    /45000030|40000005|4003|4004|10114|10800|resource.*not|not\s*granted|permission|accessdenied|forbidden|quota|arrearage|insufficient|unsubscribed|not\s*activated|model.*not.*found|no\s*credit/i.test(lower) ||
+    /^(?:45000030|40000005|4003|4004|10114|10800|AccessDenied|Arrearage)$/i.test(rawCode)
   ) {
     return {
       ok: false,
@@ -291,10 +581,10 @@ function classifyRealtimeError(err, ctx = {}) {
       code: 'RESOURCE_UNAUTHORIZED',
       messageZh: provider === 'doubao'
         ? '豆包资源未开通或无权访问（Resource ID 权限不足）'
-        : '服务商拒绝访问：模型未开通、无权限或余额不足',
+        : '服务商拒绝访问：服务未开通、模型不可用或余额不足',
       hintZh: provider === 'doubao'
-        ? '请核对 X-Api-Resource-Id 是否已在火山控制台开通（2.0 小时版：volc.seedasr.sauc.duration；1.0 小时版：volc.bigasr.sauc.duration），并检查用量余额。'
-        : '请确认已在百炼控制台开通该实时语音模型，且账户余额充足。',
+        ? '请核对 X-Api-Resource-Id 是否已在火山控制台开通（2.0 小时版：volc.seedasr.sauc.duration；1.0 小时版：volc.bigasr.sauc.duration），并检查余额。'
+        : '请确认已在对应平台开通该语音识别服务/模型，且账户余额或免费额度充足。',
       rawCode: rawCode || 'RESOURCE_UNAUTHORIZED',
       requestId,
       retryable: false
@@ -302,8 +592,8 @@ function classifyRealtimeError(err, ctx = {}) {
   }
 
   if (
-    /45000001|45000002|45000151|audio|codec|sample[\s_-]?rate|format|invalid\s*param|invalidparameter|illegal\s*packet|decode|pcm/i.test(lower) ||
-    /^(?:45000001|45000002|45000151|InvalidParameter)$/i.test(rawCode)
+    /45000001|45000002|45000151|4001|10109|audio|codec|sample[\s_-]?rate|format|invalid\s*param|invalidparameter|illegal\s*packet|decode|pcm|multipart/i.test(lower) ||
+    /^(?:45000001|45000002|45000151|4001|10109|InvalidParameter)$/i.test(rawCode)
   ) {
     return {
       ok: false,
@@ -312,22 +602,22 @@ function classifyRealtimeError(err, ctx = {}) {
       stage: 'audio',
       code: 'AUDIO_FORMAT_ERROR',
       messageZh: connected ? '已连接，试转写失败：音频参数或帧格式不被服务端接受' : '请求参数或音频格式不被服务端接受',
-      hintZh: '流式协议固定发送 16kHz / 16bit / 单声道 PCM；请核对端点路径（如 /api/v3/sauc/bigmodel）与模型名是否匹配。',
+      hintZh: '请核对所选协议族是否与目标接口一致（例如 OpenAI /audio/transcriptions vs /chat/completions，或流式协议类型与模型名）。',
       rawCode: rawCode || 'AUDIO_FORMAT_ERROR',
       requestId,
       retryable: false
     };
   }
 
-  if (/enotfound|econnrefused|econnreset|ehostunreach|enetunreach|tls|cert|socket|network|unexpected server response: 5\d\d/i.test(lower) || statusCode >= 500) {
+  if (/enotfound|econnrefused|econnreset|ehostunreach|enetunreach|tls|cert|socket|network|fetch failed|unexpected server response: 5\d\d/i.test(lower) || statusCode >= 500) {
     return {
       ok: false,
       provider,
       connected,
       stage: connected ? 'transcribe' : 'connect',
       code: 'NETWORK_ERROR',
-      messageZh: connected ? '实时识别中途断线（网络异常）' : '无法连接到实时语音服务器（网络或地址异常）',
-      hintZh: '请检查网络连接、WebSocket 地址拼写及代理设置后重试。',
+      messageZh: connected ? '实时识别中途断线（网络异常）' : '无法连接到语音服务器（网络或地址异常）',
+      hintZh: '请检查网络连接、接口地址拼写及代理设置后重试。',
       rawCode: rawCode || 'NETWORK_ERROR',
       requestId,
       retryable: true
@@ -342,8 +632,8 @@ function classifyRealtimeError(err, ctx = {}) {
     code: rawCode ? 'PROVIDER_ERROR' : 'UNKNOWN_ERROR',
     messageZh: connected
       ? `已连接，但服务端返回错误：${rawText || '未知错误'}`
-      : `实时 ASR 连接失败：${rawText || '服务端拒绝连接'}`,
-    hintZh: '请展开查看原始错误码与请求 ID，核对协议类型（百炼 vs 豆包 v3）、地址与鉴权参数。',
+      : `语音服务连接失败：${rawText || '服务端拒绝连接'}`,
+    hintZh: '请展开查看原始错误码与请求 ID，核对所选协议、地址、模型名与鉴权字段。',
     rawCode: rawCode || 'UNKNOWN',
     requestId,
     retryable: false
@@ -351,7 +641,35 @@ function classifyRealtimeError(err, ctx = {}) {
 }
 
 // =============================================================================
-// Doubao SAUC v3 Binary Framing (Volcengine BigModel Streaming ASR)
+// Shared WS Upgrade Rejection Inspector
+// =============================================================================
+
+function attachUnexpectedResponseHandler(ws, onFail) {
+  ws.on('unexpected-response', (_req, res) => {
+    const chunks = [];
+    res.on('data', (c) => chunks.push(c));
+    res.on('end', () => {
+      const body = Buffer.concat(chunks).toString('utf8').slice(0, 400);
+      const statusCode = res.statusCode || 0;
+      const apiStatus = res.headers?.['x-api-status-code'] || res.headers?.['dg-error'] || '';
+      const apiMsg = res.headers?.['x-api-message'] || '';
+      const logId =
+        res.headers?.['x-tt-logid'] ||
+        res.headers?.['x-dashscope-request-id'] ||
+        res.headers?.['dg-request-id'] ||
+        res.headers?.['x-request-id'] ||
+        '';
+      const err = new Error([apiMsg, body, `HTTP ${statusCode}`].filter(Boolean).join(' · '));
+      err.statusCode = statusCode;
+      err.rawCode = apiStatus ? String(apiStatus) : `HTTP ${statusCode}`;
+      err.requestId = String(logId || '');
+      onFail(err);
+    });
+  });
+}
+
+// =============================================================================
+// 1. Doubao SAUC v3 Binary Protocol Adapter
 // =============================================================================
 
 function buildDoubaoHeader(msgType, flags, serialization, compression) {
@@ -485,8 +803,6 @@ function buildDoubaoInitPayload(cfg, language) {
     bits: 16,
     channel: 1
   };
-  // BigModel 1.0/2.0 streaming natively supports zh/en mixed speech; only attach
-  // audio.language for nostream endpoints when explicitly requesting English-only.
   if (language === 'english' && /nostream/i.test(String(cfg?.baseUrl || ''))) {
     audio.language = 'en-US';
   }
@@ -502,27 +818,6 @@ function buildDoubaoInitPayload(cfg, language) {
       result_type: 'single'
     }
   };
-}
-
-function attachUnexpectedResponseHandler(ws, onFail) {
-  ws.on('unexpected-response', (_req, res) => {
-    const chunks = [];
-    res.on('data', (c) => chunks.push(c));
-    res.on('end', () => {
-      const body = Buffer.concat(chunks).toString('utf8').slice(0, 400);
-      const statusCode = res.statusCode || 0;
-      const apiStatus = res.headers?.['x-api-status-code'] || '';
-      const apiMsg = res.headers?.['x-api-message'] || '';
-      const logId = res.headers?.['x-tt-logid'] || res.headers?.['x-dashscope-request-id'] || res.headers?.['x-request-id'] || '';
-      const err = new Error(
-        [apiMsg, body, `HTTP ${statusCode}`].filter(Boolean).join(' · ')
-      );
-      err.statusCode = statusCode;
-      err.rawCode = apiStatus ? String(apiStatus) : `HTTP ${statusCode}`;
-      err.requestId = String(logId || '');
-      onFail(err);
-    });
-  });
 }
 
 class DoubaoRtSession {
@@ -545,9 +840,8 @@ class DoubaoRtSession {
     this.lastPartialText = '';
     this.hasEmittedAnySentence = false;
 
-    const headers = buildDoubaoHeaders(cfg, this.connectId);
     this.ws = new WebSocketImpl(cfg.baseUrl, {
-      headers,
+      headers: buildDoubaoHeaders(cfg, this.connectId),
       handshakeTimeout: HANDSHAKE_TIMEOUT_MS
     });
 
@@ -727,7 +1021,7 @@ class DoubaoRtSession {
   flushPendingAudio(forceSmall = false) {
     if (this.aborted || this.closed || !this.started || this.ws.readyState !== 1) return;
     if (this.pendingByteLen === 0) return;
-    let combined = this.pendingBytes.length === 1 ? this.pendingBytes[0] : Buffer.concat(this.pendingBytes, this.pendingByteLen);
+    const combined = this.pendingBytes.length === 1 ? this.pendingBytes[0] : Buffer.concat(this.pendingBytes, this.pendingByteLen);
     this.pendingBytes = [];
     this.pendingByteLen = 0;
 
@@ -784,7 +1078,6 @@ class DoubaoRtSession {
     this.pendingBytes = [];
     this.pendingByteLen = 0;
 
-    // Send full chunks first if tail > PCM_CHUNK_BYTES, then send final chunk with NEG_WITH_SEQ
     let offset = 0;
     while (tail.length - offset > PCM_CHUNK_BYTES) {
       const slice = tail.subarray(offset, offset + PCM_CHUNK_BYTES);
@@ -824,13 +1117,10 @@ class DoubaoRealtimeEngine {
   static async load(cfg, { WebSocket } = {}) {
     const check = validateRealtimeConfig({ ...cfg, provider: 'doubao' });
     if (!check.ok) throw makeStructuredError(check);
-    const WS = WebSocket || require('ws');
-    return new DoubaoRealtimeEngine(check.normalized, WS);
+    return new DoubaoRealtimeEngine(check.normalized, WebSocket || require('ws'));
   }
 
-  async warmup() {
-    return 0;
-  }
+  async warmup() { return 0; }
 
   openSession(cb, opts = {}) {
     return new DoubaoRtSession(this.cfg, cb, opts.language, this.WebSocketImpl);
@@ -838,7 +1128,7 @@ class DoubaoRealtimeEngine {
 }
 
 // =============================================================================
-// Aliyun DashScope WebSocket Realtime Adapter (also covers local FunASR/MOSS)
+// 2. Aliyun DashScope WebSocket Realtime Adapter (also covers local FunASR/MOSS)
 // =============================================================================
 
 class DashScopeRtSession {
@@ -888,11 +1178,7 @@ class DashScopeRtSession {
     this.ws.on('message', (data, isBinary) => {
       if (this.aborted || this.closed || isBinary) return;
       let ev;
-      try {
-        ev = JSON.parse(data.toString('utf8'));
-      } catch {
-        return;
-      }
+      try { ev = JSON.parse(data.toString('utf8')); } catch { return; }
       const kind = ev?.header?.event;
       if (!kind) return;
       if (ev?.header?.task_id) this.requestId = String(ev.header.task_id);
@@ -1000,9 +1286,7 @@ class DashScopeRtSession {
       payload: { input: {} }
     };
     const finished = new Promise((res) => { this.finishResolve = res; });
-    try {
-      this.ws.send(JSON.stringify(finishTask));
-    } catch {
+    try { this.ws.send(JSON.stringify(finishTask)); } catch {
       this.closed = true;
       this.settleFinish();
       return;
@@ -1029,25 +1313,1217 @@ class DashScopeRealtimeEngine {
   static async load(cfg, { WebSocket } = {}) {
     const check = validateRealtimeConfig({ ...cfg, provider: 'dashscope' });
     if (!check.ok) throw makeStructuredError(check);
-    const WS = WebSocket || require('ws');
-    return new DashScopeRealtimeEngine(check.normalized, WS);
+    return new DashScopeRealtimeEngine(check.normalized, WebSocket || require('ws'));
   }
 
-  async warmup() {
-    return 0;
-  }
+  async warmup() { return 0; }
 
   openSession(cb, opts = {}) {
     return new DashScopeRtSession(this.cfg, cb, opts.language, this.WebSocketImpl);
   }
 }
 
+// =============================================================================
+// 3. OpenAI Realtime Transcription WS (also covers Aliyun Qwen3-ASR-Flash-Realtime)
+// =============================================================================
+
+function buildOpenAiRealtimeUrl(cfg) {
+  const raw = String(cfg?.baseUrl || '').trim();
+  const isDash = isDashScopeRealtimeDialect(cfg);
+  try {
+    const u = new URL(raw);
+    if (isDash) {
+      if (cfg.model && !u.searchParams.has('model')) {
+        u.searchParams.set('model', cfg.model);
+      }
+    } else if (!u.searchParams.has('intent') && !u.searchParams.has('model')) {
+      u.searchParams.set('intent', 'transcription');
+    }
+    return u.toString();
+  } catch {
+    return raw;
+  }
+}
+
+function buildOpenAiRealtimeInitEvent(cfg, language) {
+  const isDash = isDashScopeRealtimeDialect(cfg);
+  const isoLang = languageIso639(language);
+  if (isDash) {
+    return {
+      event_id: `mc_${crypto.randomUUID().slice(0, 12)}`,
+      type: 'session.update',
+      session: {
+        modalities: ['text'],
+        input_audio_format: 'pcm',
+        sample_rate: 16000,
+        input_audio_transcription: isoLang ? { language: isoLang } : {},
+        turn_detection: {
+          type: 'server_vad',
+          threshold: 0.2,
+          silence_duration_ms: 600
+        }
+      }
+    };
+  }
+  return {
+    type: 'transcription_session.update',
+    session: {
+      input_audio_format: 'pcm16',
+      input_audio_transcription: {
+        model: cfg.model || 'gpt-4o-mini-transcribe',
+        ...(isoLang ? { language: isoLang } : {})
+      },
+      turn_detection: {
+        type: 'server_vad',
+        threshold: 0.5,
+        prefix_padding_ms: 300,
+        silence_duration_ms: 500
+      }
+    }
+  };
+}
+
+class OpenAiRealtimeSession {
+  constructor(cfg, cb, language, WebSocketImpl) {
+    this.cfg = cfg;
+    this.cb = cb;
+    this.language = language || 'auto';
+    this.isDash = isDashScopeRealtimeDialect(cfg);
+    this.targetRate = this.isDash ? 16000 : 24000;
+    this.requestId = '';
+    this.started = false;
+    this.closing = false;
+    this.aborted = false;
+    this.closed = false;
+    this.pendingB64 = [];
+    this.partialAccum = '';
+    this.finishResolve = null;
+
+    const wsUrl = buildOpenAiRealtimeUrl(cfg);
+    const headers = {
+      ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}),
+      'OpenAI-Beta': 'realtime=v1'
+    };
+
+    this.ws = new WebSocketImpl(wsUrl, {
+      headers,
+      handshakeTimeout: HANDSHAKE_TIMEOUT_MS
+    });
+
+    attachUnexpectedResponseHandler(this.ws, (err) => {
+      if (!err.requestId) err.requestId = this.requestId;
+      this.fail(err);
+    });
+
+    this.ws.on('upgrade', (res) => {
+      const id = res?.headers?.['x-request-id'] || res?.headers?.['x-dashscope-request-id'];
+      if (id) this.requestId = String(id);
+    });
+
+    this.ws.on('open', () => {
+      if (this.aborted || this.closed) return;
+      try {
+        this.ws.send(JSON.stringify(buildOpenAiRealtimeInitEvent(cfg, this.language)));
+      } catch (e) {
+        this.fail(e);
+      }
+    });
+
+    this.ws.on('message', (data, isBinary) => {
+      if (this.aborted || this.closed || isBinary) return;
+      let ev;
+      try { ev = JSON.parse(data.toString('utf8')); } catch { return; }
+      const kind = ev?.type;
+      if (!kind) return;
+      if (ev?.session?.id && !this.requestId) this.requestId = String(ev.session.id);
+
+      if (
+        kind === 'session.created' ||
+        kind === 'session.updated' ||
+        kind === 'transcription_session.created' ||
+        kind === 'transcription_session.updated'
+      ) {
+        if (!this.started) {
+          this.started = true;
+          this.cb.onReady?.({ requestId: this.requestId });
+          for (const audio of this.pendingB64) {
+            if (this.ws.readyState === 1) {
+              this.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio }));
+            }
+          }
+          this.pendingB64 = [];
+        }
+        return;
+      }
+
+      if (kind === 'conversation.item.input_audio_transcription.delta') {
+        const d = String(ev.delta || '');
+        if (d) {
+          this.partialAccum += d;
+          this.cb.onPartial?.(this.partialAccum.trim());
+        }
+        return;
+      }
+
+      if (kind === 'conversation.item.input_audio_transcription.text') {
+        // Aliyun Qwen3-ASR interim event
+        const combined = `${ev.text || ''}${ev.stash || ''}`.trim();
+        if (combined) {
+          this.partialAccum = combined;
+          this.cb.onPartial?.(combined);
+        }
+        return;
+      }
+
+      if (kind === 'conversation.item.input_audio_transcription.completed') {
+        const text = String(ev.transcript || this.partialAccum || '').trim();
+        this.partialAccum = '';
+        if (text) {
+          this.cb.onSentence?.({ text, beginMs: 0, endMs: 0 });
+        }
+        if (this.closing) {
+          this.closed = true;
+          this.settleFinish();
+        }
+        return;
+      }
+
+      if (kind === 'session.finished') {
+        this.flushTailOnClose();
+        this.closed = true;
+        this.settleFinish();
+        try { this.ws.close(); } catch {}
+        return;
+      }
+
+      if (kind === 'error' || kind === 'conversation.item.input_audio_transcription.failed') {
+        const eObj = ev.error || {};
+        const err = new Error(eObj.message || 'OpenAI Realtime transcription error');
+        err.rawCode = String(eObj.code || eObj.type || 'REALTIME_ERROR');
+        err.requestId = this.requestId;
+        this.fail(err);
+      }
+    });
+
+    this.ws.on('error', (e) => {
+      if (!e.requestId) e.requestId = this.requestId;
+      this.fail(e);
+    });
+
+    this.ws.on('close', (code, reason) => {
+      if (this.aborted || this.closed) return;
+      if (this.closing) {
+        this.flushTailOnClose();
+        this.closed = true;
+        this.settleFinish();
+        return;
+      }
+      if (!this.started) {
+        const err = new Error((reason ? reason.toString('utf8') : '') || `WebSocket closed (code ${code})`);
+        err.rawCode = `WS_${code}`;
+        err.requestId = this.requestId;
+        this.fail(err);
+      } else {
+        this.closed = true;
+        this.settleFinish();
+      }
+    });
+  }
+
+  flushTailOnClose() {
+    if (this.aborted) return;
+    const t = this.partialAccum.trim();
+    if (t) {
+      this.partialAccum = '';
+      this.cb.onSentence?.({ text: t, beginMs: 0, endMs: 0 });
+    }
+  }
+
+  fail(err) {
+    if (this.aborted || this.closed) return;
+    this.closed = true;
+    this.settleFinish();
+    try { this.ws.terminate(); } catch {}
+    const info = classifyRealtimeError(err, {
+      provider: 'openai-realtime',
+      apiKey: this.cfg.apiKey,
+      connected: this.started,
+      requestId: this.requestId
+    });
+    const detail = info.rawCode ? `[${info.rawCode}] ${info.messageZh}` : info.messageZh;
+    this.cb.onError?.(detail, info);
+  }
+
+  settleFinish() {
+    const r = this.finishResolve;
+    this.finishResolve = null;
+    r?.();
+  }
+
+  push(pcm) {
+    if (this.aborted || this.closed || this.closing || !pcm || pcm.length === 0) return;
+    const samples = this.targetRate === 16000 ? pcm : resampleF32Linear(pcm, 16000, this.targetRate);
+    const b64 = f32ToPcm16(samples).toString('base64');
+    if (this.started && this.ws.readyState === 1) {
+      this.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: b64 }));
+    } else {
+      this.pendingB64.push(b64);
+    }
+  }
+
+  cancel() {
+    if (this.aborted) return;
+    this.aborted = true;
+    this.closed = true;
+    this.pendingB64 = [];
+    this.settleFinish();
+    try { this.ws.terminate(); } catch {}
+  }
+
+  async close() {
+    if (this.aborted || this.closed || this.closing) return;
+    this.closing = true;
+    if (this.ws.readyState !== 1 || !this.started) {
+      this.closed = true;
+      try { this.ws.terminate(); } catch {}
+      return;
+    }
+    const finished = new Promise((res) => { this.finishResolve = res; });
+    try {
+      this.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+      if (this.isDash) {
+        this.ws.send(JSON.stringify({ type: 'session.finish' }));
+      }
+    } catch {
+      this.closed = true;
+      this.settleFinish();
+      return;
+    }
+    const timeout = new Promise((res) => setTimeout(res, FINISH_TIMEOUT_MS).unref?.());
+    await Promise.race([finished, timeout]);
+    this.flushTailOnClose();
+    this.closed = true;
+    try { this.ws.terminate(); } catch {}
+  }
+}
+
+class OpenAiRealtimeEngine {
+  constructor(cfg, WebSocketImpl) {
+    this.cfg = cfg;
+    this.WebSocketImpl = WebSocketImpl;
+    this.provider = 'openai-realtime';
+    this.ep = 'cloud-rt';
+    this.streaming = true;
+    this.loadMs = 0;
+    this.warmMs = 0;
+    this.lidAvailable = false;
+  }
+
+  static async load(cfg, { WebSocket } = {}) {
+    const check = validateRealtimeConfig({ ...cfg, provider: 'openai-realtime' });
+    if (!check.ok) throw makeStructuredError(check);
+    return new OpenAiRealtimeEngine(check.normalized, WebSocket || require('ws'));
+  }
+
+  async warmup() { return 0; }
+
+  openSession(cb, opts = {}) {
+    return new OpenAiRealtimeSession(this.cfg, cb, opts.language, this.WebSocketImpl);
+  }
+}
+
+// =============================================================================
+// 4. Deepgram Live Streaming WS Adapter (Nova-3 / Nova-2 / Flux)
+// =============================================================================
+
+function buildDeepgramUrl(cfg, language) {
+  const raw = String(cfg?.baseUrl || 'wss://api.deepgram.com/v1/listen').trim();
+  const model = String(cfg?.model || 'nova-3').trim();
+  try {
+    const u = new URL(raw);
+    if (!u.searchParams.has('model')) u.searchParams.set('model', model);
+    if (!u.searchParams.has('encoding')) u.searchParams.set('encoding', 'linear16');
+    if (!u.searchParams.has('sample_rate')) u.searchParams.set('sample_rate', '16000');
+    if (!u.searchParams.has('channels')) u.searchParams.set('channels', '1');
+    if (!u.searchParams.has('interim_results')) u.searchParams.set('interim_results', 'true');
+    if (!u.searchParams.has('smart_format')) u.searchParams.set('smart_format', 'true');
+    if (!u.searchParams.has('punctuate')) u.searchParams.set('punctuate', 'true');
+    if (!u.searchParams.has('endpointing')) u.searchParams.set('endpointing', '300');
+    if (!u.searchParams.has('language')) {
+      if (language === 'english') u.searchParams.set('language', 'en');
+      else if (language === 'chinese') u.searchParams.set('language', 'zh-CN');
+      else if (/nova-3/i.test(model)) u.searchParams.set('language', 'multi');
+      else u.searchParams.set('language', 'zh-CN');
+    }
+    return u.toString();
+  } catch {
+    return raw;
+  }
+}
+
+class DeepgramRtSession {
+  constructor(cfg, cb, language, WebSocketImpl) {
+    this.cfg = cfg;
+    this.cb = cb;
+    this.requestId = '';
+    this.started = false;
+    this.closing = false;
+    this.aborted = false;
+    this.closed = false;
+    this.pending = [];
+    this.finalParts = [];
+    this.lastInterim = '';
+    this.finishResolve = null;
+
+    const wsUrl = buildDeepgramUrl(cfg, language);
+    this.ws = new WebSocketImpl(wsUrl, {
+      headers: cfg.apiKey ? { Authorization: `Token ${cfg.apiKey}` } : {},
+      handshakeTimeout: HANDSHAKE_TIMEOUT_MS
+    });
+
+    attachUnexpectedResponseHandler(this.ws, (err) => {
+      if (!err.requestId) err.requestId = this.requestId;
+      this.fail(err);
+    });
+
+    this.ws.on('upgrade', (res) => {
+      const id = res?.headers?.['dg-request-id'] || res?.headers?.['x-request-id'];
+      if (id) this.requestId = String(id);
+    });
+
+    this.ws.on('open', () => {
+      if (this.aborted || this.closed) return;
+      this.started = true;
+      this.cb.onReady?.({ requestId: this.requestId });
+      for (const b of this.pending) {
+        if (this.ws.readyState === 1) this.ws.send(b);
+      }
+      this.pending = [];
+    });
+
+    this.ws.on('message', (data, isBinary) => {
+      if (this.aborted || this.closed || isBinary) return;
+      let ev;
+      try { ev = JSON.parse(data.toString('utf8')); } catch { return; }
+      if (ev?.metadata?.request_id && !this.requestId) {
+        this.requestId = String(ev.metadata.request_id);
+      }
+      if (ev?.type === 'Error' || ev?.err_code) {
+        const err = new Error(ev.description || ev.err_msg || ev.message || 'Deepgram stream error');
+        err.rawCode = String(ev.err_code || ev.type || 'DEEPGRAM_ERROR');
+        err.requestId = this.requestId;
+        this.fail(err);
+        return;
+      }
+      if (ev?.type === 'Results') {
+        const alt = ev.channel?.alternatives?.[0];
+        const txt = String(alt?.transcript || '').trim();
+        const beginMs = Math.round((Number(ev.start) || 0) * 1000);
+        const endMs = Math.round(((Number(ev.start) || 0) + (Number(ev.duration) || 0)) * 1000);
+
+        if (ev.is_final) {
+          if (txt) this.finalParts.push(txt);
+          this.lastInterim = '';
+          if (ev.speech_final || ev.from_finalize) {
+            const full = this.finalParts.join(' ').trim();
+            this.finalParts = [];
+            if (full) this.cb.onSentence?.({ text: full, beginMs, endMs });
+            if (ev.from_finalize && this.closing) {
+              this.closed = true;
+              this.settleFinish();
+            }
+          } else if (this.finalParts.length > 0) {
+            this.cb.onPartial?.(this.finalParts.join(' ').trim());
+          }
+        } else if (txt) {
+          this.lastInterim = txt;
+          const preview = [...this.finalParts, txt].join(' ').trim();
+          if (preview) this.cb.onPartial?.(preview);
+        }
+        return;
+      }
+      if (ev?.type === 'Metadata' && this.closing) {
+        this.flushTailOnClose();
+        this.closed = true;
+        this.settleFinish();
+      }
+    });
+
+    this.ws.on('error', (e) => {
+      if (!e.requestId) e.requestId = this.requestId;
+      this.fail(e);
+    });
+
+    this.ws.on('close', (code, reason) => {
+      if (this.aborted || this.closed) return;
+      if (this.closing) {
+        this.flushTailOnClose();
+        this.closed = true;
+        this.settleFinish();
+        return;
+      }
+      if (!this.started) {
+        const err = new Error((reason ? reason.toString('utf8') : '') || `WebSocket closed (code ${code})`);
+        err.rawCode = `WS_${code}`;
+        err.requestId = this.requestId;
+        this.fail(err);
+      } else {
+        this.flushTailOnClose();
+        this.closed = true;
+        this.settleFinish();
+      }
+    });
+  }
+
+  flushTailOnClose() {
+    if (this.aborted) return;
+    const text = [...this.finalParts, this.lastInterim].filter(Boolean).join(' ').trim();
+    this.finalParts = [];
+    this.lastInterim = '';
+    if (text) this.cb.onSentence?.({ text, beginMs: 0, endMs: 0 });
+  }
+
+  fail(err) {
+    if (this.aborted || this.closed) return;
+    this.closed = true;
+    this.settleFinish();
+    try { this.ws.terminate(); } catch {}
+    const info = classifyRealtimeError(err, {
+      provider: 'deepgram',
+      apiKey: this.cfg.apiKey,
+      connected: this.started,
+      requestId: this.requestId
+    });
+    const detail = info.rawCode ? `[${info.rawCode}] ${info.messageZh}` : info.messageZh;
+    this.cb.onError?.(detail, info);
+  }
+
+  settleFinish() {
+    const r = this.finishResolve;
+    this.finishResolve = null;
+    r?.();
+  }
+
+  push(pcm) {
+    if (this.aborted || this.closed || this.closing || !pcm || pcm.length === 0) return;
+    const buf = f32ToPcm16(pcm);
+    if (this.started && this.ws.readyState === 1) this.ws.send(buf);
+    else this.pending.push(buf);
+  }
+
+  cancel() {
+    if (this.aborted) return;
+    this.aborted = true;
+    this.closed = true;
+    this.pending = [];
+    this.settleFinish();
+    try { this.ws.terminate(); } catch {}
+  }
+
+  async close() {
+    if (this.aborted || this.closed || this.closing) return;
+    this.closing = true;
+    if (this.ws.readyState !== 1 || !this.started) {
+      this.closed = true;
+      try { this.ws.terminate(); } catch {}
+      return;
+    }
+    const finished = new Promise((res) => { this.finishResolve = res; });
+    try {
+      this.ws.send(JSON.stringify({ type: 'Finalize' }));
+      this.ws.send(JSON.stringify({ type: 'CloseStream' }));
+    } catch {
+      this.closed = true;
+      this.settleFinish();
+      return;
+    }
+    const timeout = new Promise((res) => setTimeout(res, FINISH_TIMEOUT_MS).unref?.());
+    await Promise.race([finished, timeout]);
+    this.flushTailOnClose();
+    this.closed = true;
+    try { this.ws.terminate(); } catch {}
+  }
+}
+
+class DeepgramRealtimeEngine {
+  constructor(cfg, WebSocketImpl) {
+    this.cfg = cfg;
+    this.WebSocketImpl = WebSocketImpl;
+    this.provider = 'deepgram';
+    this.ep = 'cloud-rt';
+    this.streaming = true;
+    this.loadMs = 0;
+    this.warmMs = 0;
+    this.lidAvailable = false;
+  }
+
+  static async load(cfg, { WebSocket } = {}) {
+    const check = validateRealtimeConfig({ ...cfg, provider: 'deepgram' });
+    if (!check.ok) throw makeStructuredError(check);
+    return new DeepgramRealtimeEngine(check.normalized, WebSocket || require('ws'));
+  }
+
+  async warmup() { return 0; }
+
+  openSession(cb, opts = {}) {
+    return new DeepgramRtSession(this.cfg, cb, opts.language, this.WebSocketImpl);
+  }
+}
+
+// =============================================================================
+// 5. Tencent Cloud Real-time ASR v2 WS Adapter (HMAC-SHA1 Signed Query)
+// =============================================================================
+
+function buildTencentSignedUrl(cfg, opts = {}) {
+  const nowSec = Number.isFinite(Number(opts.timestampSec))
+    ? Math.floor(Number(opts.timestampSec))
+    : Math.floor(Date.now() / 1000);
+  const nonce = opts.nonce !== undefined ? String(opts.nonce) : String(Math.floor(100000000 + Math.random() * 899999999));
+  const voiceId = String(opts.voiceId || crypto.randomUUID().replace(/-/g, '').slice(0, 32));
+  const baseRaw = String(cfg.baseUrl || 'wss://asr.cloud.tencent.com/asr/v2').trim().replace(/\/+$/, '');
+  const protoMatch = baseRaw.match(/^(wss?:)\/\//i);
+  const proto = protoMatch ? protoMatch[1].toLowerCase() : 'wss:';
+  let hostAndPath = baseRaw.replace(/^wss?:\/\//i, '').split('?')[0];
+  const appIdStr = String(cfg.appId || '').trim();
+  if (appIdStr && !hostAndPath.endsWith(`/${appIdStr}`)) {
+    hostAndPath = `${hostAndPath}/${appIdStr}`;
+  }
+
+  let engineModel = String(cfg.model || '16k_zh').trim() || '16k_zh';
+  if (opts.language === 'english' && engineModel === '16k_zh') {
+    engineModel = '16k_en';
+  }
+
+  const params = {
+    engine_model_type: engineModel,
+    expired: String(nowSec + 86400),
+    needvad: '1',
+    nonce,
+    secretid: String(cfg.appKey || '').trim(),
+    timestamp: String(nowSec),
+    voice_format: '1',
+    voice_id: voiceId
+  };
+
+  const sortedQuery = Object.keys(params)
+    .sort()
+    .map((k) => `${k}=${params[k]}`)
+    .join('&');
+  const signOrigin = `${hostAndPath}?${sortedQuery}`;
+  const signature = crypto
+    .createHmac('sha1', String(cfg.apiKey || ''))
+    .update(signOrigin, 'utf8')
+    .digest('base64');
+
+  return {
+    url: `${proto}//${signOrigin}&signature=${encodeURIComponent(signature)}`,
+    voiceId,
+    signOrigin,
+    signature
+  };
+}
+
+class TencentRtSession {
+  constructor(cfg, cb, language, WebSocketImpl) {
+    this.cfg = cfg;
+    this.cb = cb;
+    const signed = buildTencentSignedUrl(cfg, { language });
+    this.requestId = signed.voiceId;
+    this.started = false;
+    this.closing = false;
+    this.aborted = false;
+    this.closed = false;
+    this.pendingBytes = [];
+    this.pendingByteLen = 0;
+    this.lastPartial = '';
+    this.finishResolve = null;
+
+    this.ws = new WebSocketImpl(signed.url, { handshakeTimeout: HANDSHAKE_TIMEOUT_MS });
+
+    attachUnexpectedResponseHandler(this.ws, (err) => {
+      if (!err.requestId) err.requestId = this.requestId;
+      this.fail(err);
+    });
+
+    this.ws.on('message', (data, isBinary) => {
+      if (this.aborted || this.closed || isBinary) return;
+      let ev;
+      try { ev = JSON.parse(data.toString('utf8')); } catch { return; }
+      if (ev?.voice_id) this.requestId = String(ev.voice_id);
+
+      if (typeof ev?.code === 'number' && ev.code !== 0) {
+        const err = new Error(ev.message || `Tencent ASR error ${ev.code}`);
+        err.rawCode = String(ev.code);
+        err.requestId = this.requestId;
+        this.fail(err);
+        return;
+      }
+
+      if (!this.started && ev?.code === 0) {
+        this.started = true;
+        this.cb.onReady?.({ requestId: this.requestId });
+        this.flushPendingAudio(false);
+      }
+
+      const r = ev?.result;
+      if (r && typeof r === 'object') {
+        const text = String(r.voice_text_str || '').trim();
+        const sliceType = Number(r.slice_type);
+        const beginMs = Number.isFinite(Number(r.start_time)) ? Number(r.start_time) : 0;
+        const endMs = Number.isFinite(Number(r.end_time)) ? Number(r.end_time) : beginMs;
+        if (sliceType === 2) {
+          this.lastPartial = '';
+          if (text) this.cb.onSentence?.({ text, beginMs, endMs });
+        } else if (text) {
+          this.lastPartial = text;
+          this.cb.onPartial?.(text);
+        }
+      }
+
+      if (ev?.final === 1) {
+        this.flushTailOnClose();
+        this.closed = true;
+        this.settleFinish();
+        try { this.ws.close(); } catch {}
+      }
+    });
+
+    this.ws.on('error', (e) => {
+      if (!e.requestId) e.requestId = this.requestId;
+      this.fail(e);
+    });
+
+    this.ws.on('close', (code, reason) => {
+      if (this.aborted || this.closed) return;
+      if (this.closing) {
+        this.flushTailOnClose();
+        this.closed = true;
+        this.settleFinish();
+        return;
+      }
+      if (!this.started) {
+        const err = new Error((reason ? reason.toString('utf8') : '') || `WebSocket closed (code ${code})`);
+        err.rawCode = `WS_${code}`;
+        err.requestId = this.requestId;
+        this.fail(err);
+      } else {
+        this.closed = true;
+        this.settleFinish();
+      }
+    });
+  }
+
+  flushTailOnClose() {
+    if (this.aborted) return;
+    const t = this.lastPartial.trim();
+    if (t) {
+      this.lastPartial = '';
+      this.cb.onSentence?.({ text: t, beginMs: 0, endMs: 0 });
+    }
+  }
+
+  fail(err) {
+    if (this.aborted || this.closed) return;
+    this.closed = true;
+    this.settleFinish();
+    try { this.ws.terminate(); } catch {}
+    const info = classifyRealtimeError(err, {
+      provider: 'tencent',
+      apiKey: this.cfg.apiKey,
+      appKey: this.cfg.appKey,
+      connected: this.started,
+      requestId: this.requestId
+    });
+    const detail = info.rawCode ? `[${info.rawCode}] ${info.messageZh}` : info.messageZh;
+    this.cb.onError?.(detail, info);
+  }
+
+  settleFinish() {
+    const r = this.finishResolve;
+    this.finishResolve = null;
+    r?.();
+  }
+
+  flushPendingAudio(forceSmall = false) {
+    if (this.aborted || this.closed || !this.started || this.ws.readyState !== 1) return;
+    if (this.pendingByteLen === 0) return;
+    const combined = this.pendingBytes.length === 1 ? this.pendingBytes[0] : Buffer.concat(this.pendingBytes, this.pendingByteLen);
+    this.pendingBytes = [];
+    this.pendingByteLen = 0;
+
+    let offset = 0;
+    while (combined.length - offset >= PCM_CHUNK_BYTES) {
+      this.ws.send(combined.subarray(offset, offset + PCM_CHUNK_BYTES));
+      offset += PCM_CHUNK_BYTES;
+    }
+    const rem = combined.subarray(offset);
+    if (rem.length > 0) {
+      if (forceSmall) this.ws.send(rem);
+      else {
+        this.pendingBytes.push(Buffer.from(rem));
+        this.pendingByteLen = rem.length;
+      }
+    }
+  }
+
+  push(pcm) {
+    if (this.aborted || this.closed || this.closing || !pcm || pcm.length === 0) return;
+    const buf = f32ToPcm16(pcm);
+    this.pendingBytes.push(buf);
+    this.pendingByteLen += buf.length;
+    if (this.started && this.ws.readyState === 1 && this.pendingByteLen >= PCM_CHUNK_BYTES) {
+      this.flushPendingAudio(false);
+    }
+  }
+
+  cancel() {
+    if (this.aborted) return;
+    this.aborted = true;
+    this.closed = true;
+    this.pendingBytes = [];
+    this.pendingByteLen = 0;
+    this.settleFinish();
+    try { this.ws.terminate(); } catch {}
+  }
+
+  async close() {
+    if (this.aborted || this.closed || this.closing) return;
+    this.closing = true;
+    if (this.ws.readyState !== 1 || !this.started) {
+      this.closed = true;
+      try { this.ws.terminate(); } catch {}
+      return;
+    }
+    this.flushPendingAudio(true);
+    const finished = new Promise((res) => { this.finishResolve = res; });
+    try { this.ws.send(JSON.stringify({ type: 'end' })); } catch {
+      this.closed = true;
+      this.settleFinish();
+      return;
+    }
+    const timeout = new Promise((res) => setTimeout(res, FINISH_TIMEOUT_MS).unref?.());
+    await Promise.race([finished, timeout]);
+    this.flushTailOnClose();
+    this.closed = true;
+    try { this.ws.terminate(); } catch {}
+  }
+}
+
+class TencentRealtimeEngine {
+  constructor(cfg, WebSocketImpl) {
+    this.cfg = cfg;
+    this.WebSocketImpl = WebSocketImpl;
+    this.provider = 'tencent';
+    this.ep = 'cloud-rt';
+    this.streaming = true;
+    this.loadMs = 0;
+    this.warmMs = 0;
+    this.lidAvailable = false;
+  }
+
+  static async load(cfg, { WebSocket } = {}) {
+    const check = validateRealtimeConfig({ ...cfg, provider: 'tencent' });
+    if (!check.ok) throw makeStructuredError(check);
+    return new TencentRealtimeEngine(check.normalized, WebSocket || require('ws'));
+  }
+
+  async warmup() { return 0; }
+
+  openSession(cb, opts = {}) {
+    return new TencentRtSession(this.cfg, cb, opts.language, this.WebSocketImpl);
+  }
+}
+
+// =============================================================================
+// 6. iFlytek RTASR Real-time Transcription WS Adapter (MD5 Hex + HMAC-SHA1)
+// =============================================================================
+
+function buildXfyunSignedUrl(cfg, opts = {}) {
+  const ts = String(
+    Number.isFinite(Number(opts.timestampSec))
+      ? Math.floor(Number(opts.timestampSec))
+      : Math.floor(Date.now() / 1000)
+  );
+  const appId = String(cfg.appId || '').trim();
+  const apiKey = String(cfg.apiKey || '').trim();
+  const md5Hex = crypto.createHash('md5').update(appId + ts, 'utf8').digest('hex');
+  const signa = crypto.createHmac('sha1', apiKey).update(md5Hex, 'utf8').digest('base64');
+
+  const baseRaw = String(cfg.baseUrl || 'wss://rtasr.xfyun.cn/v1/ws').trim().split('?')[0];
+  const qs = new URLSearchParams();
+  qs.set('appid', appId);
+  qs.set('ts', ts);
+  qs.set('signa', signa);
+  const langParam = String(cfg.model || '').trim();
+  if (opts.language === 'english' || langParam === 'en') {
+    qs.set('lang', 'en');
+  } else if (langParam && langParam !== 'cn') {
+    qs.set('lang', langParam);
+  }
+  return {
+    url: `${baseRaw}?${qs.toString()}`,
+    ts,
+    md5Hex,
+    signa
+  };
+}
+
+function extractXfyunResultText(parsedData) {
+  const rt = parsedData?.cn?.st?.rt;
+  if (!Array.isArray(rt)) return '';
+  let out = '';
+  for (const r of rt) {
+    if (!Array.isArray(r?.ws)) continue;
+    for (const w of r.ws) {
+      if (!Array.isArray(w?.cw)) continue;
+      for (const cw of w.cw) {
+        if (cw?.w) out += String(cw.w);
+      }
+    }
+  }
+  return out.trim();
+}
+
+class XfyunRtSession {
+  constructor(cfg, cb, language, WebSocketImpl) {
+    this.cfg = cfg;
+    this.cb = cb;
+    const signed = buildXfyunSignedUrl(cfg, { language });
+    this.requestId = '';
+    this.started = false;
+    this.closing = false;
+    this.aborted = false;
+    this.closed = false;
+    this.pendingBytes = [];
+    this.pendingByteLen = 0;
+    this.lastPartial = '';
+    this.finishResolve = null;
+
+    this.ws = new WebSocketImpl(signed.url, { handshakeTimeout: HANDSHAKE_TIMEOUT_MS });
+
+    attachUnexpectedResponseHandler(this.ws, (err) => {
+      if (!err.requestId) err.requestId = this.requestId;
+      this.fail(err);
+    });
+
+    this.ws.on('message', (data, isBinary) => {
+      if (this.aborted || this.closed || isBinary) return;
+      let ev;
+      try { ev = JSON.parse(data.toString('utf8')); } catch { return; }
+      const action = ev?.action;
+      const codeStr = String(ev?.code ?? '0');
+
+      if (action === 'error' || codeStr !== '0') {
+        const err = new Error(ev?.desc || `iFlytek RTASR error ${codeStr}`);
+        err.rawCode = codeStr;
+        err.requestId = this.requestId || String(ev?.sid || '');
+        this.fail(err);
+        return;
+      }
+
+      if (action === 'started') {
+        if (ev?.data) this.requestId = String(ev.data);
+        if (!this.started) {
+          this.started = true;
+          this.cb.onReady?.({ requestId: this.requestId });
+          this.flushPendingAudio(false);
+        }
+        return;
+      }
+
+      if (action === 'result' && ev?.data) {
+        let payload;
+        try { payload = typeof ev.data === 'string' ? JSON.parse(ev.data) : ev.data; } catch { return; }
+        const text = extractXfyunResultText(payload);
+        const stType = String(payload?.cn?.st?.type ?? '');
+        const beginMs = Number.isFinite(Number(payload?.cn?.st?.bg)) ? Number(payload.cn.st.bg) : 0;
+        const endMs = Number.isFinite(Number(payload?.cn?.st?.ed)) ? Number(payload.cn.st.ed) : beginMs;
+        if (stType === '0') {
+          this.lastPartial = '';
+          if (text) this.cb.onSentence?.({ text, beginMs, endMs });
+        } else if (text) {
+          this.lastPartial = text;
+          this.cb.onPartial?.(text);
+        }
+        if (payload?.ls === true) {
+          this.flushTailOnClose();
+          this.closed = true;
+          this.settleFinish();
+          try { this.ws.close(); } catch {}
+        }
+      }
+    });
+
+    this.ws.on('error', (e) => {
+      if (!e.requestId) e.requestId = this.requestId;
+      this.fail(e);
+    });
+
+    this.ws.on('close', (code, reason) => {
+      if (this.aborted || this.closed) return;
+      if (this.closing) {
+        this.flushTailOnClose();
+        this.closed = true;
+        this.settleFinish();
+        return;
+      }
+      if (!this.started) {
+        const err = new Error((reason ? reason.toString('utf8') : '') || `WebSocket closed (code ${code})`);
+        err.rawCode = `WS_${code}`;
+        err.requestId = this.requestId;
+        this.fail(err);
+      } else {
+        this.closed = true;
+        this.settleFinish();
+      }
+    });
+  }
+
+  flushTailOnClose() {
+    if (this.aborted) return;
+    const t = this.lastPartial.trim();
+    if (t) {
+      this.lastPartial = '';
+      this.cb.onSentence?.({ text: t, beginMs: 0, endMs: 0 });
+    }
+  }
+
+  fail(err) {
+    if (this.aborted || this.closed) return;
+    this.closed = true;
+    this.settleFinish();
+    try { this.ws.terminate(); } catch {}
+    const info = classifyRealtimeError(err, {
+      provider: 'xfyun',
+      apiKey: this.cfg.apiKey,
+      connected: this.started,
+      requestId: this.requestId
+    });
+    const detail = info.rawCode ? `[${info.rawCode}] ${info.messageZh}` : info.messageZh;
+    this.cb.onError?.(detail, info);
+  }
+
+  settleFinish() {
+    const r = this.finishResolve;
+    this.finishResolve = null;
+    r?.();
+  }
+
+  flushPendingAudio(forceSmall = false) {
+    if (this.aborted || this.closed || !this.started || this.ws.readyState !== 1) return;
+    if (this.pendingByteLen === 0) return;
+    const combined = this.pendingBytes.length === 1 ? this.pendingBytes[0] : Buffer.concat(this.pendingBytes, this.pendingByteLen);
+    this.pendingBytes = [];
+    this.pendingByteLen = 0;
+
+    let offset = 0;
+    while (combined.length - offset >= XFYUN_CHUNK_BYTES) {
+      this.ws.send(combined.subarray(offset, offset + XFYUN_CHUNK_BYTES));
+      offset += XFYUN_CHUNK_BYTES;
+    }
+    const rem = combined.subarray(offset);
+    if (rem.length > 0) {
+      if (forceSmall) this.ws.send(rem);
+      else {
+        this.pendingBytes.push(Buffer.from(rem));
+        this.pendingByteLen = rem.length;
+      }
+    }
+  }
+
+  push(pcm) {
+    if (this.aborted || this.closed || this.closing || !pcm || pcm.length === 0) return;
+    const buf = f32ToPcm16(pcm);
+    this.pendingBytes.push(buf);
+    this.pendingByteLen += buf.length;
+    if (this.started && this.ws.readyState === 1 && this.pendingByteLen >= XFYUN_CHUNK_BYTES) {
+      this.flushPendingAudio(false);
+    }
+  }
+
+  cancel() {
+    if (this.aborted) return;
+    this.aborted = true;
+    this.closed = true;
+    this.pendingBytes = [];
+    this.pendingByteLen = 0;
+    this.settleFinish();
+    try { this.ws.terminate(); } catch {}
+  }
+
+  async close() {
+    if (this.aborted || this.closed || this.closing) return;
+    this.closing = true;
+    if (this.ws.readyState !== 1 || !this.started) {
+      this.closed = true;
+      try { this.ws.terminate(); } catch {}
+      return;
+    }
+    this.flushPendingAudio(true);
+    const finished = new Promise((res) => { this.finishResolve = res; });
+    try { this.ws.send(JSON.stringify({ end: true })); } catch {
+      this.closed = true;
+      this.settleFinish();
+      return;
+    }
+    const timeout = new Promise((res) => setTimeout(res, FINISH_TIMEOUT_MS).unref?.());
+    await Promise.race([finished, timeout]);
+    this.flushTailOnClose();
+    this.closed = true;
+    try { this.ws.terminate(); } catch {}
+  }
+}
+
+class XfyunRealtimeEngine {
+  constructor(cfg, WebSocketImpl) {
+    this.cfg = cfg;
+    this.WebSocketImpl = WebSocketImpl;
+    this.provider = 'xfyun';
+    this.ep = 'cloud-rt';
+    this.streaming = true;
+    this.loadMs = 0;
+    this.warmMs = 0;
+    this.lidAvailable = false;
+  }
+
+  static async load(cfg, { WebSocket } = {}) {
+    const check = validateRealtimeConfig({ ...cfg, provider: 'xfyun' });
+    if (!check.ok) throw makeStructuredError(check);
+    return new XfyunRealtimeEngine(check.normalized, WebSocket || require('ws'));
+  }
+
+  async warmup() { return 0; }
+
+  openSession(cb, opts = {}) {
+    return new XfyunRtSession(this.cfg, cb, opts.language, this.WebSocketImpl);
+  }
+}
+
+// =============================================================================
+// 7. Segmented HTTP ASR Engine (OpenAI /audio/transcriptions + Legacy Chat Audio)
+// =============================================================================
+
+function resolveTranscriptionsUrl(baseUrl) {
+  const clean = String(baseUrl || '').trim().replace(/\/+$/, '');
+  if (/\/audio\/transcriptions$/i.test(clean)) return clean;
+  return `${clean}/audio/transcriptions`;
+}
+
+function resolveChatAudioUrl(baseUrl) {
+  const clean = String(baseUrl || '').trim().replace(/\/+$/, '');
+  if (/\/chat\/completions$/i.test(clean)) return clean;
+  return `${clean}/chat/completions`;
+}
+
+class CloudSegmentAsrEngine {
+  constructor(cfg, fetchImpl = globalThis.fetch) {
+    this.cfg = cfg;
+    this.fetchImpl = fetchImpl;
+    this.protocol = inferSegmentProtocol(cfg);
+    this.ep = 'cloud';
+    this.loadMs = 0;
+    this.warmMs = 0;
+    this.lidAvailable = false;
+  }
+
+  static async load(cfg, { fetchImpl } = {}) {
+    const check = validateSegmentConfig(cfg);
+    if (!check.ok) throw makeStructuredError(check);
+    return new CloudSegmentAsrEngine(check.normalized, fetchImpl || globalThis.fetch);
+  }
+
+  async warmup() { return 0; }
+
+  async transcribe(pcm, language = 'auto', { signal } = {}) {
+    const t0 = Date.now();
+    const wav = encodeWav16kMono(pcm, 16000);
+    const headers = {};
+    if (this.cfg.apiKey) headers.Authorization = `Bearer ${this.cfg.apiKey}`;
+
+    if (this.protocol === 'openai-transcriptions') {
+      const url = resolveTranscriptionsUrl(this.cfg.baseUrl);
+      const form = new FormData();
+      form.append('file', new Blob([wav], { type: 'audio/wav' }), 'audio.wav');
+      form.append('model', this.cfg.model);
+      form.append('response_format', 'json');
+      const iso = languageIso639(language);
+      if (iso) form.append('language', iso);
+
+      const res = await this.fetchImpl(url, { method: 'POST', headers, body: form, signal });
+      const reqId = res.headers?.get?.('x-request-id') || res.headers?.get?.('x-tt-logid') || '';
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        const err = new Error(`HTTP ${res.status}: ${body.slice(0, 300)}`);
+        err.statusCode = res.status;
+        err.rawCode = `HTTP ${res.status}`;
+        err.requestId = reqId;
+        throw err;
+      }
+      const ctype = (res.headers?.get?.('content-type') || '').toLowerCase();
+      let text = '';
+      if (ctype.includes('application/json')) {
+        const j = await res.json();
+        text = String(j?.text ?? j?.transcript ?? '').trim();
+      } else {
+        const raw = await res.text();
+        try {
+          const j = JSON.parse(raw);
+          text = String(j?.text ?? j?.transcript ?? '').trim();
+        } catch {
+          text = raw.trim();
+        }
+      }
+      return { text, lang: undefined, inferMs: Date.now() - t0, requestId: reqId };
+    }
+
+    // Legacy chat/completions input_audio path
+    const url = resolveChatAudioUrl(this.cfg.baseUrl);
+    const res = await this.fetchImpl(url, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: this.cfg.model,
+        messages: [{ role: 'user', content: [{ type: 'input_audio', input_audio: { data: wav.toString('base64'), format: 'wav' } }] }],
+        stream: false
+      }),
+      signal
+    });
+    const reqId = res.headers?.get?.('x-request-id') || '';
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      const err = new Error(`HTTP ${res.status}: ${body.slice(0, 300)}`);
+      err.statusCode = res.status;
+      err.rawCode = `HTTP ${res.status}`;
+      err.requestId = reqId;
+      throw err;
+    }
+    const j = await res.json();
+    const text = String(j?.choices?.[0]?.message?.content ?? '').trim();
+    return { text, lang: undefined, inferMs: Date.now() - t0, requestId: reqId };
+  }
+}
+
 async function createRealtimeEngine(cfg, opts = {}) {
   const provider = inferRealtimeProvider(cfg);
-  if (provider === 'doubao') {
-    return DoubaoRealtimeEngine.load(cfg, opts);
+  switch (provider) {
+    case 'doubao':
+      return DoubaoRealtimeEngine.load(cfg, opts);
+    case 'openai-realtime':
+      return OpenAiRealtimeEngine.load(cfg, opts);
+    case 'deepgram':
+      return DeepgramRealtimeEngine.load(cfg, opts);
+    case 'tencent':
+      return TencentRealtimeEngine.load(cfg, opts);
+    case 'xfyun':
+      return XfyunRealtimeEngine.load(cfg, opts);
+    case 'dashscope':
+    default:
+      return DashScopeRealtimeEngine.load(cfg, opts);
   }
-  return DashScopeRealtimeEngine.load(cfg, opts);
+}
+
+async function createSegmentEngine(cfg, opts = {}) {
+  return CloudSegmentAsrEngine.load(cfg, opts);
 }
 
 // =============================================================================
@@ -1260,8 +2736,7 @@ async function testRealtimeTranscribe(cfg, pcmFloat32, opts = {}) {
 
     await readyPromise;
 
-    // Stream 16kHz Float32 PCM in 200ms (3200 samples) frames
-    const SAMPLES_PER_CHUNK = 3200;
+    const SAMPLES_PER_CHUNK = 3200; // 200ms @ 16kHz
     for (let off = 0; off < pcmFloat32.length; off += SAMPLES_PER_CHUNK) {
       if (runtimeErr || timedOut) break;
       session.push(pcmFloat32.subarray(off, Math.min(off + SAMPLES_PER_CHUNK, pcmFloat32.length)));
@@ -1291,7 +2766,7 @@ async function testRealtimeTranscribe(cfg, pcmFloat32, opts = {}) {
         messageZh: '已连接，试转写失败：服务端未返回最终识别文本',
         hintZh: partials.length > 0
           ? `仅收到临时片段（${partials[partials.length - 1]}）但未定稿，请检查模型配置或稍后重试。`
-          : '握手正常但未能识别测试样本，请确认 Resource ID / 模型支持中文或英文 16kHz PCM 语音。',
+          : '握手正常但未能识别测试样本，请确认模型/Resource ID 支持 16kHz PCM 中文或英文语音。',
         rawCode: 'EMPTY_TRANSCRIPT',
         requestId: reqId,
         retryable: true
@@ -1332,30 +2807,113 @@ async function testRealtimeTranscribe(cfg, pcmFloat32, opts = {}) {
   }
 }
 
+async function testSegmentTranscribe(cfg, pcmFloat32, opts = {}) {
+  const started = Date.now();
+  const protocol = inferSegmentProtocol(cfg);
+  const check = validateSegmentConfig({ ...cfg, protocol });
+  if (!check.ok) {
+    return {
+      ok: false,
+      mode: 'transcribe',
+      provider: protocol,
+      protocol,
+      connected: false,
+      stage: check.stage,
+      code: check.code,
+      latencyMs: Date.now() - started,
+      transcript: '',
+      messageZh: check.messageZh,
+      hintZh: check.hintZh,
+      rawCode: check.code,
+      requestId: '',
+      retryable: false
+    };
+  }
+  const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 15000;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  timer.unref?.();
+  try {
+    const engine = await createSegmentEngine(check.normalized, opts);
+    const r = await engine.transcribe(pcmFloat32, opts.language || 'chinese', { signal: ac.signal });
+    const transcript = String(r?.text || '').trim();
+    if (!transcript) {
+      return {
+        ok: false,
+        mode: 'transcribe',
+        provider: protocol,
+        protocol,
+        connected: true,
+        stage: 'transcribe',
+        code: 'NO_TRANSCRIPT',
+        latencyMs: Date.now() - started,
+        transcript: '',
+        messageZh: '接口已响应，但返回空转写文本',
+        hintZh: '请确认模型支持音频转录（如 SenseVoiceSmall / glm-asr / whisper-large-v3-turbo / gpt-4o-mini-transcribe）且协议选项匹配。',
+        rawCode: 'EMPTY_TRANSCRIPT',
+        requestId: r?.requestId || '',
+        retryable: true
+      };
+    }
+    return {
+      ok: true,
+      mode: 'transcribe',
+      provider: protocol,
+      protocol,
+      connected: true,
+      stage: 'done',
+      code: 'OK',
+      latencyMs: Date.now() - started,
+      transcript,
+      messageZh: `试转写成功：「${transcript}」`,
+      hintZh: `已通过 ${SEGMENT_PROTOCOLS[protocol]?.labelZh || protocol} 端到端验证通过。`,
+      rawCode: '',
+      requestId: r?.requestId || '',
+      retryable: false
+    };
+  } catch (e) {
+    const errObj = ac.signal.aborted ? Object.assign(new Error('HTTP segment ASR timed out'), { name: 'TimeoutError' }) : e;
+    const info = classifyRealtimeError(errObj, { ...check.normalized, provider: protocol, connected: false });
+    return {
+      ...info,
+      mode: 'transcribe',
+      protocol,
+      latencyMs: Date.now() - started,
+      transcript: ''
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // =============================================================================
-// Per-Provider Realtime Settings Normalization & Migration (DashScope / Doubao)
+// Per-Provider Realtime Settings Normalization & Migration (All 6 Protocols)
 // =============================================================================
 
 function emptyProfileFor(provider) {
-  if (provider === 'doubao') {
-    return {
-      baseUrl: REALTIME_PROVIDERS.doubao.defaultBaseUrl,
-      model: REALTIME_PROVIDERS.doubao.defaultModel,
-      resourceId: REALTIME_PROVIDERS.doubao.defaultResourceId,
-      authMode: 'api-key',
-      appKey: '',
-      apiKeyEnc: '',
-      apiKeyHint: undefined,
-      verification: undefined
-    };
-  }
-  return {
-    baseUrl: '',
-    model: '',
+  const meta = REALTIME_PROVIDERS[provider] || REALTIME_PROVIDERS.dashscope;
+  const base = {
+    baseUrl: provider === 'dashscope' ? '' : meta.defaultBaseUrl,
+    model: provider === 'dashscope' ? '' : meta.defaultModel,
     apiKeyEnc: '',
     apiKeyHint: undefined,
     verification: undefined
   };
+  if (provider === 'doubao') {
+    return {
+      ...base,
+      resourceId: meta.defaultResourceId || 'volc.seedasr.sauc.duration',
+      authMode: 'api-key',
+      appKey: ''
+    };
+  }
+  if (provider === 'tencent') {
+    return { ...base, appId: '', appKey: '' };
+  }
+  if (provider === 'xfyun') {
+    return { ...base, appId: '' };
+  }
+  return base;
 }
 
 function normalizeRealtimeSettings(rawRealtime = {}) {
@@ -1363,108 +2921,120 @@ function normalizeRealtimeSettings(rawRealtime = {}) {
   const activeProvider = inferRealtimeProvider(src);
   const existingProfiles = src.profiles && typeof src.profiles === 'object' ? src.profiles : {};
 
-  const dashscope = {
-    ...emptyProfileFor('dashscope'),
-    ...(existingProfiles.dashscope && typeof existingProfiles.dashscope === 'object' ? existingProfiles.dashscope : {})
-  };
-  const doubao = {
-    ...emptyProfileFor('doubao'),
-    ...(existingProfiles.doubao && typeof existingProfiles.doubao === 'object' ? existingProfiles.doubao : {})
-  };
-
-  // Migrate legacy flat top-level config into its inferred provider profile without losing credentials
-  const hasFlatData = Boolean(src.baseUrl || src.model || src.apiKeyEnc || src.resourceId);
-  if (hasFlatData) {
-    if (activeProvider === 'doubao' && !existingProfiles.doubao) {
-      if (src.baseUrl) doubao.baseUrl = src.baseUrl;
-      if (src.model) doubao.model = src.model;
-      if (src.resourceId) doubao.resourceId = src.resourceId;
-      if (src.authMode) doubao.authMode = src.authMode === 'app-access' ? 'app-access' : 'api-key';
-      if (src.appKey) doubao.appKey = src.appKey;
-      if (src.apiKeyEnc) doubao.apiKeyEnc = src.apiKeyEnc;
-      if (src.apiKeyHint) doubao.apiKeyHint = src.apiKeyHint;
-      if (src.verification) doubao.verification = src.verification;
-    } else if (activeProvider === 'dashscope' && !existingProfiles.dashscope) {
-      if (src.baseUrl) dashscope.baseUrl = src.baseUrl;
-      if (src.model) dashscope.model = src.model;
-      if (src.apiKeyEnc) dashscope.apiKeyEnc = src.apiKeyEnc;
-      if (src.apiKeyHint) dashscope.apiKeyHint = src.apiKeyHint;
-      if (src.verification) dashscope.verification = src.verification;
-    }
+  const profiles = {};
+  for (const pid of REALTIME_PROVIDER_IDS) {
+    profiles[pid] = {
+      ...emptyProfileFor(pid),
+      ...(existingProfiles[pid] && typeof existingProfiles[pid] === 'object' ? existingProfiles[pid] : {})
+    };
   }
 
-  const active = activeProvider === 'doubao' ? doubao : dashscope;
+  // Migrate legacy flat top-level config into its inferred provider profile without losing credentials
+  const hasFlatData = Boolean(src.baseUrl || src.model || src.apiKeyEnc || src.resourceId || src.appId);
+  if (hasFlatData && !existingProfiles[activeProvider]) {
+    const target = profiles[activeProvider];
+    if (src.baseUrl) target.baseUrl = src.baseUrl;
+    if (src.model) target.model = src.model;
+    if (src.resourceId && activeProvider === 'doubao') target.resourceId = src.resourceId;
+    if (src.authMode && activeProvider === 'doubao') target.authMode = src.authMode === 'app-access' ? 'app-access' : 'api-key';
+    if (src.appKey && (activeProvider === 'doubao' || activeProvider === 'tencent')) target.appKey = src.appKey;
+    if (src.appId && (activeProvider === 'tencent' || activeProvider === 'xfyun')) target.appId = src.appId;
+    if (src.apiKeyEnc) target.apiKeyEnc = src.apiKeyEnc;
+    if (src.apiKeyHint) target.apiKeyHint = src.apiKeyHint;
+    if (src.verification) target.verification = src.verification;
+  }
+
+  const active = profiles[activeProvider];
   return {
     provider: activeProvider,
     baseUrl: active.baseUrl || '',
     model: active.model || '',
     resourceId: activeProvider === 'doubao' ? (active.resourceId || '') : '',
     authMode: activeProvider === 'doubao' ? (active.authMode === 'app-access' ? 'app-access' : 'api-key') : 'api-key',
-    appKey: activeProvider === 'doubao' ? (active.appKey || '') : '',
+    appId: (activeProvider === 'tencent' || activeProvider === 'xfyun') ? (active.appId || '') : '',
+    appKey: (activeProvider === 'doubao' || activeProvider === 'tencent') ? (active.appKey || '') : '',
     apiKeyEnc: active.apiKeyEnc || '',
     apiKeyHint: active.apiKeyHint,
     verification: active.verification,
-    profiles: {
-      dashscope,
-      doubao
-    }
+    profiles
   };
 }
 
 function publicRealtimeSettings(rawRealtime = {}) {
   const norm = normalizeRealtimeSettings(rawRealtime);
-  const ds = norm.profiles.dashscope;
-  const db = norm.profiles.doubao;
+  const pubProfiles = {};
+  for (const pid of REALTIME_PROVIDER_IDS) {
+    const p = norm.profiles[pid];
+    pubProfiles[pid] = {
+      baseUrl: p.baseUrl || '',
+      model: p.model || '',
+      ...(pid === 'doubao' ? {
+        resourceId: p.resourceId || '',
+        authMode: p.authMode === 'app-access' ? 'app-access' : 'api-key',
+        appKey: p.appKey || ''
+      } : {}),
+      ...(pid === 'tencent' ? { appId: p.appId || '', appKey: p.appKey || '' } : {}),
+      ...(pid === 'xfyun' ? { appId: p.appId || '' } : {}),
+      apiKeySet: Boolean(p.apiKeyEnc),
+      apiKeyHint: p.apiKeyHint,
+      verification: p.verification
+    };
+  }
   return {
     provider: norm.provider,
     baseUrl: norm.baseUrl,
     model: norm.model,
     resourceId: norm.resourceId,
     authMode: norm.authMode,
+    appId: norm.appId,
     appKey: norm.appKey,
     apiKeySet: Boolean(norm.apiKeyEnc),
     apiKeyHint: norm.apiKeyHint,
     verification: norm.verification,
-    profiles: {
-      dashscope: {
-        baseUrl: ds.baseUrl || '',
-        model: ds.model || '',
-        apiKeySet: Boolean(ds.apiKeyEnc),
-        apiKeyHint: ds.apiKeyHint,
-        verification: ds.verification
-      },
-      doubao: {
-        baseUrl: db.baseUrl || '',
-        model: db.model || '',
-        resourceId: db.resourceId || '',
-        authMode: db.authMode === 'app-access' ? 'app-access' : 'api-key',
-        appKey: db.appKey || '',
-        apiKeySet: Boolean(db.apiKeyEnc),
-        apiKeyHint: db.apiKeyHint,
-        verification: db.verification
-      }
-    }
+    profiles: pubProfiles
   };
 }
 
 module.exports = {
+  REALTIME_PROVIDER_IDS,
   REALTIME_PROVIDERS,
+  SEGMENT_PROTOCOLS,
   DOUBAO_PROTO,
   inferRealtimeProvider,
+  inferSegmentProtocol,
+  isDashScopeRealtimeDialect,
   sanitizeDiagnosticText,
   validateRealtimeConfig,
+  validateSegmentConfig,
   classifyRealtimeError,
   f32ToPcm16,
+  resampleF32Linear,
+  encodeWav16kMono,
   encodeDoubaoFullClientRequest,
   encodeDoubaoAudioPacket,
   decodeDoubaoServerPacket,
   buildDoubaoHeaders,
   buildDoubaoInitPayload,
+  buildOpenAiRealtimeUrl,
+  buildOpenAiRealtimeInitEvent,
+  buildDeepgramUrl,
+  buildTencentSignedUrl,
+  buildXfyunSignedUrl,
+  extractXfyunResultText,
+  resolveTranscriptionsUrl,
+  resolveChatAudioUrl,
   DashScopeRealtimeEngine,
   DoubaoRealtimeEngine,
+  OpenAiRealtimeEngine,
+  DeepgramRealtimeEngine,
+  TencentRealtimeEngine,
+  XfyunRealtimeEngine,
+  CloudSegmentAsrEngine,
   createRealtimeEngine,
+  createSegmentEngine,
   testRealtimeConnection,
   testRealtimeTranscribe,
+  testSegmentTranscribe,
   normalizeRealtimeSettings,
   publicRealtimeSettings
 };

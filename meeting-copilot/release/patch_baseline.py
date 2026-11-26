@@ -202,6 +202,13 @@ def patch_main(raw: bytes) -> bytes:
             authMode: rrest.authMode,
             appKey: rrest.appKey
           } : {}),
+          ...(targetProvider === "tencent" ? {
+            appId: rrest.appId,
+            appKey: rrest.appKey
+          } : {}),
+          ...(targetProvider === "xfyun" ? {
+            appId: rrest.appId
+          } : {}),
           verification: rrest.verification
         });
         const nextProfile = { ...norm.profiles[targetProvider], ...profilePatch };
@@ -239,15 +246,30 @@ def patch_main(raw: bytes) -> bytes:
 
     text = replace_once(
         text,
-        '''        realtime: {
+        '''        cloud: {
+          baseUrl: d.asr.cloud?.baseUrl,
+          model: d.asr.cloud?.model,
+          apiKeySet: !!d.asr.cloud?.apiKeyEnc,
+          apiKeyHint: d.asr.cloud?.apiKeyHint,
+          verification: d.asr.cloud?.verification
+        },
+        realtime: {
           baseUrl: d.asr.realtime?.baseUrl,
           model: d.asr.realtime?.model,
           apiKeySet: !!d.asr.realtime?.apiKeyEnc,
           apiKeyHint: d.asr.realtime?.apiKeyHint,
           verification: d.asr.realtime?.verification
         },''',
-        '''        realtime: require(path.join(process.resourcesPath, "tools", "asr-adapters.cjs")).publicRealtimeSettings(d.asr.realtime),''',
-        "SettingsStore getPublic per-provider realtime ASR",
+        '''        cloud: {
+          protocol: require(path.join(process.resourcesPath, "tools", "asr-adapters.cjs")).inferSegmentProtocol(d.asr.cloud),
+          baseUrl: d.asr.cloud?.baseUrl,
+          model: d.asr.cloud?.model,
+          apiKeySet: !!d.asr.cloud?.apiKeyEnc,
+          apiKeyHint: d.asr.cloud?.apiKeyHint,
+          verification: d.asr.cloud?.verification
+        },
+        realtime: require(path.join(process.resourcesPath, "tools", "asr-adapters.cjs")).publicRealtimeSettings(d.asr.realtime),''',
+        "SettingsStore getPublic per-provider realtime & cloud segment protocol",
     )
 
     text = replace_once(
@@ -361,6 +383,7 @@ def patch_main(raw: bytes) -> bytes:
         model: rt.model,
         resourceId: rt.resourceId,
         authMode: rt.authMode,
+        appId: rt.appId,
         appKey: rt.appKey,
         apiKey: rtKey
       };
@@ -368,8 +391,17 @@ def patch_main(raw: bytes) -> bytes:
       if (check.ok) {
         cloud = check.normalized;
       }
-    } else if (a.cloud?.baseUrl && a.cloud?.model && settings.getCloudAsrApiKey()) {
-      cloud = { baseUrl: a.cloud.baseUrl, model: a.cloud.model, apiKey: settings.getCloudAsrApiKey() };
+    } else if (backend === "cloud") {
+      const segKey = settings.getCloudAsrApiKey() ?? "";
+      const segCheck = asrAdapters.validateSegmentConfig({
+        protocol: a.cloud?.protocol,
+        baseUrl: a.cloud?.baseUrl,
+        model: a.cloud?.model,
+        apiKey: segKey
+      });
+      if (segCheck.ok) {
+        cloud = segCheck.normalized;
+      }
     }
     return {
       // the worker treats both realtime flavors identically (same WS engine)
@@ -394,9 +426,11 @@ def patch_main(raw: bytes) -> bytes:
         return;
       }
     } else if (backend === "cloud") {
+      const asrAdapters = require(path.join(process.resourcesPath, "tools", "asr-adapters.cjs"));
       const config = settings.data.asr.cloud;
-      const key = settings.getCloudAsrApiKey();
-      if (!config?.baseUrl || !config?.model || !key) {
+      const key = settings.getCloudAsrApiKey() ?? "";
+      const check = asrAdapters.validateSegmentConfig({ ...config, apiKey: key });
+      if (!check.ok) {
         asr.emit({ kind: "status", state: "unconfigured", queuedSegments: 0 });
         return;
       }
@@ -466,6 +500,56 @@ def patch_main(raw: bytes) -> bytes:
             );
           }
           console.log(`[provider-test] asr-realtime ${provider} -> ${result.stage}:${result.code} (${result.latencyMs ?? "?"}ms)`);
+          return result;
+        }
+        if (request.capability === "asr-segment") {
+          const asrAdapters = require(path.join(process.resourcesPath, "tools", "asr-adapters.cjs"));
+          const protocol = asrAdapters.inferSegmentProtocol(request);
+          const apiKey = req.candidateApiKey?.trim() || (req.useStoredKey ? (settings.getCloudAsrApiKey()?.trim() ?? "") : "");
+          const lang = request.language ?? settings.data.asr.language ?? "chinese";
+          const sampleLang = lang === "english" ? "english" : "chinese";
+          let pcm;
+          try {
+            pcm = defaultProviderTestDeps.readTestAudio(sampleLang);
+          } catch (err) {
+            return {
+              ok: false,
+              mode: "transcribe",
+              provider: protocol,
+              protocol,
+              connected: false,
+              stage: "audio",
+              code: "AUDIO_FORMAT_ERROR",
+              latencyMs: 0,
+              transcript: "",
+              messageZh: `无法加载内置测试音频：${err.message}`,
+              hintZh: "请检查应用资源目录中 test-audio 音频样本是否完整。",
+              rawCode: "TEST_AUDIO_READ_ERROR",
+              requestId: "",
+              retryable: false
+            };
+          }
+          result = await asrAdapters.testSegmentTranscribe(
+            { ...request, protocol, apiKey },
+            pcm,
+            { language: sampleLang }
+          );
+          if (request.slot) {
+            settings.recordVerification(request.slot, {
+              lastTestAt: (/* @__PURE__ */ new Date()).toISOString(),
+              lastTestOk: result.ok,
+              lastTestCode: result.code,
+              latencyMs: result.latencyMs,
+              lastTranscript: result.transcript || ""
+            });
+          }
+          if (!result.ok) {
+            recordDiagnosticError(
+              `provider-test/asr-segment/${protocol}`,
+              `${result.stage}:${result.code} raw=${result.rawCode || "-"} req=${result.requestId || "-"}`
+            );
+          }
+          console.log(`[provider-test] asr-segment ${protocol} -> ${result.stage}:${result.code} (${result.latencyMs ?? "?"}ms)`);
           return result;
         }
         const apiKey = resolveTestApiKey(req, (slot) => settings.getApiKeyForSlot(slot));
@@ -1375,15 +1459,25 @@ def patch_asr_worker(raw: bytes) -> bytes:
         '''    if (init.backend === "cloud-realtime") {
       if (!init.cloud) throw new Error("cloud streaming ASR is not configured");
       engine = await aliyunRealtimeEngine.AliyunRealtimeEngine.load(init.cloud);
-      post({ type: "ready", loadMs: 0, warmMs: 0, ep: "cloud-rt", gpuSuspect: false });''',
+      post({ type: "ready", loadMs: 0, warmMs: 0, ep: "cloud-rt", gpuSuspect: false });
+    } else if (init.backend === "cloud") {
+      if (!init.cloud) throw new Error("cloud ASR is not configured");
+      engine = await aliyunRealtimeEngine.CloudAsrEngine.load(init.cloud);
+      post({ type: "ready", loadMs: 0, warmMs: 0, ep: "cloud", gpuSuspect: false });''',
         '''    if (init.backend === "cloud-realtime") {
       if (!init.cloud) throw new Error("cloud streaming ASR is not configured");
       const toolsDir = init.toolsDir || path.join(process.resourcesPath || "", "tools");
       const asrAdapters = require(path.join(toolsDir, "asr-adapters.cjs"));
       const WebSocket = require("ws");
       engine = await asrAdapters.createRealtimeEngine(init.cloud, { WebSocket });
-      post({ type: "ready", loadMs: 0, warmMs: 0, ep: "cloud-rt", gpuSuspect: false });''',
-        "asrWorker pluggable realtime engine load",
+      post({ type: "ready", loadMs: 0, warmMs: 0, ep: "cloud-rt", gpuSuspect: false });
+    } else if (init.backend === "cloud") {
+      if (!init.cloud) throw new Error("cloud ASR is not configured");
+      const toolsDir = init.toolsDir || path.join(process.resourcesPath || "", "tools");
+      const asrAdapters = require(path.join(toolsDir, "asr-adapters.cjs"));
+      engine = await asrAdapters.createSegmentEngine(init.cloud);
+      post({ type: "ready", loadMs: 0, warmMs: 0, ep: "cloud", gpuSuspect: false });''',
+        "asrWorker pluggable realtime & HTTP segment engine load",
     )
 
     text = replace_once(
