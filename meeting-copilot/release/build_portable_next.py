@@ -176,6 +176,11 @@ def main() -> None:
     )
     parser.add_argument("--no-zip", action="store_true", help="Skip creating companion .zip archive")
     parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace an existing output directory and companion .zip (refuses to overwrite baseline)",
+    )
+    parser.add_argument(
         "--skip-baseline-hash",
         action="store_true",
         help="Allow building from a baseline whose ASAR hash differs from the handoff snapshot",
@@ -186,10 +191,16 @@ def main() -> None:
     destination = args.output.resolve()
     archive = destination.parent / f"{destination.name}.zip"
 
+    if destination == baseline:
+        raise ValueError(f"Refusing to overwrite read-only baseline directory: {baseline}")
     if destination.exists():
-        raise ValueError(f"Output directory already exists: {destination}")
+        if not args.overwrite:
+            raise ValueError(f"Output directory already exists: {destination}")
+        shutil.rmtree(destination)
     if not args.no_zip and archive.exists():
-        raise ValueError(f"Output zip already exists: {archive}")
+        if not args.overwrite:
+            raise ValueError(f"Output zip already exists: {archive}")
+        archive.unlink()
 
     baseline_asar = baseline / "app/resources/app.asar"
     digest = sha256_file(baseline_asar)

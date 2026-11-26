@@ -109,6 +109,7 @@ function createRouter({ directory, defaultsDirectory, safeStorage, transport }) 
   const promptDir = path.join(directory, 'prompts');
   let state;
   function persist(next) {
+    fs.mkdirSync(directory, { recursive: true });
     const tmp = configPath + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(next, null, 2), { mode: 0o600 });
     fs.renameSync(tmp, configPath);

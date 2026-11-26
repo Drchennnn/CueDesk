@@ -123,8 +123,11 @@ python -m unittest discover -s tests -v
 将验证过的只读基线便携目录置于本地 `releases/MeetingCopilot/`（已被 `.gitignore` 忽略，不随源码入库），然后执行：
 
 ```powershell
-python meeting-copilot/release/build_portable_next.py --output work/MeetingCopilot-Next-V3.2
+# 首次输出或每日原地覆盖最新交付包（--overwrite 严禁覆盖只读基线 releases/MeetingCopilot）
+python meeting-copilot/release/build_portable_next.py --output releases/MeetingCopilot-V3.2 --overwrite
 ```
+
+构建完成后，双击 `releases/MeetingCopilot-V3.2/启动.cmd` 或仓库根目录 `启动MeetingCopilot.cmd` 即可启动最新版。更多功能说明与测试清单见 [`MeetingCopilot-V3.2功能清单与测试指南.md`](MeetingCopilot-V3.2功能清单与测试指南.md)。
 
 构建脚本会：
 1. 校验只读基线 `app.asar` 的 SHA-256，绝不修改 `releases/MeetingCopilot/`；

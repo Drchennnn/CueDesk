@@ -1,4 +1,8 @@
 @echo off
 setlocal
 set "ELECTRON_RUN_AS_NODE="
-start "" "%~dp0releases\MeetingCopilot\app\MeetingCopilot.exe"
+if exist "%~dp0releases\MeetingCopilot-V3.2\app\MeetingCopilot.exe" (
+  start "" "%~dp0releases\MeetingCopilot-V3.2\app\MeetingCopilot.exe"
+) else (
+  start "" "%~dp0releases\MeetingCopilot\app\MeetingCopilot.exe"
+)

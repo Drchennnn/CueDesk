@@ -6,7 +6,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
 const CORE_DIR = path.resolve(__dirname, '../meeting-copilot/ui/src/core');
-const FIXTURE_PATH = path.resolve(__dirname, '../meeting-copilot/analysis/前端重构交接/合成会话与验收用例.json');
+const FIXTURE_PATH = path.resolve(__dirname, './fixtures/synthetic-session.json');
 
 async function loadCore() {
   const [sessionModel, turnPolicy, codingPrefs, hitTest, audioController] = await Promise.all([
