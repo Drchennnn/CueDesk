@@ -3157,3 +3157,75 @@ html.mc-hide-real-cursor * {
   border-color: rgba(255, 255, 255, 0.12);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.48), 0 1px 4px rgba(0, 0, 0, 0.28);
 }
+
+/* =========================================================
+   CC-SWITCH STYLE DYNAMIC MODEL PICKER (SettingsView)
+   ========================================================= */
+.mc-model-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+.mc-model-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+.mc-model-picker-row .mc-input {
+  flex: 1;
+  min-width: 0;
+}
+.mc-model-picker-panel {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+.mc-model-picker-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+.mc-model-picker-list {
+  max-height: 210px;
+  overflow-y: auto;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mc-model-picker-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.mc-model-picker-item:hover {
+  background: var(--bg-hover);
+}
+.mc-model-picker-item.is-selected {
+  background: var(--bg-subtle);
+  font-weight: 600;
+}
+.mc-model-picker-id {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

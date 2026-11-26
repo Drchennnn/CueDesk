@@ -1,13 +1,9 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   LOCAL_REALTIME_MODELS,
-  PROVIDER_HELP,
   candidateKeyTest,
-  findPresetByEndpoint,
-  findPresetById,
   isTestableTarget,
   listMics,
-  presetsForCapability,
   providerIdForEndpoint,
   sanitizeApiKeyInput,
   storedKeyTest
@@ -15,7 +11,7 @@ import {
 import { buildSettingsDiffPatch } from '../core/settingsPatch.js';
 import { EyeContactSettings } from './EyeContactSettings.jsx';
 import { WorkbenchShortcutsModal } from './GearPopover.jsx';
-import { IconFolder, IconKeyboard, IconMic, IconShield } from './Icons.jsx';
+import { IconCheck, IconFolder, IconKeyboard, IconMic, IconRefresh, IconShield, IconX } from './Icons.jsx';
 import {
   ShortcutRecorder,
   Switch,
@@ -25,6 +21,170 @@ import {
   useKeySlot
 } from './SharedWidgets.jsx';
 import { CustomSelect } from './CustomSelect.jsx';
+
+const REASONING_EFFORT_OPTIONS = [
+  { value: 'default', label: '跟随模型默认（不传思考参数）' },
+  { value: 'none', label: 'none · 关闭思考（首字最快，推荐实时面试）' },
+  { value: 'minimal', label: 'minimal · 极低思考' },
+  { value: 'low', label: 'low · 低思考' },
+  { value: 'medium', label: 'medium · 中思考' },
+  { value: 'high', label: 'high · 高思考（适合笔试/难题）' },
+  { value: 'xhigh', label: 'xhigh · 最高思考' }
+];
+
+function ModelPickerField({
+  value,
+  onChange,
+  placeholder,
+  ariaLabel,
+  baseUrl,
+  apiKey,
+  slot,
+  endpointId,
+  proxyUrl,
+  compact = false
+}) {
+  const [loading, setLoading] = useState(false);
+  const [models, setModels] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState('');
+  const [statusMsg, setStatusMsg] = useState('');
+  const [errMsg, setErrMsg] = useState('');
+
+  const handleFetch = async () => {
+    const cleanUrl = String(baseUrl || '').trim();
+    if (!cleanUrl) {
+      setErrMsg('请先填写 Base URL 再获取模型列表');
+      setStatusMsg('');
+      return;
+    }
+    setLoading(true);
+    setErrMsg('');
+    setStatusMsg('');
+    try {
+      const res = await window.mc.listModels({
+        baseUrl: cleanUrl,
+        apiKey: String(apiKey || '').trim(),
+        slot,
+        endpointId,
+        proxyUrl: String(proxyUrl || '').trim()
+      });
+      if (!res?.ok) {
+        setErrMsg(res?.error || '获取模型列表失败，可直接手动输入模型 ID');
+        setOpen(false);
+        return;
+      }
+      const list = Array.isArray(res.models) ? res.models : [];
+      setModels(list);
+      setFilter('');
+      if (!list.length) {
+        setStatusMsg('接口返回了空模型列表，请手动输入模型 ID');
+        setOpen(false);
+      } else {
+        setStatusMsg(`已获取 ${list.length} 个模型${res.latencyMs ? ` (${res.latencyMs}ms)` : ''}`);
+        setOpen(true);
+      }
+    } catch (e) {
+      setErrMsg(e?.message || '获取模型列表失败，可直接手动输入模型 ID');
+      setOpen(false);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return models;
+    return models.filter(m => m.toLowerCase().includes(q));
+  }, [models, filter]);
+
+  return (
+    <div className="mc-model-picker">
+      <div className="mc-model-picker-row">
+        <input
+          className="mc-input"
+          aria-label={ariaLabel}
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          spellCheck={false}
+          placeholder={placeholder}
+        />
+        <button
+          type="button"
+          className="mc-btn mc-btn-sm"
+          style={{ flexShrink: 0, whiteSpace: 'nowrap' }}
+          disabled={loading}
+          title="向当前 Base URL 请求 /models 拉取可用模型列表"
+          onClick={() => void handleFetch()}
+        >
+          <IconRefresh size={12} /> {loading ? '获取中…' : (compact ? '获取模型' : '获取模型列表')}
+        </button>
+      </div>
+
+      {errMsg && <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>{errMsg}</div>}
+      {!errMsg && (statusMsg || models.length > 0) && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <span className="mc-field-hint">{statusMsg || `已缓存 ${models.length} 个模型`}</span>
+          {models.length > 0 && (
+            <button
+              type="button"
+              className="mc-btn mc-btn-sm"
+              style={{ height: 22, padding: '0 8px', fontSize: 11, flexShrink: 0 }}
+              onClick={() => setOpen(v => !v)}
+            >
+              {open ? '收起列表' : `展开列表 (${models.length})`}
+            </button>
+          )}
+        </div>
+      )}
+
+      {open && models.length > 0 && (
+        <div className="mc-model-picker-panel" role="listbox" aria-label="已获取的模型列表">
+          <div className="mc-model-picker-head">
+            <input
+              className="mc-input"
+              style={{ height: 28, fontSize: 12 }}
+              value={filter}
+              onChange={e => setFilter(e.target.value)}
+              placeholder={`筛选 ${models.length} 个模型（如 gpt / claude / gemini / qwen）…`}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') { e.preventDefault(); setOpen(false); }
+              }}
+            />
+            <button type="button" className="mc-icon-btn" style={{ width: 26, height: 26 }} aria-label="关闭模型列表" onClick={() => setOpen(false)}>
+              <IconX size={13} />
+            </button>
+          </div>
+          <div className="mc-model-picker-list">
+            {filtered.length === 0 ? (
+              <div className="mc-field-hint" style={{ padding: '8px 10px' }}>没有匹配的模型，可直接在上方输入框手动填写</div>
+            ) : (
+              filtered.map(m => {
+                const active = m === value;
+                return (
+                  <button
+                    key={m}
+                    type="button"
+                    role="option"
+                    aria-selected={active}
+                    className={`mc-model-picker-item${active ? ' is-selected' : ''}`}
+                    onClick={() => {
+                      onChange(m);
+                      setOpen(false);
+                    }}
+                  >
+                    <span className="mc-model-picker-id">{m}</span>
+                    {active && <IconCheck size={12} />}
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 const NAV_GROUPS = [
   {
@@ -329,6 +489,7 @@ export function SettingsView({
   const [live, setLive] = useState(settings);
   const [baseUrl, setBaseUrl] = useState(settings.llm.baseUrl || '');
   const [model, setModel] = useState(settings.llm.model || '');
+  const [reasoningEffort, setReasoningEffort] = useState(settings.llm.reasoningEffort || 'default');
   const [answerLang, setAnswerLang] = useState(settings.llm.answerLang || 'chinese');
   const [visionBaseUrl] = useState(settings.vision?.baseUrl || '');
   const [visionModel] = useState(settings.vision?.model || '');
@@ -377,6 +538,7 @@ export function SettingsView({
   const snapshotFromSettings = useCallback((s) => ({
     baseUrl: s.llm.baseUrl || '',
     model: s.llm.model || '',
+    reasoningEffort: s.llm.reasoningEffort || 'default',
     answerLang: s.llm.answerLang || 'chinese',
     llmProviderId: s.llm.providerId || '',
     visionBaseUrl: s.vision?.baseUrl || '',
@@ -406,8 +568,8 @@ export function SettingsView({
   const baselineRef = useRef(snapshotFromSettings(settings));
 
   const currentDraft = useMemo(() => ({
-    baseUrl, model, answerLang,
-    llmProviderId: providerIdForEndpoint(baseUrl.trim(), model.trim(), 'text-llm'),
+    baseUrl, model, reasoningEffort, answerLang,
+    llmProviderId: 'custom',
     visionBaseUrl, visionModel, visionProxy,
     multimodal: mmConfig,
     asrBackend, language, cloudBaseUrl, cloudModel, rtBaseUrl, rtModel, rtLocalModel,
@@ -421,7 +583,7 @@ export function SettingsView({
     theme, fontScale, uiLang, autoLaunch,
     interviewPrompt: baselineRef.current.interviewPrompt
   }), [
-    baseUrl, model, answerLang, visionBaseUrl, visionModel, visionProxy, mmConfig,
+    baseUrl, model, reasoningEffort, answerLang, visionBaseUrl, visionModel, visionProxy, mmConfig,
     asrBackend, language, cloudBaseUrl, cloudModel, rtBaseUrl, rtModel, rtLocalModel,
     themDeviceId, micDeviceId, hotkey, hotkeyShot, hotkeyRegion,
     theme, fontScale, uiLang, autoLaunch
@@ -513,27 +675,6 @@ export function SettingsView({
     }
   };
 
-  const renderProviderSelect = (capability, curUrl, curModel, onPick) => {
-    const presets = presetsForCapability(capability).filter(p => p.baseUrl && p.model);
-    const current = findPresetByEndpoint(curUrl, curModel, capability);
-    const opts = [
-      ...(!current ? [{ value: '', label: '自定义服务商' }] : []),
-      ...presets.map(p => ({ value: p.id, label: p.nameZh || p.nameEn }))
-    ];
-    return (
-      <CustomSelect
-        className="mc-select"
-        ariaLabel="服务商预设"
-        value={current?.id ?? ''}
-        options={opts}
-        onChange={val => {
-          const p = findPresetById(val);
-          if (p) onPick(p);
-        }}
-      />
-    );
-  };
-
   const renderKeySlotRow = (label, slot, slotId, target) => {
     const pub = publicSlot(live, slotId);
     const apiKeySet = !!pub?.apiKeySet;
@@ -541,7 +682,7 @@ export function SettingsView({
     const st = tests[slotId];
     const candidate = sanitizeApiKeyInput(slot.value).value;
     const canTest = isTestableTarget(target) && !slot.pendingDelete && (candidate !== '' || apiKeySet);
-    const keyUrl = findPresetByEndpoint(target.baseUrl, target.model, target.capability)?.help?.keyUrl ?? PROVIDER_HELP[target.providerId]?.keyUrl;
+    const keyUrl = null;
 
     return (
       <div className="mc-srow">
@@ -750,32 +891,52 @@ export function SettingsView({
                 <div className="mc-card-head">
                   <div>
                     <h3 className="mc-card-title">文本大模型（回答模型）</h3>
-                    <p className="mc-card-desc">用于实时面试问答、手动打字提问、翻译与滚动备忘；配好这一项即可直接提问。</p>
-                  </div>
-                </div>
-                <div className="mc-srow">
-                  <div><div className="mc-srow-label">服务商预设</div></div>
-                  <div className="mc-srow-control">
-                    {renderProviderSelect('text-llm', baseUrl, model, (p) => { setBaseUrl(p.baseUrl); setModel(p.model); })}
+                    <p className="mc-card-desc">任意 OpenAI 兼容接口（自定义 Base URL + 模型列表动态拉取）；配好这一项即可直接提问。</p>
                   </div>
                 </div>
                 <div className="mc-srow">
                   <div><div className="mc-srow-label">Base URL</div></div>
                   <div className="mc-srow-control">
-                    <input className="mc-input" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} spellCheck={false} placeholder="https://api.deepseek.com/v1" />
-                  </div>
-                </div>
-                <div className="mc-srow">
-                  <div><div className="mc-srow-label">模型名称</div></div>
-                  <div className="mc-srow-control">
-                    <input className="mc-input" value={model} onChange={e => setModel(e.target.value)} spellCheck={false} placeholder="deepseek-chat" />
+                    <input className="mc-input" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} spellCheck={false} placeholder="https://your-api-host/v1" />
                   </div>
                 </div>
                 {renderKeySlotRow('文本模型 API Key', llmKey, 'llm', {
                   capability: 'text-llm',
-                  providerId: providerIdForEndpoint(baseUrl.trim(), model.trim(), 'text-llm'),
+                  providerId: 'custom',
                   baseUrl, model, slot: 'llm'
                 })}
+                <div className="mc-srow">
+                  <div>
+                    <div className="mc-srow-label">模型名称</div>
+                    <div className="mc-srow-desc">可手动输入模型 ID，或点击「获取模型列表」从接口拉取后选择</div>
+                  </div>
+                  <div className="mc-srow-control">
+                    <ModelPickerField
+                      value={model}
+                      onChange={setModel}
+                      placeholder="例如：gpt-5.4 / deepseek-chat / claude-sonnet-4"
+                      ariaLabel="文本模型名称"
+                      baseUrl={baseUrl}
+                      apiKey={sanitizeApiKeyInput(llmKey.value).value}
+                      slot="llm"
+                    />
+                  </div>
+                </div>
+                <div className="mc-srow">
+                  <div>
+                    <div className="mc-srow-label">思考等级（可选）</div>
+                    <div className="mc-srow-desc">仅非默认时向接口传标准 reasoning_effort（百炼自动映射 enable_thinking）；普通非思考模型请保持默认</div>
+                  </div>
+                  <div className="mc-srow-control">
+                    <CustomSelect
+                      className="mc-select"
+                      ariaLabel="文本模型思考等级"
+                      value={reasoningEffort}
+                      onChange={setReasoningEffort}
+                      options={REASONING_EFFORT_OPTIONS}
+                    />
+                  </div>
+                </div>
                 <div className="mc-srow mc-srow-compact">
                   <div><div className="mc-srow-label">默认回答语言</div></div>
                   <div className="mc-srow-control">
@@ -805,7 +966,7 @@ export function SettingsView({
                       className="mc-btn mc-btn-sm"
                       onClick={() => updateMm({
                         endpoints: [...mmConfig.endpoints, {
-                          id: crypto.randomUUID(), name: '', enabled: true, baseUrl: '', model: '', proxyUrl: '', timeoutMs: 30000, apiKeySet: false
+                          id: crypto.randomUUID(), name: '', enabled: true, baseUrl: '', model: '', reasoningEffort: 'default', proxyUrl: '', timeoutMs: 30000, apiKeySet: false
                         }]
                       })}
                     >
@@ -863,20 +1024,12 @@ export function SettingsView({
                         <div className="mc-card-body" style={{ padding: 12 }}>
                           <div className="mc-grid-2">
                             <div className="mc-field">
-                              <label className="mc-field-label">服务商预设</label>
-                              {renderProviderSelect('vision', ep.baseUrl, ep.model, (p) => updateEndpoint(idx, { baseUrl: p.baseUrl, model: p.model, proxyUrl: p.defaultProxyUrl || '' }))}
-                            </div>
-                            <div className="mc-field">
                               <label className="mc-field-label">接口备注名</label>
                               <input className="mc-input" value={ep.name || ''} placeholder={`接口 ${idx + 1}`} onChange={e => updateEndpoint(idx, { name: e.target.value })} />
                             </div>
                             <div className="mc-field">
                               <label className="mc-field-label">Base URL</label>
-                              <input className="mc-input" value={ep.baseUrl || ''} spellCheck={false} placeholder="https://.../v1" onChange={e => updateEndpoint(idx, { baseUrl: e.target.value })} />
-                            </div>
-                            <div className="mc-field">
-                              <label className="mc-field-label">视觉模型 ID</label>
-                              <input className="mc-input" value={ep.model || ''} spellCheck={false} onChange={e => updateEndpoint(idx, { model: e.target.value })} />
+                              <input className="mc-input" value={ep.baseUrl || ''} spellCheck={false} placeholder="https://your-api-host/v1" onChange={e => updateEndpoint(idx, { baseUrl: e.target.value })} />
                             </div>
                             <div className="mc-field">
                               <label className="mc-field-label">API Key</label>
@@ -901,6 +1054,31 @@ export function SettingsView({
                                 <input className="mc-input" type="number" min={5} max={180} style={{ width: 76 }} value={Math.round((ep.timeoutMs || 30000) / 1000)} onChange={e => updateEndpoint(idx, { timeoutMs: Number(e.target.value) * 1000 })} />
                               </div>
                             </div>
+                          </div>
+                          <div className="mc-field">
+                            <label className="mc-field-label">视觉模型 ID</label>
+                            <ModelPickerField
+                              value={ep.model || ''}
+                              onChange={val => updateEndpoint(idx, { model: val })}
+                              placeholder="填写模型 ID，或点击右侧按钮拉取列表"
+                              ariaLabel={`接口 ${idx + 1} 视觉模型 ID`}
+                              baseUrl={ep.baseUrl}
+                              apiKey={ep.apiKey}
+                              slot="vision-endpoint"
+                              endpointId={ep.id}
+                              proxyUrl={ep.proxyUrl}
+                              compact
+                            />
+                          </div>
+                          <div className="mc-field">
+                            <label className="mc-field-label">思考等级（可选）</label>
+                            <CustomSelect
+                              className="mc-select"
+                              ariaLabel={`接口 ${idx + 1} 思考等级`}
+                              value={ep.reasoningEffort || 'default'}
+                              onChange={val => updateEndpoint(idx, { reasoningEffort: val })}
+                              options={REASONING_EFFORT_OPTIONS}
+                            />
                           </div>
                           {ep.apiKeySet && (
                             <div>
@@ -966,18 +1144,12 @@ export function SettingsView({
                 {asrBackend === 'cloud-realtime' && (
                   <>
                     <div className="mc-srow">
-                      <div><div className="mc-srow-label">服务商预设</div></div>
-                      <div className="mc-srow-control">
-                        {renderProviderSelect('asr-realtime', rtBaseUrl, rtModel, (p) => { setRtBaseUrl(p.baseUrl); setRtModel(p.model); })}
-                      </div>
-                    </div>
-                    <div className="mc-srow">
                       <div><div className="mc-srow-label">Realtime WebSocket URL</div></div>
-                      <div className="mc-srow-control"><input className="mc-input" value={rtBaseUrl} onChange={e => setRtBaseUrl(e.target.value)} spellCheck={false} /></div>
+                      <div className="mc-srow-control"><input className="mc-input" value={rtBaseUrl} onChange={e => setRtBaseUrl(e.target.value)} spellCheck={false} placeholder="wss://.../api-ws/v1/inference" /></div>
                     </div>
                     <div className="mc-srow">
                       <div><div className="mc-srow-label">Realtime 模型名</div></div>
-                      <div className="mc-srow-control"><input className="mc-input" value={rtModel} onChange={e => setRtModel(e.target.value)} spellCheck={false} /></div>
+                      <div className="mc-srow-control"><input className="mc-input" value={rtModel} onChange={e => setRtModel(e.target.value)} spellCheck={false} placeholder="例如：paraformer-realtime-v2 / fun-asr-realtime" /></div>
                     </div>
                     {renderKeySlotRow('云端实时 ASR Key', rtKey, 'asr-realtime', {
                       capability: 'asr-realtime',
@@ -990,18 +1162,23 @@ export function SettingsView({
                 {asrBackend === 'cloud' && (
                   <>
                     <div className="mc-srow">
-                      <div><div className="mc-srow-label">服务商预设</div></div>
-                      <div className="mc-srow-control">
-                        {renderProviderSelect('asr-segment', cloudBaseUrl, cloudModel, (p) => { setCloudBaseUrl(p.baseUrl); setCloudModel(p.model); })}
-                      </div>
-                    </div>
-                    <div className="mc-srow">
                       <div><div className="mc-srow-label">云端分段 Base URL</div></div>
-                      <div className="mc-srow-control"><input className="mc-input" value={cloudBaseUrl} onChange={e => setCloudBaseUrl(e.target.value)} spellCheck={false} /></div>
+                      <div className="mc-srow-control"><input className="mc-input" value={cloudBaseUrl} onChange={e => setCloudBaseUrl(e.target.value)} spellCheck={false} placeholder="https://.../v1" /></div>
                     </div>
                     <div className="mc-srow">
                       <div><div className="mc-srow-label">云端分段模型名</div></div>
-                      <div className="mc-srow-control"><input className="mc-input" value={cloudModel} onChange={e => setCloudModel(e.target.value)} spellCheck={false} /></div>
+                      <div className="mc-srow-control">
+                        <ModelPickerField
+                          value={cloudModel}
+                          onChange={setCloudModel}
+                          placeholder="例如：whisper-1 / sensevoice"
+                          ariaLabel="云端分段模型名"
+                          baseUrl={cloudBaseUrl}
+                          apiKey={sanitizeApiKeyInput(cloudKey.value).value}
+                          slot="asr-cloud"
+                          compact
+                        />
+                      </div>
                     </div>
                     {renderKeySlotRow('云端分段 ASR Key', cloudKey, 'asr-cloud', {
                       capability: 'asr-segment',

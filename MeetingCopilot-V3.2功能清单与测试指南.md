@@ -131,8 +131,12 @@ python meeting-copilot/release/build_portable_next.py --output releases/MeetingC
 
 ### 模块 7：高级设置 6 分类、快捷键体系与眼神矫正（`SettingsView` / `EyeContactSettings`）
 所有下拉菜单均使用自定义 `CustomSelect` 组件（全应用原生 `<select>` 为 `0`），修改项支持自动防抖保存且仅发送差异补丁（修改字号不会误重启 ASR，未编辑 API Key 不会覆盖已加密密钥）。
-1. **模型接口**：文本大模型（支持主流服务商预设 + 自定义 + 测试连接）、多模态视觉接口列表（动态增删、独立超时/代理、顺序回退或笔试并行）。
-2. **语音与录制**：云端实时 ASR（阿里云百炼 WebSocket 等）、云端分段 ASR、本地实时模型（FunASR / Moss，需另配 Python 环境）、麦克风实时音量电平测试、双轨 WAV 录音目录选择。
+1. **模型接口（纯自定义 + 动态模型列表 + 可选思考等级）**：
+   - 已全面移除硬编码「服务商预设」下拉框，文本大模型与每个多模态视觉接口均采用纯自定义配置（自定义 Base URL + API Key）。
+   - **获取模型列表**：参考 CC Switch 交互，支持一键经由主进程向当前 Base URL 拉取 `/models`（无 CORS 限制、支持复用已加密保存的密钥与接口代理、自动兼容 `/models` 与 `/v1/models`），并在内联可筛选列表中点击填入；同时也支持随时手动输入任意模型 ID。
+   - **思考等级（可选）**：文本模型与每个视觉接口均支持独立配置 `跟随模型默认（不传参数）` / `none` / `minimal` / `low` / `medium` / `high` / `xhigh`。默认不附带任何额外参数以保证 100% 兼容普通非思考模型；选非默认时向标准 OpenAI 兼容接口（OpenAI / Codex / Gemini OpenAI 兼容 / One-API / New-API / OpenRouter 等）透传 `reasoning_effort`，对阿里云百炼域名自动映射为 `enable_thinking` + `thinking_budget`，并在 OpenAI `o1/o3/o4/gpt-5/gpt-6` 思考态下自动省略不兼容的 `temperature`。
+   - **建议用法**：实时面试优先保持「默认」或 `none`/`low` 保证首字速度；笔试难题或多模型并行时可按接口分别设为 `medium`/`high`；若个别中转或旧模型报错不支持思考参数，切回「跟随模型默认」即可。
+2. **语音与录制**：纯自定义云端实时 ASR（WebSocket URL + 模型名 + Key）、云端分段 ASR（支持获取模型列表）、本地实时模型（FunASR / Moss，需另配 Python 环境）、麦克风实时音量电平测试、双轨 WAV 录音目录选择。
 3. **摄像头与眼神矫正**：
    - 摄像头选择、预览画面、状态机与详细诊断信息。
    - 使用自有 C# 引擎（`EyeContactEngine.exe`）+ `Softcam` 虚拟摄像头 + `maxine-sdk.cjs`。

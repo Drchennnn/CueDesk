@@ -109,6 +109,72 @@ def patch_main(raw: bytes) -> bytes:
         "defaultSettings light theme",
     )
 
+    # 1b. Expose llm.reasoningEffort in settings.getPublic() and inject reasoning_effort/thinking into chatStream
+    text = replace_once(
+        text,
+        '''      llm: {
+        baseUrl: d.llm.baseUrl,
+        model: d.llm.model,
+        answerLang: d.llm.answerLang,''',
+        '''      llm: {
+        baseUrl: d.llm.baseUrl,
+        model: d.llm.model,
+        reasoningEffort: d.llm.reasoningEffort || "default",
+        answerLang: d.llm.answerLang,''',
+        "settings.getPublic llm.reasoningEffort",
+    )
+
+    text = replace_once(
+        text,
+        '''async function chatStream(config, messages, callbacks, signal) {
+  const url = `${config.baseUrl.replace(/\\/+$/, "")}/chat/completions`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.apiKey}`
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages,
+      stream: true,
+      temperature: 0.5
+    }),
+    signal
+  });''',
+        '''async function chatStream(config, messages, callbacks, signal) {
+  const url = `${config.baseUrl.replace(/\\/+$/, "")}/chat/completions`;
+  const mr = require(path.join(process.resourcesPath, "tools", "model-reasoning.cjs"));
+  const reasoningFields = mr.buildReasoningBodyFields(config.reasoningEffort, { baseUrl: config.baseUrl, model: config.model });
+  const omitTemp = mr.shouldOmitTemperature(config.reasoningEffort, { baseUrl: config.baseUrl, model: config.model });
+  const reqBody = {
+    model: config.model,
+    messages,
+    stream: true,
+    ...(omitTemp ? {} : { temperature: 0.5 }),
+    ...reasoningFields
+  };
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.apiKey}`
+    },
+    body: JSON.stringify(reqBody),
+    signal
+  });''',
+        "chatStream reasoningEffort body injection",
+    )
+
+    text = replace_once(
+        text,
+        '''      const work = messages.skipGeneration || messages.directAnswer || (messages.blockedUnknown && !messages.suggestionOnly) ? Promise.resolve({ text: messages.directAnswer || messages.blockedUnknown || "" }) : chatStream(
+        { baseUrl: settings.data.llm.baseUrl, model: settings.data.llm.model, apiKey },''',
+        '''      const work = messages.skipGeneration || messages.directAnswer || (messages.blockedUnknown && !messages.suggestionOnly) ? Promise.resolve({ text: messages.directAnswer || messages.blockedUnknown || "" }) : chatStream(
+        { baseUrl: settings.data.llm.baseUrl, model: settings.data.llm.model, reasoningEffort: settings.data.llm.reasoningEffort || "default", apiKey },''',
+        "llm:ask pass reasoningEffort to chatStream",
+    )
+
     # 2. SessionStore: add saveStrict that surfaces real disk write failures
     text = replace_once(
         text,
@@ -747,7 +813,40 @@ def patch_main(raw: bytes) -> bytes:
         "withdraw legacy startup setup window",
     )
 
-    # 12. Dispose workbenchWindow & audioRecorder cleanly on before-quit
+    # 12. Register models:list IPC (CC Switch style dynamic model fetching with stored encrypted key + proxy support)
+    text = replace_once(
+        text,
+        '''    electron.ipcMain.handle(IPC.onboardingRerun, () => {''',
+        '''    electron.ipcMain.handle("models:list", async (_e, req = {}) => {
+      const mr = require(path.join(process.resourcesPath, "tools", "model-reasoning.cjs"));
+      const baseUrl = String(req?.baseUrl || "").trim();
+      let apiKey = String(req?.apiKey || "").trim();
+      if (!apiKey) {
+        if (req?.slot === "llm") {
+          apiKey = settings.getLlmApiKey() || "";
+        } else if (req?.slot === "vision-endpoint" && req?.endpointId) {
+          apiKey = multimodalRouter?.getEndpointApiKey?.(req.endpointId) || "";
+        } else if (req?.slot === "asr-cloud") {
+          apiKey = settings.getCloudAsrApiKey() || "";
+        }
+      }
+      try {
+        return await mr.fetchModelList({
+          baseUrl,
+          apiKey,
+          proxyUrl: String(req?.proxyUrl || "").trim(),
+          electron,
+          timeoutMs: 15000
+        });
+      } catch (err) {
+        return { ok: false, models: [], error: err?.message || String(err) };
+      }
+    });
+    electron.ipcMain.handle(IPC.onboardingRerun, () => {''',
+        "models:list IPC handler",
+    )
+
+    # 13. Dispose workbenchWindow & audioRecorder cleanly on before-quit
     text = replace_once(
         text,
         '''    writtenWindow?.flush();
@@ -869,6 +968,7 @@ def patch_preload(raw: bytes) -> bytes:
   disableSecurity: (options) => electron.ipcRenderer.invoke("security:disable", options),
   setSecurityPrefs: (patch) => electron.ipcRenderer.invoke("security:set-prefs", patch),
   checkSecurityEnvironment: () => electron.ipcRenderer.invoke("security:check-env"),
+  listModels: (req) => electron.ipcRenderer.invoke("models:list", req),
   hide: () => electron.ipcRenderer.send(IPC.winHide),
   quit: () => electron.ipcRenderer.send(IPC.appQuit)
 };''',

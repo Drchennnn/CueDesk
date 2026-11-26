@@ -16,6 +16,9 @@ export function buildSettingsDiffPatch(baseline, current, {
     const llmDiff = {};
     if (current.baseUrl !== baseline.baseUrl) llmDiff.baseUrl = current.baseUrl.trim();
     if (current.model !== baseline.model) llmDiff.model = current.model.trim();
+    if ((current.reasoningEffort ?? 'default') !== (baseline.reasoningEffort ?? 'default')) {
+      llmDiff.reasoningEffort = current.reasoningEffort || 'default';
+    }
     if (current.answerLang !== baseline.answerLang) llmDiff.answerLang = current.answerLang;
     if (current.llmProviderId && current.llmProviderId !== baseline.llmProviderId) {
       llmDiff.providerId = current.llmProviderId;

@@ -3,6 +3,31 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 
+function loadReasoningHelper() {
+  const candidates = [
+    path.join(__dirname, 'tools', 'model-reasoning.cjs'),
+    path.join(__dirname, '..', 'tools', 'model-reasoning.cjs')
+  ];
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) return require(p);
+    } catch {}
+  }
+  const LEVELS = ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+  const normalizeReasoningEffort = (v) => {
+    const s = String(v || '').trim().toLowerCase();
+    return LEVELS.includes(s) ? s : 'default';
+  };
+  return {
+    normalizeReasoningEffort,
+    buildReasoningBodyFields: (level) => {
+      const n = normalizeReasoningEffort(level);
+      return n === 'default' ? {} : { reasoning_effort: n };
+    }
+  };
+}
+const { normalizeReasoningEffort, buildReasoningBodyFields } = loadReasoningHelper();
+
 const PROMPTS = ['common.md', 'written.md', 'interview.md', 'auto.md', 'original-vision.md'];
 const abortError = () => Object.assign(new Error('请求已取消'), { name: 'AbortError' });
 const failure = (code) => Object.assign(new Error(code), { code });
@@ -14,6 +39,7 @@ function validateEndpoint(endpoint, index) {
     enabled: endpoint.enabled !== false,
     baseUrl: String(endpoint.baseUrl || '').trim(),
     model: String(endpoint.model || '').trim().slice(0, 200),
+    reasoningEffort: normalizeReasoningEffort(endpoint.reasoningEffort),
     proxyUrl: String(endpoint.proxyUrl || '').trim(),
     timeoutMs: Number(endpoint.timeoutMs ?? 30000),
     apiKeyEncrypted: String(endpoint.apiKeyEncrypted || '')
@@ -98,7 +124,8 @@ function createElectronTransport(electron) {
       });
       req.setHeader('Content-Type', 'application/json');
       if (config.apiKey) req.setHeader('Authorization', `Bearer ${config.apiKey}`);
-      req.write(JSON.stringify({ model: config.model, messages, stream: false }));
+      const reasoningFields = buildReasoningBodyFields(config.reasoningEffort, { baseUrl: config.baseUrl, model: config.model });
+      req.write(JSON.stringify({ model: config.model, messages, stream: false, ...reasoningFields }));
       req.end();
     });
   };
@@ -356,7 +383,13 @@ function createRouter({ directory, defaultsDirectory, safeStorage, transport }) 
     }
     throw new Error('所有已启用接口均未成功。' + failures.join('；'));
   }
-  return { initialize, getPublic, ready, applyPatch, buildMessages, chat, promptDir };
+  function getEndpointApiKey(endpointId) {
+    if (!state?.endpoints || !endpointId) return '';
+    const ep = state.endpoints.find(e => e.id === endpointId);
+    if (!ep?.apiKeyEncrypted) return '';
+    try { return decrypt(ep.apiKeyEncrypted); } catch { return ''; }
+  }
+  return { initialize, getPublic, ready, applyPatch, buildMessages, chat, getEndpointApiKey, promptDir };
 }
 
 module.exports = { createRouter, createElectronTransport, parseCompletion, validateEndpoint };
