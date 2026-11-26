@@ -463,6 +463,29 @@ def patch_main(raw: bytes) -> bytes:
 
     text = replace_once(
         text,
+        '''  function createWindow() {
+    win = new electron.BrowserWindow({
+      width: 940,
+      height: 560,
+      minWidth: 640,
+      minHeight: 380,
+      ...writtenWindow.initialOptions(),
+      frame: false,''',
+        '''  function createWindow() {
+    const appIconPath = path.join(process.resourcesPath, "resources", "app-icon.ico");
+    win = new electron.BrowserWindow({
+      width: 940,
+      height: 560,
+      minWidth: 640,
+      minHeight: 380,
+      ...(fs.existsSync(appIconPath) ? { icon: appIconPath } : {}),
+      ...writtenWindow.initialOptions(),
+      frame: false,''',
+        "createWindow custom app-icon.ico",
+    )
+
+    text = replace_once(
+        text,
         '''    electron.ipcMain.handle(
       IPC.providerTest,
       async (_e, incoming) => {

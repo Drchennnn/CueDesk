@@ -88,6 +88,9 @@ await esbuild.build({
   outfile: path.join(DIST, 'index-hyFYaQxP.js'),
   external: [DOCS_LINKS_IMPORT],
   plugins: [docsLinksBridgePlugin],
+  loader: {
+    '.png': 'dataurl'
+  },
   minify: false,
   legalComments: 'none',
   define: {

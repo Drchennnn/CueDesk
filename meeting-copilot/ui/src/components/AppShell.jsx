@@ -1,4 +1,5 @@
 import React from 'react';
+import appIconUrl from '../assets/app-icon-64.png';
 import {
   IconBook,
   IconHistory,
@@ -44,7 +45,7 @@ export function AppShell({
     <div className={`mc-shell${maximized ? ' is-maximized' : ''}`}>
       <header className="mc-shell-titlebar">
         <div className="mc-shell-brand">
-          <span className="mc-brand-mark">M</span>
+          <img className="mc-brand-mark" src={appIconUrl} alt="" draggable={false} />
           <span>MeetingCopilot</span>
           {activeSession && (
             <button

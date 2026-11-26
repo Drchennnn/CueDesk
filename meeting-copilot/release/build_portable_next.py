@@ -26,6 +26,10 @@ spec_pb = importlib.util.spec_from_file_location("patch_baseline", HERE / "patch
 pb = importlib.util.module_from_spec(spec_pb)
 spec_pb.loader.exec_module(pb)
 
+spec_iu = importlib.util.spec_from_file_location("icon_util", HERE / "icon_util.py")
+iu = importlib.util.module_from_spec(spec_iu)
+spec_iu.loader.exec_module(iu)
+
 MAIN = "out/main/index.js"
 ASR_WORKER = "out/main/asrWorker.js"
 PRELOAD = "out/preload/index.js"
@@ -111,6 +115,24 @@ def copy_baseline_runtime(baseline: Path, destination: Path) -> None:
     multimodal_src = PROJECT / "multimodal-router.cjs"
     if multimodal_src.is_file():
         shutil.copy2(multimodal_src, destination / "app/resources/multimodal/multimodal-router.cjs")
+
+    # Sync custom Nailong app/tray icon assets and stamp into packaged Electron EXE
+    assets_dir = PROJECT / "assets"
+    res_dir = destination / "app/resources/resources"
+    res_dir.mkdir(parents=True, exist_ok=True)
+    ico_src = assets_dir / "app-icon.ico"
+    if ico_src.is_file():
+        shutil.copy2(ico_src, res_dir / "app-icon.ico")
+        iu.stamp_exe_icon(destination / "app/MeetingCopilot.exe", ico_src)
+    png_src = assets_dir / "app-icon.png"
+    if png_src.is_file():
+        shutil.copy2(png_src, res_dir / "app-icon.png")
+    tray_dir = res_dir / "tray"
+    tray_dir.mkdir(parents=True, exist_ok=True)
+    for tray_name in ("tray.png", "tray@2x.png"):
+        tsrc = assets_dir / tray_name
+        if tsrc.is_file():
+            shutil.copy2(tsrc, tray_dir / tray_name)
 
 
 def verify_build(destination: Path) -> dict:
@@ -266,6 +288,12 @@ def main() -> None:
     defaults_settings.setdefault("ui", {})["theme"] = "light"
     bp.write_json(defaults_settings_path, defaults_settings)
     bp.write_launchers(destination)
+
+    # Compile a zero-console top-level MeetingCopilot.exe launcher carrying the custom app icon
+    launcher_cs = ROOT / "src/MeetingCopilotLauncher.cs"
+    ico_src = PROJECT / "assets/app-icon.ico"
+    if sys.platform == "win32" and launcher_cs.is_file() and ico_src.is_file():
+        iu.compile_launcher_exe(launcher_cs, ico_src, destination / "MeetingCopilot.exe")
 
     # Copy RAG scripts and docs
     rag = destination / "rag"
