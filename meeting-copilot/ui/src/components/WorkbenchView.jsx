@@ -1060,10 +1060,13 @@ export function WorkbenchView({
                     type="button"
                     className={`mc-btn mc-btn-sm ${secondaryMicActive ? 'mc-btn-primary' : 'mc-btn-ghost'}`}
                     style={{ height: 24, padding: '0 7px', fontSize: 11.5 }}
-                    title="开启后将本人麦克风发言一并记入对话上下文"
+                    title={secondaryMicActive
+                      ? '本人麦克风转写已开启：我的回答标为「我」记入对话上下文与历史记录，不会单独触发 AI 回答（与整场 WAV 录音独立）'
+                      : '开启后同时转写我的麦克风回答：标为「我」记入上下文与历史复盘，不单独触发 AI 回答（与整场 WAV 录音独立）'}
+                    aria-pressed={secondaryMicActive}
                     onClick={onToggleSecondaryMic}
                   >
-                    {secondaryMicActive ? <IconMic size={12} /> : <IconMicOff size={12} />} 对话上下文
+                    {secondaryMicActive ? <IconMic size={12} /> : <IconMicOff size={12} />} {secondaryMicActive ? '本人麦克风 · 开' : '本人麦克风'}
                   </button>
                 )}
 

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getActiveAttempt, projectLegacyTurns } from '../core/sessionModel.js';
+import { getActiveAttempt, projectLegacyTurns, summarizeWrittenCounts } from '../core/sessionModel.js';
 import {
   IconArrowLeft,
   IconCheck,
@@ -1140,7 +1140,7 @@ export function RecordsView({
                               {s.role && <span className="mc-badge mc-badge-info">{s.role}</span>}
                             </div>
                             <div className="mc-field-hint">
-                              {formatDateTime(s.updatedAt || s.createdAt)} · {(s.questions || []).length} 个问题 · {(s.segments || []).length} 条转写 · {s.audioSource === 'mic' ? '麦克风' : '系统音频'}
+                              {formatDateTime(s.updatedAt || s.createdAt)} · {s.scene === 'written' ? summarizeWrittenCounts(s).compactText : `${(s.questions || []).length} 个问题 · ${(s.segments || []).length} 条转写 · ${s.audioSource === 'mic' ? '麦克风' : '系统音频'}`}
                             </div>
                           </div>
 

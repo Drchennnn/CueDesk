@@ -32,6 +32,89 @@ const REASONING_EFFORT_OPTIONS = [
   { value: 'xhigh', label: 'xhigh · 最高思考' }
 ];
 
+const REALTIME_PROTOCOL_OPTIONS = [
+  { value: 'dashscope', label: '阿里云百炼（DashScope WebSocket）' },
+  { value: 'doubao', label: '火山豆包流式 ASR v3（SAUC 二进制协议）' }
+];
+
+const DOUBAO_AUTH_MODE_OPTIONS = [
+  { value: 'api-key', label: '新版 API Key（X-Api-Key，推荐）' },
+  { value: 'app-access', label: '旧版 App ID + Access Token' }
+];
+
+const STAGE_LABELS = {
+  config: '本地配置校验',
+  connect: '建立连接',
+  auth: '凭证与资源鉴权',
+  handshake: '协议握手',
+  audio: '音频帧协议',
+  transcribe: '转写定稿',
+  done: '完成'
+};
+
+function inferRealtimeProviderClient(rt = {}) {
+  const p = String(rt?.provider || '').trim().toLowerCase();
+  if (p === 'doubao') return 'doubao';
+  if (p === 'dashscope') return 'dashscope';
+  const u = String(rt?.baseUrl || '').toLowerCase();
+  if (u.includes('openspeech.bytedance.com') || u.includes('bytepluses.com') || u.includes('/api/v3/sauc') || String(rt?.resourceId || '').startsWith('volc.')) {
+    return 'doubao';
+  }
+  return 'dashscope';
+}
+
+function realtimeProfileDefaults(provider) {
+  if (provider === 'doubao') {
+    return {
+      baseUrl: 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel',
+      model: 'bigmodel',
+      resourceId: 'volc.seedasr.sauc.duration',
+      authMode: 'api-key',
+      appKey: ''
+    };
+  }
+  return {
+    baseUrl: 'wss://dashscope.aliyuncs.com/api-ws/v1/inference',
+    model: 'paraformer-realtime-v2',
+    resourceId: '',
+    authMode: 'api-key',
+    appKey: ''
+  };
+}
+
+function readRealtimeProfile(settings, provider) {
+  const rt = settings?.asr?.realtime || {};
+  const fromMap = rt.profiles?.[provider];
+  if (fromMap && typeof fromMap === 'object') {
+    const def = realtimeProfileDefaults(provider);
+    return {
+      baseUrl: fromMap.baseUrl || (provider === 'doubao' ? def.baseUrl : ''),
+      model: fromMap.model || (provider === 'doubao' ? def.model : ''),
+      resourceId: provider === 'doubao' ? (fromMap.resourceId ?? def.resourceId) : '',
+      authMode: fromMap.authMode === 'app-access' ? 'app-access' : 'api-key',
+      appKey: fromMap.appKey || '',
+      apiKeySet: Boolean(fromMap.apiKeySet),
+      apiKeyHint: fromMap.apiKeyHint,
+      verification: fromMap.verification
+    };
+  }
+  const activeProvider = inferRealtimeProviderClient(rt);
+  if (activeProvider === provider) {
+    return {
+      baseUrl: rt.baseUrl || '',
+      model: rt.model || '',
+      resourceId: rt.resourceId || '',
+      authMode: rt.authMode === 'app-access' ? 'app-access' : 'api-key',
+      appKey: rt.appKey || '',
+      apiKeySet: Boolean(rt.apiKeySet),
+      apiKeyHint: rt.apiKeyHint,
+      verification: rt.verification
+    };
+  }
+  const def = realtimeProfileDefaults(provider);
+  return { ...def, apiKeySet: false, apiKeyHint: undefined, verification: undefined };
+}
+
 function ModelPickerField({
   value,
   onChange,
@@ -500,9 +583,16 @@ export function SettingsView({
   const [language, setLanguage] = useState(settings.asr.language || 'auto');
   const [cloudBaseUrl, setCloudBaseUrl] = useState(settings.asr.cloud?.baseUrl || '');
   const [cloudModel, setCloudModel] = useState(settings.asr.cloud?.model || '');
-  const [rtBaseUrl, setRtBaseUrl] = useState(settings.asr.realtime?.baseUrl || '');
-  const [rtModel, setRtModel] = useState(settings.asr.realtime?.model || '');
+  const initialRtProvider = inferRealtimeProviderClient(settings.asr.realtime);
+  const initialRtProfile = readRealtimeProfile(settings, initialRtProvider);
+  const [rtProvider, setRtProvider] = useState(initialRtProvider);
+  const [rtBaseUrl, setRtBaseUrl] = useState(initialRtProfile.baseUrl || '');
+  const [rtModel, setRtModel] = useState(initialRtProfile.model || '');
+  const [rtResourceId, setRtResourceId] = useState(initialRtProfile.resourceId || '');
+  const [rtAuthMode, setRtAuthMode] = useState(initialRtProfile.authMode || 'api-key');
+  const [rtAppKey, setRtAppKey] = useState(initialRtProfile.appKey || '');
   const [rtLocalModel, setRtLocalModel] = useState(settings.asr.localRealtime?.model || 'fun-asr-nano');
+  const [rtTestState, setRtTestState] = useState({ running: null, result: null, error: '', showDetail: false });
   const [themDeviceId, setThemDeviceId] = useState(settings.audio?.themDeviceId || '');
   const [micDeviceId, setMicDeviceId] = useState(settings.audio?.micDeviceId || '');
   const [devices, setDevices] = useState([]);
@@ -535,35 +625,43 @@ export function SettingsView({
     void window.mc.getRecordingStatus?.().then(st => { if (st?.recordingDir) setRecDirInfo(st.recordingDir); }).catch(() => {});
   }, [workbenchPrefs?.recordingDir]);
 
-  const snapshotFromSettings = useCallback((s) => ({
-    baseUrl: s.llm.baseUrl || '',
-    model: s.llm.model || '',
-    reasoningEffort: s.llm.reasoningEffort || 'default',
-    answerLang: s.llm.answerLang || 'chinese',
-    llmProviderId: s.llm.providerId || '',
-    visionBaseUrl: s.vision?.baseUrl || '',
-    visionModel: s.vision?.model || '',
-    visionProxy: s.vision?.proxyUrl || '',
-    multimodal: s.multimodal,
-    asrBackend: s.asr.backend || 'cloud-realtime',
-    language: s.asr.language || 'auto',
-    cloudBaseUrl: s.asr.cloud?.baseUrl || '',
-    cloudModel: s.asr.cloud?.model || '',
-    rtBaseUrl: s.asr.realtime?.baseUrl || '',
-    rtModel: s.asr.realtime?.model || '',
-    rtLocalModel: s.asr.localRealtime?.model || 'fun-asr-nano',
-    asrProviderId: s.asr.providerId || '',
-    themDeviceId: s.audio?.themDeviceId || '',
-    micDeviceId: s.audio?.micDeviceId || '',
-    hotkey: s.ui.hotkeyToggle || 'Control+B',
-    hotkeyShot: s.ui.hotkeyShot || 'Control+Shift+S',
-    hotkeyRegion: s.capture?.hotkeyRegion ?? 'Control+Alt+A',
-    theme: s.ui.theme || 'light',
-    fontScale: s.ui.fontScale || 'medium',
-    uiLang: s.ui.lang || 'zh',
-    autoLaunch: !!s.ui.autoLaunch,
-    interviewPrompt: s.modelPrompts?.interview || ''
-  }), []);
+  const snapshotFromSettings = useCallback((s) => {
+    const p = inferRealtimeProviderClient(s.asr.realtime);
+    const prof = readRealtimeProfile(s, p);
+    return {
+      baseUrl: s.llm.baseUrl || '',
+      model: s.llm.model || '',
+      reasoningEffort: s.llm.reasoningEffort || 'default',
+      answerLang: s.llm.answerLang || 'chinese',
+      llmProviderId: s.llm.providerId || '',
+      visionBaseUrl: s.vision?.baseUrl || '',
+      visionModel: s.vision?.model || '',
+      visionProxy: s.vision?.proxyUrl || '',
+      multimodal: s.multimodal,
+      asrBackend: s.asr.backend || 'cloud-realtime',
+      language: s.asr.language || 'auto',
+      cloudBaseUrl: s.asr.cloud?.baseUrl || '',
+      cloudModel: s.asr.cloud?.model || '',
+      rtProvider: p,
+      rtBaseUrl: prof.baseUrl || '',
+      rtModel: prof.model || '',
+      rtResourceId: prof.resourceId || '',
+      rtAuthMode: prof.authMode || 'api-key',
+      rtAppKey: prof.appKey || '',
+      rtLocalModel: s.asr.localRealtime?.model || 'fun-asr-nano',
+      asrProviderId: s.asr.providerId || '',
+      themDeviceId: s.audio?.themDeviceId || '',
+      micDeviceId: s.audio?.micDeviceId || '',
+      hotkey: s.ui.hotkeyToggle || 'Control+B',
+      hotkeyShot: s.ui.hotkeyShot || 'Control+Shift+S',
+      hotkeyRegion: s.capture?.hotkeyRegion ?? 'Control+Alt+A',
+      theme: s.ui.theme || 'light',
+      fontScale: s.ui.fontScale || 'medium',
+      uiLang: s.ui.lang || 'zh',
+      autoLaunch: !!s.ui.autoLaunch,
+      interviewPrompt: s.modelPrompts?.interview || ''
+    };
+  }, []);
 
   const baselineRef = useRef(snapshotFromSettings(settings));
 
@@ -572,9 +670,10 @@ export function SettingsView({
     llmProviderId: 'custom',
     visionBaseUrl, visionModel, visionProxy,
     multimodal: mmConfig,
-    asrBackend, language, cloudBaseUrl, cloudModel, rtBaseUrl, rtModel, rtLocalModel,
+    asrBackend, language, cloudBaseUrl, cloudModel,
+    rtProvider, rtBaseUrl, rtModel, rtResourceId, rtAuthMode, rtAppKey, rtLocalModel,
     asrProviderId: asrBackend === 'cloud-realtime'
-      ? providerIdForEndpoint(rtBaseUrl.trim(), rtModel.trim(), 'asr-realtime')
+      ? rtProvider
       : asrBackend === 'cloud'
         ? providerIdForEndpoint(cloudBaseUrl.trim(), cloudModel.trim(), 'asr-segment')
         : '',
@@ -584,7 +683,8 @@ export function SettingsView({
     interviewPrompt: baselineRef.current.interviewPrompt
   }), [
     baseUrl, model, reasoningEffort, answerLang, visionBaseUrl, visionModel, visionProxy, mmConfig,
-    asrBackend, language, cloudBaseUrl, cloudModel, rtBaseUrl, rtModel, rtLocalModel,
+    asrBackend, language, cloudBaseUrl, cloudModel,
+    rtProvider, rtBaseUrl, rtModel, rtResourceId, rtAuthMode, rtAppKey, rtLocalModel,
     themDeviceId, micDeviceId, hotkey, hotkeyShot, hotkeyRegion,
     theme, fontScale, uiLang, autoLaunch
   ]);
@@ -661,6 +761,48 @@ export function SettingsView({
     closeRef.current = flushAndLeave;
     return () => { closeRef.current = null; };
   }, [closeRef, flushAndLeave]);
+
+  const handleSwitchRealtimeProvider = (nextProvider) => {
+    if (nextProvider === rtProvider) return;
+    const targetProfile = readRealtimeProfile(live, nextProvider);
+    setRtProvider(nextProvider);
+    setRtBaseUrl(targetProfile.baseUrl || '');
+    setRtModel(targetProfile.model || '');
+    setRtResourceId(targetProfile.resourceId || '');
+    setRtAuthMode(targetProfile.authMode || 'api-key');
+    setRtAppKey(targetProfile.appKey || '');
+    rtKey.reset();
+    setRtTestState({ running: null, result: null, error: '', showDetail: false });
+  };
+
+  const runRealtimeCheck = async (mode) => {
+    const candidate = sanitizeApiKeyInput(rtKey.value).value;
+    const req = {
+      capability: 'asr-realtime',
+      provider: rtProvider,
+      providerId: rtProvider,
+      baseUrl: rtBaseUrl.trim(),
+      model: rtModel.trim(),
+      resourceId: rtProvider === 'doubao' ? rtResourceId.trim() : '',
+      authMode: rtProvider === 'doubao' ? rtAuthMode : 'api-key',
+      appKey: rtProvider === 'doubao' ? rtAppKey.trim() : '',
+      language,
+      slot: 'asr-realtime',
+      ...(candidate ? { candidateApiKey: candidate } : { useStoredKey: true })
+    };
+    setRtTestState({ running: mode, result: null, error: '', showDetail: false });
+    try {
+      const result = mode === 'transcribe'
+        ? await window.mc.testRealtimeTranscribe(req)
+        : await window.mc.providerTest(req);
+      setRtTestState({ running: null, result, error: '', showDetail: false });
+      const refreshed = await window.mc.getSettings();
+      setLive(refreshed);
+      onSaved?.(refreshed);
+    } catch (err) {
+      setRtTestState({ running: null, result: null, error: err.message || '测试请求失败', showDetail: false });
+    }
+  };
 
   const runSlotTest = async (slotId, target, candidate) => {
     setTests(prev => ({ ...prev, [slotId]: { testing: true, candidate: candidate !== '' } }));
@@ -1141,23 +1283,263 @@ export function SettingsView({
                   </div>
                 )}
 
-                {asrBackend === 'cloud-realtime' && (
-                  <>
-                    <div className="mc-srow">
-                      <div><div className="mc-srow-label">Realtime WebSocket URL</div></div>
-                      <div className="mc-srow-control"><input className="mc-input" value={rtBaseUrl} onChange={e => setRtBaseUrl(e.target.value)} spellCheck={false} placeholder="wss://.../api-ws/v1/inference" /></div>
-                    </div>
-                    <div className="mc-srow">
-                      <div><div className="mc-srow-label">Realtime 模型名</div></div>
-                      <div className="mc-srow-control"><input className="mc-input" value={rtModel} onChange={e => setRtModel(e.target.value)} spellCheck={false} placeholder="例如：paraformer-realtime-v2 / fun-asr-realtime" /></div>
-                    </div>
-                    {renderKeySlotRow('云端实时 ASR Key', rtKey, 'asr-realtime', {
-                      capability: 'asr-realtime',
-                      providerId: providerIdForEndpoint(rtBaseUrl.trim(), rtModel.trim(), 'asr-realtime'),
-                      baseUrl: rtBaseUrl, model: rtModel, slot: 'asr-realtime'
-                    })}
-                  </>
-                )}
+                {asrBackend === 'cloud-realtime' && (() => {
+                  const rtProf = readRealtimeProfile(live, rtProvider);
+                  const rtApiKeySet = Boolean(rtProf?.apiKeySet);
+                  const rtHint = rtProf?.apiKeyHint;
+                  const rtCandidate = sanitizeApiKeyInput(rtKey.value).value;
+                  const missingResource = rtProvider === 'doubao' && !rtResourceId.trim();
+                  const missingAppKey = rtProvider === 'doubao' && rtAuthMode === 'app-access' && !rtAppKey.trim();
+                  const missingModel = rtProvider === 'dashscope' && !rtModel.trim();
+                  const missingKey = !rtKey.pendingDelete && !rtCandidate && !rtApiKeySet && !/^ws:\/\/(?:127\.0\.0\.1|localhost)/i.test(rtBaseUrl.trim());
+                  const canRunRtTest = Boolean(rtBaseUrl.trim()) && !rtKey.pendingDelete && !rtTestState.running;
+
+                  return (
+                    <>
+                      <div className="mc-srow">
+                        <div>
+                          <div className="mc-srow-label">实时流式协议</div>
+                          <div className="mc-srow-desc">不同流式厂商使用独立二进制/JSON 协议；各协议配置与加密密钥分别保存，切换互不覆盖</div>
+                        </div>
+                        <div className="mc-srow-control">
+                          <CustomSelect
+                            className="mc-select"
+                            ariaLabel="实时流式协议"
+                            value={rtProvider}
+                            onChange={handleSwitchRealtimeProvider}
+                            options={REALTIME_PROTOCOL_OPTIONS}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="mc-srow">
+                        <div>
+                          <div className="mc-srow-label">WebSocket 地址</div>
+                          <div className="mc-srow-desc">
+                            {rtProvider === 'doubao'
+                              ? '常用：wss://openspeech.bytedance.com/api/v3/sauc/bigmodel（或 bigmodel_async）'
+                              : '常用：wss://dashscope.aliyuncs.com/api-ws/v1/inference'}
+                          </div>
+                        </div>
+                        <div className="mc-srow-control">
+                          <input
+                            className="mc-input"
+                            value={rtBaseUrl}
+                            onChange={e => setRtBaseUrl(e.target.value)}
+                            spellCheck={false}
+                            placeholder={rtProvider === 'doubao'
+                              ? 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel'
+                              : 'wss://dashscope.aliyuncs.com/api-ws/v1/inference'}
+                          />
+                        </div>
+                      </div>
+
+                      {rtProvider === 'doubao' && (
+                        <>
+                          <div className="mc-srow">
+                            <div>
+                              <div className="mc-srow-label">Resource ID（X-Api-Resource-Id）</div>
+                              <div className="mc-srow-desc">
+                                必填：豆包 2.0 小时版填 <code>volc.seedasr.sauc.duration</code>；1.0 小时版填 <code>volc.bigasr.sauc.duration</code>
+                              </div>
+                            </div>
+                            <div className="mc-srow-control">
+                              <input
+                                className="mc-input"
+                                value={rtResourceId}
+                                onChange={e => setRtResourceId(e.target.value)}
+                                spellCheck={false}
+                                placeholder="volc.seedasr.sauc.duration"
+                              />
+                              {missingResource && (
+                                <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>
+                                  必须填写 Resource ID（例如 volc.seedasr.sauc.duration），否则服务端会拒绝连接
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="mc-srow">
+                            <div>
+                              <div className="mc-srow-label">鉴权方式</div>
+                              <div className="mc-srow-desc">新版豆包控制台仅需单 API Key；旧版语音控制台需填 App ID + Access Token</div>
+                            </div>
+                            <div className="mc-srow-control">
+                              <CustomSelect
+                                className="mc-select"
+                                ariaLabel="豆包鉴权方式"
+                                value={rtAuthMode}
+                                onChange={setRtAuthMode}
+                                options={DOUBAO_AUTH_MODE_OPTIONS}
+                              />
+                            </div>
+                          </div>
+
+                          {rtAuthMode === 'app-access' && (
+                            <div className="mc-srow">
+                              <div>
+                                <div className="mc-srow-label">App ID（X-Api-App-Key）</div>
+                                <div className="mc-srow-desc">旧版控制台应用 ID，与下方 Access Token 配套使用</div>
+                              </div>
+                              <div className="mc-srow-control">
+                                <input
+                                  className="mc-input"
+                                  value={rtAppKey}
+                                  onChange={e => setRtAppKey(e.target.value)}
+                                  spellCheck={false}
+                                  placeholder="填写火山控制台 App ID"
+                                />
+                                {missingAppKey && (
+                                  <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>
+                                    旧版鉴权模式必须填写 App ID（X-Api-App-Key）
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
+
+                      <div className="mc-srow">
+                        <div>
+                          <div className="mc-srow-label">{rtProvider === 'doubao' ? '模型名（model_name）' : 'Realtime 模型名'}</div>
+                          <div className="mc-srow-desc">
+                            {rtProvider === 'doubao'
+                              ? '豆包流式大模型固定为 bigmodel（具体 1.0/2.0 版本由上方 Resource ID 决定）'
+                              : '例如：paraformer-realtime-v2 / fun-asr-realtime'}
+                          </div>
+                        </div>
+                        <div className="mc-srow-control">
+                          <input
+                            className="mc-input"
+                            value={rtModel}
+                            onChange={e => setRtModel(e.target.value)}
+                            spellCheck={false}
+                            placeholder={rtProvider === 'doubao' ? 'bigmodel' : 'paraformer-realtime-v2 / fun-asr-realtime'}
+                          />
+                          {missingModel && (
+                            <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>请填写百炼实时识别模型名</div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="mc-srow">
+                        <div>
+                          <div className="mc-srow-label">
+                            {rtProvider === 'doubao'
+                              ? (rtAuthMode === 'app-access' ? 'Access Token（X-Api-Access-Key）' : '豆包 API Key（X-Api-Key）')
+                              : '百炼实时 ASR API Key'}
+                          </div>
+                          <div className="mc-srow-desc">
+                            {rtApiKeySet && !rtKey.editing && !rtKey.pendingDelete
+                              ? `已按「${rtProvider === 'doubao' ? '豆包' : '百炼'}」独立加密保存${rtHint ? `（尾号 ••••${rtHint}）` : ''}；切换服务商互不覆盖`
+                              : '仅加密保存于本机，自动清理首尾空格'}
+                          </div>
+                        </div>
+                        <div className="mc-srow-control">
+                          {rtApiKeySet && !rtKey.editing && !rtKey.pendingDelete ? (
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                              <span className="mc-badge mc-badge-ok">已配置</span>
+                              <button type="button" className="mc-btn mc-btn-sm" onClick={() => rtKey.setEditing(true)}>更换</button>
+                              {rtKey.confirming ? (
+                                <>
+                                  <button type="button" className="mc-btn mc-btn-sm mc-btn-danger" onClick={() => { rtKey.setPendingDelete(true); rtKey.setConfirming(false); }}>确认清除</button>
+                                  <button type="button" className="mc-btn mc-btn-sm" onClick={() => rtKey.setConfirming(false)}>取消</button>
+                                </>
+                              ) : (
+                                <button type="button" className="mc-btn mc-btn-sm" onClick={() => rtKey.setConfirming(true)}>清除</button>
+                              )}
+                            </div>
+                          ) : rtKey.pendingDelete ? (
+                            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                              <span className="mc-badge mc-badge-err">待清除</span>
+                              <button type="button" className="mc-btn mc-btn-sm" onClick={rtKey.reset}>撤销</button>
+                            </div>
+                          ) : (
+                            <input
+                              className="mc-input"
+                              type="password"
+                              autoComplete="off"
+                              spellCheck={false}
+                              value={rtKey.value}
+                              onChange={e => rtKey.setValue(e.target.value)}
+                              placeholder={rtApiKeySet ? '输入新密钥以替换，留空保留原密钥' : (rtProvider === 'doubao' ? '填写豆包 API Key / Access Token' : 'sk-...')}
+                            />
+                          )}
+
+                          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+                            <button
+                              type="button"
+                              className="mc-btn mc-btn-sm"
+                              disabled={!canRunRtTest}
+                              onClick={() => void runRealtimeCheck('handshake')}
+                            >
+                              {rtTestState.running === 'handshake' ? '握手中…' : '测试连接（握手）'}
+                            </button>
+                            <button
+                              type="button"
+                              className="mc-btn mc-btn-sm mc-btn-primary"
+                              disabled={!canRunRtTest}
+                              title="通过当前实时适配器发送内置 16kHz 样本音频，验证建连、分包与真实转写结果"
+                              onClick={() => void runRealtimeCheck('transcribe')}
+                            >
+                              {rtTestState.running === 'transcribe' ? '试转写中…' : '试转写（发送样本音频）'}
+                            </button>
+                            {rtProf?.verification?.lastTestAt && (
+                              <span className="mc-field-hint">
+                                上次：{rtProf.verification.lastTestOk ? `成功 (${rtProf.verification.latencyMs ?? '?'}ms)` : `失败 (${rtProf.verification.lastTestCode || 'ERR'})`}
+                              </span>
+                            )}
+                          </div>
+
+                          {missingKey && !rtTestState.result && (
+                            <div className="mc-field-hint">提示：尚未填写或保存当前协议的密钥，点测试将返回本地缺失提示。</div>
+                          )}
+
+                          {rtTestState.error && (
+                            <div className="mc-alert mc-alert-err" role="alert">{rtTestState.error}</div>
+                          )}
+
+                          {rtTestState.result && (
+                            <div
+                              className={`mc-alert ${rtTestState.result.ok ? 'mc-alert-ok' : 'mc-alert-err'}`}
+                              role="status"
+                              style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 10px' }}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                                <strong>
+                                  {rtTestState.result.messageZh}
+                                  {typeof rtTestState.result.latencyMs === 'number' ? ` · ${rtTestState.result.latencyMs} ms` : ''}
+                                </strong>
+                                {!rtTestState.result.ok && (
+                                  <button
+                                    type="button"
+                                    className="mc-link-subtle"
+                                    style={{ fontSize: 11.5, flexShrink: 0 }}
+                                    onClick={() => setRtTestState(prev => ({ ...prev, showDetail: !prev.showDetail }))}
+                                  >
+                                    {rtTestState.showDetail ? '收起诊断' : '展开诊断'}
+                                  </button>
+                                )}
+                              </div>
+                              {rtTestState.result.hintZh && (
+                                <div style={{ fontSize: 12, opacity: 0.92 }}>{rtTestState.result.hintZh}</div>
+                              )}
+                              {!rtTestState.result.ok && rtTestState.showDetail && (
+                                <div style={{ fontSize: 11.5, opacity: 0.88, marginTop: 2, fontFamily: 'var(--font-mono)' }}>
+                                  阶段：{STAGE_LABELS[rtTestState.result.stage] || rtTestState.result.stage} · 错误类型：{rtTestState.result.code}
+                                  {rtTestState.result.connected ? ' · 握手已成功' : ' · 未完成握手'}
+                                  {rtTestState.result.rawCode ? ` · 原始码：${rtTestState.result.rawCode}` : ''}
+                                  {rtTestState.result.requestId ? ` · 请求 ID：${rtTestState.result.requestId}` : ''}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
 
                 {asrBackend === 'cloud' && (
                   <>

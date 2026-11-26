@@ -57,6 +57,8 @@ function normalizeQuestion(raw, index, seenIds) {
     ordinal: index + 1,
     prompt: String(raw?.prompt || raw?.label || '').trim() || `问题 ${index + 1}`,
     kind: ['segment', 'manual', 'free', 'shot', 'batch'].includes(raw?.kind) ? raw.kind : 'free',
+    parentQuestionId: raw?.parentQuestionId ? String(raw.parentQuestionId) : null,
+    isFollowup: Boolean(raw?.isFollowup || raw?.parentQuestionId),
     sourceSegmentIds: Array.isArray(raw?.sourceSegmentIds) ? raw.sourceSegmentIds.filter(n => Number.isFinite(Number(n))).map(Number) : [],
     mergedFromOrdinals: Array.isArray(raw?.mergedFromOrdinals) ? raw.mergedFromOrdinals.filter(n => Number.isFinite(Number(n))).map(Number) : [],
     createdAt: Number.isFinite(Number(raw?.createdAt)) ? Number(raw.createdAt) : Date.now(),
@@ -264,6 +266,8 @@ export function addQuestionWithAttempt(session, {
   requestId = createId('req'),
   prompt,
   kind = 'free',
+  parentQuestionId = null,
+  isFollowup = false,
   sourceSegmentIds = [],
   images = [],
   followIfAtLatest = true,
@@ -290,11 +294,14 @@ export function addQuestionWithAttempt(session, {
     translation: '',
     translationError: ''
   };
+  const cleanParentId = parentQuestionId ? String(parentQuestionId) : null;
   const question = {
     id: questionId,
     ordinal: session.questions.length + 1,
     prompt: String(prompt || '').trim() || `问题 ${session.questions.length + 1}`,
     kind,
+    parentQuestionId: cleanParentId,
+    isFollowup: Boolean(isFollowup || cleanParentId),
     sourceSegmentIds: Array.isArray(sourceSegmentIds) ? [...sourceSegmentIds] : [],
     mergedFromOrdinals: [],
     createdAt: now,
@@ -500,6 +507,62 @@ export function jumpToLatestQuestion(session) {
 
 export function countNewerQuestions(session) {
   return (session.unreadQuestionIds || []).length;
+}
+
+/**
+ * Summarize distinct root problems vs. follow-up turns in a Written Exam session.
+ * Follow-up turns belong to their parent problem and must not inflate the answered problem count.
+ */
+export function summarizeWrittenCounts(session) {
+  const list = Array.isArray(session?.questions) ? session.questions : [];
+  if (!list.length) {
+    return {
+      problemCount: 0,
+      followupCount: 0,
+      totalTurns: 0,
+      rootQuestions: [],
+      summaryText: '暂无题目',
+      compactText: '0 题',
+      getProblemIndex: () => 0
+    };
+  }
+  const rootQuestions = [];
+  let followupCount = 0;
+  const rootIndexById = new Map();
+  let lastRootIdx = 0;
+
+  for (const q of list) {
+    const isFollow = Boolean(q?.isFollowup || q?.parentQuestionId);
+    if (isFollow && rootQuestions.length > 0) {
+      followupCount += 1;
+      const parentIdx = q.parentQuestionId && rootIndexById.has(q.parentQuestionId)
+        ? rootIndexById.get(q.parentQuestionId)
+        : lastRootIdx;
+      rootIndexById.set(q.id, parentIdx);
+    } else {
+      rootQuestions.push(q);
+      lastRootIdx = rootQuestions.length;
+      rootIndexById.set(q.id, lastRootIdx);
+    }
+  }
+
+  const problemCount = rootQuestions.length;
+  const summaryText = followupCount > 0
+    ? `已作答 ${problemCount} 题 · ${followupCount} 次追问`
+    : `已作答 ${problemCount} 题`;
+  const compactText = followupCount > 0
+    ? `${problemCount} 题 · ${followupCount} 次追问`
+    : `${problemCount} 题`;
+
+  return {
+    problemCount,
+    followupCount,
+    totalTurns: list.length,
+    rootQuestions,
+    summaryText,
+    compactText,
+    getProblemIndex: (qid) => rootIndexById.get(qid) || problemCount
+  };
 }
 
 export function mergeQuestions(session, sourceId, targetId) {

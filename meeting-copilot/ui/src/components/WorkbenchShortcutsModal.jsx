@@ -54,9 +54,29 @@ const GROUPS = [
   }
 ];
 
+const DEFAULT_GLOBAL_HOTKEYS = Object.freeze({
+  hotkeyToggle: 'Control+B',
+  hotkeyShot: 'Control+Shift+S',
+  hotkeyRegion: 'Control+Alt+A'
+});
+
+const DEFAULT_WINDOW_BINDINGS = Object.freeze({
+  left: 'Control+Alt+Left',
+  right: 'Control+Alt+Right',
+  up: 'Control+Alt+Up',
+  down: 'Control+Alt+Down',
+  grow: 'Control+Alt+PageUp',
+  shrink: 'Control+Alt+PageDown',
+  toggleBatch: 'Control+Alt+M',
+  sendBatch: 'Control+Alt+S'
+});
+
 function formatKeyBadge(acc) {
   if (!acc) return '未设置';
-  return String(acc)
+  const raw = String(acc).trim();
+  if (/^Mouse4$/i.test(raw)) return '鼠标侧键 4';
+  if (/^Mouse5$/i.test(raw)) return '鼠标侧键 5';
+  return raw
     .replace(/CommandOrControl/gi, 'Ctrl')
     .replace(/Control/gi, 'Ctrl')
     .replace(/\+/g, ' + ');
@@ -79,6 +99,7 @@ export function WorkbenchShortcutsModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [flashSaved, setFlashSaved] = useState('');
+  const [resetConflicts, setResetConflicts] = useState([]);
   const [windowControls, setWindowControls] = useState(null);
   const recordTokenRef = useRef(null);
   const searchInputRef = useRef(null);
@@ -287,10 +308,67 @@ export function WorkbenchShortcutsModal({
     cancelCapture();
     setBusy(true);
     setError('');
+    setResetConflicts([]);
+    const conflicts = [];
     try {
-      await window.mc.resetWorkbenchHotkeys();
-      setFlashSaved('已恢复全部工作台快捷键默认值');
-      setTimeout(() => setFlashSaved(''), 2200);
+      // 1. Reset global hotkeys (toggle / full-shot / region-shot)
+      try {
+        const updatedSettings = await window.mc.setSettings({
+          ui: {
+            hotkeyToggle: DEFAULT_GLOBAL_HOTKEYS.hotkeyToggle,
+            hotkeyShot: DEFAULT_GLOBAL_HOTKEYS.hotkeyShot
+          },
+          capture: {
+            hotkeyRegion: DEFAULT_GLOBAL_HOTKEYS.hotkeyRegion
+          }
+        });
+        if (updatedSettings) {
+          onSettingsUpdated?.(updatedSettings);
+          if (updatedSettings.capture?.registrationError) {
+            conflicts.push(`全局快捷键：${updatedSettings.capture.registrationError}`);
+          }
+        }
+      } catch (err) {
+        conflicts.push(`全局快捷键重置异常：${err.message || '未知错误'}`);
+      }
+
+      // 2. Reset window control & batch hotkeys (apply batch first; on OS conflict apply per-key so valid defaults still restore)
+      if (window.mc?.setWindowControls) {
+        try {
+          const updatedWin = await window.mc.setWindowControls({ bindings: { ...DEFAULT_WINDOW_BINDINGS } });
+          if (updatedWin) {
+            setWindowControls(updatedWin);
+            if (updatedWin.errors?.length) conflicts.push(...updatedWin.errors);
+          }
+        } catch {
+          const current = (await window.mc.getWindowControls?.().catch(() => null)) || windowControls;
+          const working = { ...(current?.bindings || {}) };
+          for (const [action, defKey] of Object.entries(DEFAULT_WINDOW_BINDINGS)) {
+            try {
+              const step = await window.mc.setWindowControls({ bindings: { ...working, [action]: defKey } });
+              working[action] = defKey;
+              if (step) setWindowControls(step);
+            } catch (keyErr) {
+              conflicts.push(`${formatKeyBadge(defKey)}：${keyErr.message || '已被系统或其他程序占用'}`);
+            }
+          }
+        }
+      }
+
+      // 3. Reset workbench hotkeys & read back actual Windows registration conflicts
+      const wbState = await window.mc.resetWorkbenchHotkeys();
+      if (wbState?.hotkeyErrors?.length) {
+        conflicts.push(...wbState.hotkeyErrors);
+      }
+
+      const uniqueConflicts = [...new Set(conflicts.filter(Boolean))];
+      setResetConflicts(uniqueConflicts);
+      if (uniqueConflicts.length > 0) {
+        setFlashSaved('已恢复可用的默认快捷键（部分默认键被系统或其他程序占用，见下方提示）');
+      } else {
+        setFlashSaved('已恢复全部快捷键默认值（全局、窗口与工作台）');
+        setTimeout(() => setFlashSaved(''), 2600);
+      }
     } catch (err) {
       setError(err.message || '重置失败');
     } finally {
@@ -388,8 +466,14 @@ export function WorkbenchShortcutsModal({
             </div>
           )}
           {error && <div className="mc-alert mc-alert-err" role="alert" style={{ padding: '7px 10px', fontSize: 12 }}>{error}</div>}
-          {windowState?.hotkeyErrors?.length > 0 && (
-            <div className="mc-alert mc-alert-warn" style={{ padding: '7px 10px', fontSize: 12 }}>{windowState.hotkeyErrors.join('；')}</div>
+          {(resetConflicts.length > 0 || windowState?.hotkeyErrors?.length > 0 || windowControls?.errors?.length > 0) && (
+            <div className="mc-alert mc-alert-warn" role="alert" style={{ padding: '7px 10px', fontSize: 12 }}>
+              {[...new Set([
+                ...resetConflicts,
+                ...(windowState?.hotkeyErrors || []),
+                ...(windowControls?.errors || [])
+              ])].join('；')}
+            </div>
           )}
 
           {filteredGroups.length === 0 && (

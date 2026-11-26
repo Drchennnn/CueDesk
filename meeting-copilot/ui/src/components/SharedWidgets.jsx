@@ -899,6 +899,7 @@ export function ServiceHealthModal({
   onClose,
   onNavigateCapability,
   onResumeWorkbench,
+  onQuickTypeTest,
   onSettingsRefreshed
 }) {
   const [testing, setTesting] = useState(null);
@@ -935,9 +936,13 @@ export function ServiceHealthModal({
       status: health.asr,
       target: settings?.asr?.backend === 'cloud-realtime' && settings?.asr?.realtime?.baseUrl ? {
         capability: 'asr-realtime',
-        providerId: settings.asr.providerId || 'custom',
+        provider: settings.asr.realtime.provider || 'dashscope',
+        providerId: settings.asr.realtime.provider || settings.asr.providerId || 'custom',
         baseUrl: settings.asr.realtime.baseUrl,
         model: settings.asr.realtime.model || '',
+        resourceId: settings.asr.realtime.resourceId || '',
+        authMode: settings.asr.realtime.authMode || 'api-key',
+        appKey: settings.asr.realtime.appKey || '',
         slot: 'asr-realtime'
       } : settings?.asr?.backend === 'cloud' && settings?.asr?.cloud?.baseUrl ? {
         capability: 'asr-segment',
@@ -1030,6 +1035,14 @@ export function ServiceHealthModal({
                   onClick={() => { onClose(); onResumeWorkbench?.(); }}
                 >
                   返回当前面试 →
+                </button>
+              ) : onQuickTypeTest ? (
+                <button
+                  type="button"
+                  className="mc-btn mc-btn-sm mc-btn-primary"
+                  onClick={() => { onClose(); onQuickTypeTest(); }}
+                >
+                  立即打字试问 →
                 </button>
               ) : (
                 <button type="button" className="mc-btn mc-btn-sm" onClick={onClose}>

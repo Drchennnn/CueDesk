@@ -10,6 +10,7 @@ import {
   cancelAttempt,
   createEmptySession,
   createId,
+  getSelectedQuestion,
   jumpToLatestQuestion,
   mergeQuestions,
   migrateSessionsFile,
@@ -373,6 +374,8 @@ function App() {
         requestId,
         prompt,
         kind: images.length > 1 ? 'batch' : images.length === 1 ? 'shot' : 'free',
+        parentQuestionId: extra.parentQuestionId || null,
+        isFollowup: Boolean(extra.isFollowup || extra.parentQuestionId),
         images,
         forceSelect: true
       })
@@ -400,10 +403,16 @@ function App() {
     const imgs = Array.isArray(attachedImages) ? attachedImages.filter(Boolean) : [];
     const clean = String(promptText || '').trim();
     if (!clean && !imgs.length) return;
+    const curWritten = sessionsRef.current.find(s => s.id === writtenSessionIdRef.current && s.scene === 'written');
+    const selected = curWritten ? getSelectedQuestion(curWritten) : null;
+    const latestRoot = curWritten?.questions?.slice().reverse().find(q => !q.isFollowup && !q.parentQuestionId) || null;
+    const parentQuestionId = selected?.parentQuestionId || selected?.id || latestRoot?.id || null;
     sendShotQuestion(clean, undefined, imgs.length ? imgs : undefined, {
       scene: 'written',
       writtenMode: 'followup',
-      textOnly: imgs.length === 0
+      textOnly: imgs.length === 0,
+      parentQuestionId,
+      isFollowup: Boolean(parentQuestionId)
     });
   }, [sendShotQuestion]);
 
@@ -758,7 +767,10 @@ function App() {
     window.mc.prewarm({ resume: session.resume || undefined, jd: session.jd || undefined, immediate: true });
     if (config.autoStartCapture || config.startAudioRecording) {
       try {
-        await startCaptureWithSource(config.audioSource, Boolean(config.startAudioRecording && config.audioSource === 'system'));
+        await startCaptureWithSource(
+          config.audioSource,
+          Boolean((config.enableSecondaryMic || config.startAudioRecording) && config.audioSource === 'system')
+        );
       } catch (e) {
         setAsr(prev => ({ ...prev, lastError: e.message }));
       }
@@ -777,6 +789,25 @@ function App() {
       }
     }
   }, [handleUpdateWorkbenchPrefs, navigateWithFlush, startCaptureWithSource]);
+
+  const handleQuickTypeTest = useCallback(() => {
+    if (activeSessionIdRef.current && sessionsRef.current.some(s => s.id === activeSessionIdRef.current)) {
+      navigateWithFlush('workbench');
+      return;
+    }
+    void handleStartSession({
+      name: `快速试问 · ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`,
+      audioSource: 'system',
+      answerLang: settingsRef.current?.llm?.answerLang || 'chinese',
+      scene: 'interview',
+      transcriptionMode: 'transcript-only',
+      libraryEnabled: Boolean(library?.enabled),
+      role: library?.role || '',
+      autoStartCapture: false,
+      startAudioRecording: false,
+      enableSecondaryMic: false
+    });
+  }, [handleStartSession, library?.enabled, library?.role, navigateWithFlush]);
 
   const handleSaveProgressSync = useCallback(async () => {
     const payload = serializeSessionsForDisk(sessionsRef.current, activeSessionIdRef.current);
@@ -1223,6 +1254,7 @@ function App() {
           onClose={() => setModal(null)}
           onNavigateCapability={navigateToCapability}
           onResumeWorkbench={() => navigateWithFlush('workbench')}
+          onQuickTypeTest={handleQuickTypeTest}
           onSettingsRefreshed={setSettings}
         />
       )}

@@ -870,9 +870,13 @@ function createWorkbenchWindow({
       workbenchHotkeysEnabled: true,
       workbenchHotkeys: { ...DEFAULT_WORKBENCH_HOTKEYS }
     });
-    registerHotkeys();
+    const errs = registerHotkeys();
     try { onHotkeysChanged(); } catch {}
-    return getWindowState();
+    const finalState = getWindowState();
+    return {
+      ...finalState,
+      hotkeyErrors: finalState.hotkeyErrors?.length ? finalState.hotkeyErrors : errs
+    };
   }
 
   function attach(window) {

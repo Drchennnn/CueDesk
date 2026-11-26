@@ -56,13 +56,24 @@ export function buildSettingsDiffPatch(baseline, current, {
       };
     }
 
-    const rtChanged = current.rtBaseUrl !== baseline.rtBaseUrl ||
+    const rtChanged = (current.rtProvider ?? 'dashscope') !== (baseline.rtProvider ?? 'dashscope') ||
+      current.rtBaseUrl !== baseline.rtBaseUrl ||
       current.rtModel !== baseline.rtModel ||
+      (current.rtResourceId ?? '') !== (baseline.rtResourceId ?? '') ||
+      (current.rtAuthMode ?? 'api-key') !== (baseline.rtAuthMode ?? 'api-key') ||
+      (current.rtAppKey ?? '') !== (baseline.rtAppKey ?? '') ||
       keys.realtime !== undefined;
     if (rtChanged) {
+      const provider = current.rtProvider || 'dashscope';
       asrDiff.realtime = {
+        provider,
         baseUrl: current.rtBaseUrl.trim(),
         model: current.rtModel.trim(),
+        ...(provider === 'doubao' ? {
+          resourceId: String(current.rtResourceId || '').trim(),
+          authMode: current.rtAuthMode === 'app-access' ? 'app-access' : 'api-key',
+          appKey: String(current.rtAppKey || '').trim()
+        } : {}),
         ...(keys.realtime !== undefined ? { apiKey: keys.realtime } : {})
       };
     }

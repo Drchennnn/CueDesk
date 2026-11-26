@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { formatCodingSummary, normalizeCodingPrefs } from '../core/codingPrefs.js';
 import { isInteractiveTarget, startClickThroughPolling } from '../core/clickThroughHitTest.js';
-import { getActiveAttempt, getSelectedQuestion } from '../core/sessionModel.js';
+import { getActiveAttempt, getSelectedQuestion, summarizeWrittenCounts } from '../core/sessionModel.js';
 import { AnchoredPopover } from './AnchoredPopover.jsx';
 import { CodingPrefsPopover } from './CodingPrefsPopover.jsx';
 import { GearPopover, WorkbenchShortcutsModal } from './GearPopover.jsx';
@@ -75,12 +75,58 @@ function formatLatency(ms) {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-function formatKeyShort(acc) {
-  if (!acc) return '未设置';
-  return String(acc)
+export function formatWrittenKeyLabel(acc) {
+  const raw = String(acc || '').trim();
+  if (!raw) return '';
+  if (/^Mouse4$/i.test(raw)) return '鼠标侧键 4';
+  if (/^Mouse5$/i.test(raw)) return '鼠标侧键 5';
+  return raw
     .replace(/CommandOrControl/gi, 'Ctrl')
     .replace(/Control/gi, 'Ctrl')
     .replace(/\+/g, '+');
+}
+
+export function buildWrittenEmptyPrompt(hotkeyShot, hotkeyRegion, writtenMode = 'fast') {
+  const shot = formatWrittenKeyLabel(hotkeyShot);
+  const region = formatWrittenKeyLabel(hotkeyRegion);
+  const hasUnbound = !shot || !region;
+  if (writtenMode === 'followup') {
+    return {
+      text: '可先截屏或直接输入题目 / 粘贴代码报错，由首选视觉模型多轮承接。',
+      miniText: '输入题目或点击框选截题',
+      hasUnbound
+    };
+  }
+  if (shot && region) {
+    return {
+      text: `按 ${shot} 全屏截题或 ${region} 框选题目；长题可先点顶栏多图图标连拍。`,
+      miniText: `按 ${region} 框选或 ${shot} 全屏截题`,
+      hasUnbound: false
+    };
+  }
+  if (shot) {
+    return {
+      text: `按 ${shot} 全屏截题，或直接点击下方「框选截题」按钮；长题可先点顶栏多图图标连拍。`,
+      miniText: `按 ${shot} 全屏截题，或点下方框选`,
+      hasUnbound: true
+    };
+  }
+  if (region) {
+    return {
+      text: `按 ${region} 框选题目，或直接点击下方按钮截题；长题可先点顶栏多图图标连拍。`,
+      miniText: `按 ${region} 框选截题`,
+      hasUnbound: true
+    };
+  }
+  return {
+    text: '直接点击下方「框选截题」或「静默全屏」开始识题；也可绑定快捷键或鼠标侧键提速。',
+    miniText: '点击下方「框选截题」开始识题',
+    hasUnbound: true
+  };
+}
+
+function formatKeyShort(acc) {
+  return formatWrittenKeyLabel(acc) || '未设置';
 }
 
 function isPureChoiceAnswer(text) {
@@ -427,10 +473,25 @@ export function WrittenCompactView({
     return primaryEndpoint?.model || primaryEndpoint?.name || '首选视觉';
   }, [ready, writtenMode, primaryEndpoint, effectiveSimultaneous, enabledEndpoints.length]);
 
+  const writtenCounts = useMemo(() => summarizeWrittenCounts(validSession), [validSession]);
+  const emptyPrompt = useMemo(
+    () => buildWrittenEmptyPrompt(settings?.ui?.hotkeyShot, settings?.capture?.hotkeyRegion, writtenMode),
+    [settings?.ui?.hotkeyShot, settings?.capture?.hotkeyRegion, writtenMode]
+  );
+  const captureTooltip = useMemo(() => {
+    const shot = formatWrittenKeyLabel(settings?.ui?.hotkeyShot);
+    const region = formatWrittenKeyLabel(settings?.capture?.hotkeyRegion);
+    const parts = [];
+    if (shot) parts.push(`全屏 ${shot}`);
+    if (region) parts.push(`框选 ${region}`);
+    return parts.length ? `截屏识题（${parts.join(' · ')}）` : '截屏识题（点击选择框选或全屏）';
+  }, [settings?.ui?.hotkeyShot, settings?.capture?.hotkeyRegion]);
+
   // =========================================================================
   // MINI CHOICE STRIP MODE (One-click compact overlay, still on workbench-window)
   // =========================================================================
   if (compactMini) {
+    const curProblemIdx = selectedQuestion ? writtenCounts.getProblemIndex(selectedQuestion.id) : 0;
     return (
       <>
         <section
@@ -440,7 +501,11 @@ export function WrittenCompactView({
         >
           <header className="mc-wf-mini-header" data-interactive="true" onPointerDown={handleTopbarPointerDown}>
             <strong className="mc-wf-mini-title" title="拖动移动小窗">
-              {clickThrough ? '穿透中' : questions.length > 0 ? `第 ${selectedIdx + 1}/${questions.length} 题` : '笔试极简条'}
+              {clickThrough
+                ? '穿透中'
+                : writtenCounts.problemCount > 0
+                  ? `第 ${curProblemIdx}/${writtenCounts.problemCount} 题${selectedQuestion?.isFollowup ? '·追问' : ''}`
+                  : '笔试极简条'}
             </strong>
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
               {questions.length > 1 && (
@@ -552,9 +617,20 @@ export function WrittenCompactView({
                 )}
               </div>
             )) : (
-              <div className="mc-wf-mini-empty">
-                <div>{ready ? '等待题图 · 按截屏快捷键开始识题' : '视觉模型未配置'}</div>
-                {!ready && onOpenVisionSettings && (
+              <div className="mc-wf-mini-empty" data-interactive="true">
+                <div>{ready ? emptyPrompt.miniText : '视觉模型未配置'}</div>
+                {ready ? (
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
+                    <button type="button" className="mc-btn mc-btn-sm mc-btn-primary" disabled={batch?.busy} onClick={() => onCapture?.('region')}>
+                      <IconScan size={11} /> 框选截题
+                    </button>
+                    {emptyPrompt.hasUnbound && (
+                      <button type="button" className="mc-btn mc-btn-sm" onClick={() => setShortcutModalOpen(true)}>
+                        设置快捷键
+                      </button>
+                    )}
+                  </div>
+                ) : onOpenVisionSettings && (
                   <button type="button" className="mc-btn mc-btn-sm" onClick={onOpenVisionSettings}>
                     去配置截图模型
                   </button>
@@ -657,7 +733,13 @@ export function WrittenCompactView({
                 >
                   <IconChevronLeft size={12} />
                 </button>
-                <span className="mc-wf-pager-text">{selectedIdx + 1}/{questions.length}</span>
+                <span
+                  className="mc-wf-pager-text"
+                  title={writtenCounts.summaryText}
+                >
+                  {selectedQuestion ? writtenCounts.getProblemIndex(selectedQuestion.id) : 0}/{writtenCounts.problemCount}
+                  {writtenCounts.followupCount > 0 ? ` · ${writtenCounts.followupCount}追问` : ''}
+                </span>
                 <button
                   type="button"
                   className="mc-wf-pager-btn"
@@ -693,7 +775,7 @@ export function WrittenCompactView({
               ref={shotBtnRef}
               type="button"
               className={`mc-icon-btn${shotMenuOpen ? ' is-active' : ''}`}
-              title={`截屏识题（全屏 ${formatKeyShort(settings?.ui?.hotkeyShot)} · 框选 ${formatKeyShort(settings?.capture?.hotkeyRegion)}）`}
+              title={captureTooltip}
               aria-label="截屏识题"
               aria-expanded={shotMenuOpen}
               onClick={(e) => {
@@ -876,9 +958,7 @@ export function WrittenCompactView({
                     {writtenMode === 'followup' ? '开始一个笔试对话' : '等待识题…'}
                   </div>
                   <div className="mc-wf-empty-desc">
-                    {writtenMode === 'followup'
-                      ? '可先截屏或直接输入题目 / 粘贴代码报错，由首选视觉模型多轮承接。'
-                      : `按 ${formatKeyShort(settings?.ui?.hotkeyShot)} 全屏截题或 ${formatKeyShort(settings?.capture?.hotkeyRegion)} 框选题目；长题可先点顶栏多图图标连拍。`}
+                    {emptyPrompt.text}
                   </div>
                   <div className="mc-wf-empty-actions">
                     <button type="button" className="mc-btn mc-btn-sm mc-btn-primary" disabled={batch?.busy} onClick={() => onCapture?.('region')}>
@@ -887,6 +967,11 @@ export function WrittenCompactView({
                     <button type="button" className="mc-btn mc-btn-sm" disabled={batch?.busy} onClick={() => onCapture?.('full')}>
                       <IconCamera size={13} /> 静默全屏
                     </button>
+                    {emptyPrompt.hasUnbound && (
+                      <button type="button" className="mc-btn mc-btn-sm" onClick={() => setShortcutModalOpen(true)}>
+                        设置快捷键
+                      </button>
+                    )}
                   </div>
                 </>
               )}
@@ -993,7 +1078,9 @@ export function WrittenCompactView({
                     onClick={() => onSelectQuestion?.(q.id)}
                   >
                     <div className="mc-wf-turn-user">
-                      <span className="mc-wf-turn-idx">#{qi + 1}</span>
+                      <span className="mc-wf-turn-idx">
+                        {q.isFollowup ? `题${writtenCounts.getProblemIndex(q.id)}·追问` : `题${writtenCounts.getProblemIndex(q.id)}`}
+                      </span>
                       <div className="mc-wf-turn-user-content">
                         {qAtt?.images?.length > 0 && (
                           <div className="mc-wf-turn-imgs" data-interactive="true">

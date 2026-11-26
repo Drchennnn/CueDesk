@@ -27,6 +27,7 @@ pb = importlib.util.module_from_spec(spec_pb)
 spec_pb.loader.exec_module(pb)
 
 MAIN = "out/main/index.js"
+ASR_WORKER = "out/main/asrWorker.js"
 PRELOAD = "out/preload/index.js"
 RENDERER_JS = "out/renderer/assets/index-hyFYaQxP.js"
 RENDERER_CSS = "out/renderer/assets/index-BJg-OUFD.css"
@@ -54,9 +55,23 @@ def copy_baseline_runtime(baseline: Path, destination: Path) -> None:
     if not (app_src / "MeetingCopilot.exe").is_file() or not (app_src / "resources/app.asar").is_file():
         raise ValueError(f"Invalid portable baseline directory: {baseline}")
 
+    def safe_copy2(src_file: str, dst_file: str) -> str:
+        src_p = Path(src_file)
+        dst_p = Path(dst_file)
+        try:
+            return shutil.copy2(src_file, dst_file)
+        except PermissionError:
+            # Windows FrameServer/COM can keep a registered DirectShow DLL (e.g. softcam.dll)
+            # mapped in memory; reuse it if its contents are byte-identical to the baseline.
+            if dst_p.is_file() and sha256_file(src_p) == sha256_file(dst_p):
+                return dst_file
+            raise
+
     shutil.copytree(
         app_src,
         destination / "app",
+        dirs_exist_ok=True,
+        copy_function=safe_copy2,
         ignore=shutil.ignore_patterns("*.bak", "*.tmp", "*.log", "__pycache__", "*.pyc"),
     )
 
@@ -118,6 +133,7 @@ def verify_build(destination: Path) -> dict:
 
     checks = [
         (MAIN, "main-check.cjs"),
+        (ASR_WORKER, "worker-check.cjs"),
         (PRELOAD, "preload-check.cjs"),
         (RENDERER_JS, "renderer-check.mjs"),
     ]
@@ -196,7 +212,22 @@ def main() -> None:
     if destination.exists():
         if not args.overwrite:
             raise ValueError(f"Output directory already exists: {destination}")
-        shutil.rmtree(destination)
+        locked_files: list[Path] = []
+        def _on_rm_error(func, failed_path, exc_info):
+            err = exc_info[1]
+            p = Path(failed_path)
+            if isinstance(err, PermissionError) and p.is_file() and p.name.lower() == "softcam.dll":
+                locked_files.append(p)
+                return
+            if locked_files and p.is_dir():
+                return
+            raise err
+        shutil.rmtree(destination, onerror=_on_rm_error)
+        if locked_files:
+            # Ensure data/ is completely clean even when Windows COM keeps softcam.dll mapped
+            data_dir = destination / "data"
+            if data_dir.exists():
+                shutil.rmtree(data_dir)
     if not args.no_zip and archive.exists():
         if not args.overwrite:
             raise ValueError(f"Output zip already exists: {archive}")
@@ -210,15 +241,17 @@ def main() -> None:
     if not args.ui_js.is_file() or not args.ui_css.is_file():
         raise ValueError(f"Compiled UI assets missing: {args.ui_js} / {args.ui_css}")
 
-    destination.mkdir(parents=True)
+    destination.mkdir(parents=True, exist_ok=True)
     copy_baseline_runtime(baseline, destination)
 
     original = baseline_asar.read_bytes()
     header, offset = bp.asar.read_header(original)
     main_patched = pb.patch_main(bp.asar.read_member(original, header, offset, MAIN))
+    worker_patched = pb.patch_asr_worker(bp.asar.read_member(original, header, offset, ASR_WORKER))
     preload_patched = pb.patch_preload(bp.asar.read_member(original, header, offset, PRELOAD))
     replacements = {
         MAIN: main_patched,
+        ASR_WORKER: worker_patched,
         PRELOAD: preload_patched,
         RENDERER_JS: args.ui_js.read_bytes(),
         RENDERER_CSS: args.ui_css.read_bytes(),

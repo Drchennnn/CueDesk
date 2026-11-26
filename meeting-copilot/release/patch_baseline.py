@@ -175,6 +175,381 @@ def patch_main(raw: bytes) -> bytes:
         "llm:ask pass reasoningEffort to chatStream",
     )
 
+    # 1c. Pluggable Real-time ASR adapters (DashScope + Doubao SAUC v3), per-provider credential isolation & Test Transcribe
+    text = replace_once(
+        text,
+        '''      if (realtime) {
+        const { apiKey, ...rrest } = realtime;
+        this.data.asr.realtime = { ...this.data.asr.realtime, ...stripUndefined(rrest) };
+        if (apiKey !== void 0) {
+          this.writeKey(this.data.asr.realtime, apiKey, rrest.verification !== void 0);
+        }
+      }''',
+        '''      if (realtime) {
+        const asrAdapters = require(path.join(process.resourcesPath, "tools", "asr-adapters.cjs"));
+        const norm = asrAdapters.normalizeRealtimeSettings(this.data.asr.realtime);
+        const { apiKey, profiles: _ignoredProfiles, ...rrest } = realtime;
+        const targetProvider = asrAdapters.inferRealtimeProvider({
+          provider: rrest.provider || norm.provider,
+          baseUrl: rrest.baseUrl !== void 0 ? rrest.baseUrl : norm.baseUrl,
+          resourceId: rrest.resourceId !== void 0 ? rrest.resourceId : norm.resourceId
+        });
+        const profilePatch = stripUndefined({
+          baseUrl: rrest.baseUrl,
+          model: rrest.model,
+          ...(targetProvider === "doubao" ? {
+            resourceId: rrest.resourceId,
+            authMode: rrest.authMode,
+            appKey: rrest.appKey
+          } : {}),
+          verification: rrest.verification
+        });
+        const nextProfile = { ...norm.profiles[targetProvider], ...profilePatch };
+        if (apiKey !== void 0) {
+          this.writeKey(nextProfile, apiKey, rrest.verification !== void 0);
+        }
+        norm.profiles[targetProvider] = nextProfile;
+        norm.provider = targetProvider;
+        this.data.asr.realtime = asrAdapters.normalizeRealtimeSettings({
+          provider: targetProvider,
+          profiles: norm.profiles
+        });
+      }''',
+        "SettingsStore applyPatch per-provider realtime ASR",
+    )
+
+    text = replace_once(
+        text,
+        '''      case "asr-realtime":
+        this.data.asr.realtime = { ...this.data.asr.realtime, verification: value };
+        break;''',
+        '''      case "asr-realtime": {
+        const asrAdapters = require(path.join(process.resourcesPath, "tools", "asr-adapters.cjs"));
+        const norm = asrAdapters.normalizeRealtimeSettings(this.data.asr.realtime);
+        const targetProvider = value.provider ? asrAdapters.inferRealtimeProvider({ provider: value.provider }) : norm.provider;
+        norm.profiles[targetProvider] = { ...norm.profiles[targetProvider], verification: value };
+        this.data.asr.realtime = asrAdapters.normalizeRealtimeSettings({
+          provider: norm.provider,
+          profiles: norm.profiles
+        });
+        break;
+      }''',
+        "SettingsStore recordVerification per-provider realtime ASR",
+    )
+
+    text = replace_once(
+        text,
+        '''        realtime: {
+          baseUrl: d.asr.realtime?.baseUrl,
+          model: d.asr.realtime?.model,
+          apiKeySet: !!d.asr.realtime?.apiKeyEnc,
+          apiKeyHint: d.asr.realtime?.apiKeyHint,
+          verification: d.asr.realtime?.verification
+        },''',
+        '''        realtime: require(path.join(process.resourcesPath, "tools", "asr-adapters.cjs")).publicRealtimeSettings(d.asr.realtime),''',
+        "SettingsStore getPublic per-provider realtime ASR",
+    )
+
+    text = replace_once(
+        text,
+        '''  getRealtimeAsrApiKey() {
+    const enc = this.data.asr.realtime?.apiKeyEnc;
+    if (!enc) return void 0;
+    try {
+      return this.cipher.decrypt(enc);
+    } catch {
+      return void 0;
+    }
+  }''',
+        '''  getRealtimeAsrApiKey(providerOverride) {
+    const asrAdapters = require(path.join(process.resourcesPath, "tools", "asr-adapters.cjs"));
+    const norm = asrAdapters.normalizeRealtimeSettings(this.data.asr.realtime);
+    const targetProvider = providerOverride ? asrAdapters.inferRealtimeProvider({ provider: providerOverride }) : norm.provider;
+    const enc = norm.profiles[targetProvider]?.apiKeyEnc || (targetProvider === norm.provider ? norm.apiKeyEnc : "");
+    if (!enc) return void 0;
+    try {
+      return this.cipher.decrypt(enc);
+    } catch {
+      return void 0;
+    }
+  }''',
+        "SettingsStore getRealtimeAsrApiKey per-provider",
+    )
+
+    text = replace_once(
+        text,
+        '''    this.send({
+      type: "init",
+      backend: opts.backend,
+      modelsDir: opts.modelsDir,
+      modelId: opts.modelId,
+      ep: opts.ep,
+      language: opts.language,
+      cloud: opts.cloud
+    });''',
+        '''    this.send({
+      type: "init",
+      backend: opts.backend,
+      modelsDir: opts.modelsDir,
+      modelId: opts.modelId,
+      ep: opts.ep,
+      language: opts.language,
+      cloud: opts.cloud,
+      toolsDir: opts.toolsDir
+    });''',
+        "AsrHost forward toolsDir to asrWorker",
+    )
+
+    text = replace_once(
+        text,
+        '''  function buildAsrOptions() {
+    const a = settings.data.asr;
+    const backend = a.backend ?? "local";
+    let cloud;
+    if (backend === "local-realtime") {
+      cloud = {
+        baseUrl: "ws://127.0.0.1:10097",
+        model: a.localRealtime?.model ?? "fun-asr-nano",
+        apiKey: ""
+      };
+    } else if (backend === "cloud-realtime") {
+      const rtKey = settings.getRealtimeAsrApiKey() ?? "";
+      if (a.realtime?.baseUrl && a.realtime?.model && rtKey) {
+        cloud = { baseUrl: a.realtime.baseUrl, model: a.realtime.model, apiKey: rtKey };
+      }
+    } else if (a.cloud?.baseUrl && a.cloud?.model && settings.getCloudAsrApiKey()) {
+      cloud = { baseUrl: a.cloud.baseUrl, model: a.cloud.model, apiKey: settings.getCloudAsrApiKey() };
+    }
+    return {
+      // the worker treats both realtime flavors identically (same WS engine)
+      backend: backend === "local-realtime" ? "cloud-realtime" : backend,
+      modelsDir: a.modelsDir ?? path.join(electron.app.getPath("userData"), "models"),
+      modelId: MODEL_ID,
+      ep: whisperExecutionProvidersForPlatform(process.platform),
+      language: a.language,
+      cloud
+    };
+  }
+  async function startAsr() {
+    const backend = settings.data.asr.backend;
+    if (backend === "cloud-realtime" || backend === "cloud") {
+      const config = backend === "cloud" ? settings.data.asr.cloud : settings.data.asr.realtime;
+      const key = backend === "cloud" ? settings.getCloudAsrApiKey() : settings.getRealtimeAsrApiKey();
+      if (!config?.baseUrl || !config?.model || !key) {
+        asr.emit({ kind: "status", state: "unconfigured", queuedSegments: 0 });
+        return;
+      }
+    }''',
+        '''  function buildAsrOptions() {
+    const asrAdapters = require(path.join(process.resourcesPath, "tools", "asr-adapters.cjs"));
+    const a = settings.data.asr;
+    const backend = a.backend ?? "local";
+    let cloud;
+    if (backend === "local-realtime") {
+      cloud = {
+        provider: "dashscope",
+        baseUrl: "ws://127.0.0.1:10097",
+        model: a.localRealtime?.model ?? "fun-asr-nano",
+        apiKey: ""
+      };
+    } else if (backend === "cloud-realtime") {
+      const rt = asrAdapters.normalizeRealtimeSettings(a.realtime);
+      const rtKey = settings.getRealtimeAsrApiKey(rt.provider) ?? "";
+      const candidate = {
+        provider: rt.provider,
+        baseUrl: rt.baseUrl,
+        model: rt.model,
+        resourceId: rt.resourceId,
+        authMode: rt.authMode,
+        appKey: rt.appKey,
+        apiKey: rtKey
+      };
+      const check = asrAdapters.validateRealtimeConfig(candidate);
+      if (check.ok) {
+        cloud = check.normalized;
+      }
+    } else if (a.cloud?.baseUrl && a.cloud?.model && settings.getCloudAsrApiKey()) {
+      cloud = { baseUrl: a.cloud.baseUrl, model: a.cloud.model, apiKey: settings.getCloudAsrApiKey() };
+    }
+    return {
+      // the worker treats both realtime flavors identically (same WS engine)
+      backend: backend === "local-realtime" ? "cloud-realtime" : backend,
+      modelsDir: a.modelsDir ?? path.join(electron.app.getPath("userData"), "models"),
+      modelId: MODEL_ID,
+      ep: whisperExecutionProvidersForPlatform(process.platform),
+      language: a.language,
+      cloud,
+      toolsDir: path.join(process.resourcesPath, "tools")
+    };
+  }
+  async function startAsr() {
+    const backend = settings.data.asr.backend;
+    if (backend === "cloud-realtime") {
+      const asrAdapters = require(path.join(process.resourcesPath, "tools", "asr-adapters.cjs"));
+      const rt = asrAdapters.normalizeRealtimeSettings(settings.data.asr.realtime);
+      const key = settings.getRealtimeAsrApiKey(rt.provider) ?? "";
+      const check = asrAdapters.validateRealtimeConfig({ ...rt, apiKey: key });
+      if (!check.ok) {
+        asr.emit({ kind: "status", state: "unconfigured", queuedSegments: 0 });
+        return;
+      }
+    } else if (backend === "cloud") {
+      const config = settings.data.asr.cloud;
+      const key = settings.getCloudAsrApiKey();
+      if (!config?.baseUrl || !config?.model || !key) {
+        asr.emit({ kind: "status", state: "unconfigured", queuedSegments: 0 });
+        return;
+      }
+    }''',
+        "buildAsrOptions + startAsr pluggable realtime validation",
+    )
+
+    text = replace_once(
+        text,
+        '''    electron.ipcMain.handle(
+      IPC.providerTest,
+      async (_e, incoming) => {
+        const req = incoming ?? {};
+        const apiKey = resolveTestApiKey(req, (slot) => settings.getApiKeyForSlot(slot));
+        const request = withoutCandidateKey(req);
+        const result = await runProviderTest(
+          { ...request, language: request.language ?? settings.data.asr.language },
+          apiKey
+        );
+        if (request.slot) {
+          settings.recordVerification(request.slot, {
+            lastTestAt: (/* @__PURE__ */ new Date()).toISOString(),
+            lastTestOk: result.ok,
+            lastTestCode: result.code,
+            latencyMs: result.latencyMs
+          });
+        }
+        if (!result.ok) {
+          recordDiagnosticError(
+            `provider-test/${request.capability}`,
+            `${result.code} (${request.providerId} ${request.model})`
+          );
+        }
+        console.log(
+          `[provider-test] ${request.capability} ${request.providerId} -> ${result.code} (${result.latencyMs ?? "?"}ms)`
+        );
+        return result;
+      }
+    );''',
+        '''    electron.ipcMain.handle(
+      IPC.providerTest,
+      async (_e, incoming) => {
+        const req = incoming ?? {};
+        const request = withoutCandidateKey(req);
+        let result;
+        if (request.capability === "asr-realtime") {
+          const asrAdapters = require(path.join(process.resourcesPath, "tools", "asr-adapters.cjs"));
+          const provider = asrAdapters.inferRealtimeProvider(request);
+          const apiKey = req.candidateApiKey?.trim() || (req.useStoredKey ? (settings.getRealtimeAsrApiKey(provider)?.trim() ?? "") : "");
+          result = await asrAdapters.testRealtimeConnection(
+            { ...request, provider, apiKey },
+            { WebSocket: require("ws"), language: request.language ?? settings.data.asr.language }
+          );
+          if (request.slot) {
+            settings.recordVerification(request.slot, {
+              provider,
+              lastTestAt: (/* @__PURE__ */ new Date()).toISOString(),
+              lastTestOk: result.ok,
+              lastTestCode: result.code,
+              latencyMs: result.latencyMs
+            });
+          }
+          if (!result.ok) {
+            recordDiagnosticError(
+              `provider-test/asr-realtime/${provider}`,
+              `${result.stage}:${result.code} raw=${result.rawCode || "-"} req=${result.requestId || "-"}`
+            );
+          }
+          console.log(`[provider-test] asr-realtime ${provider} -> ${result.stage}:${result.code} (${result.latencyMs ?? "?"}ms)`);
+          return result;
+        }
+        const apiKey = resolveTestApiKey(req, (slot) => settings.getApiKeyForSlot(slot));
+        result = await runProviderTest(
+          { ...request, language: request.language ?? settings.data.asr.language },
+          apiKey
+        );
+        if (request.slot) {
+          settings.recordVerification(request.slot, {
+            lastTestAt: (/* @__PURE__ */ new Date()).toISOString(),
+            lastTestOk: result.ok,
+            lastTestCode: result.code,
+            latencyMs: result.latencyMs
+          });
+        }
+        if (!result.ok) {
+          recordDiagnosticError(
+            `provider-test/${request.capability}`,
+            `${result.code} (${request.providerId} ${request.model})`
+          );
+        }
+        console.log(
+          `[provider-test] ${request.capability} ${request.providerId} -> ${result.code} (${result.latencyMs ?? "?"}ms)`
+        );
+        return result;
+      }
+    );
+    electron.ipcMain.handle(
+      "asr:test-transcribe",
+      async (_e, incoming) => {
+        const req = incoming ?? {};
+        const asrAdapters = require(path.join(process.resourcesPath, "tools", "asr-adapters.cjs"));
+        const provider = asrAdapters.inferRealtimeProvider(req);
+        const apiKey = req.candidateApiKey?.trim() || (req.useStoredKey ? (settings.getRealtimeAsrApiKey(provider)?.trim() ?? "") : "");
+        const lang = req.language ?? settings.data.asr.language ?? "chinese";
+        const sampleLang = lang === "english" ? "english" : "chinese";
+        let pcm;
+        try {
+          pcm = defaultProviderTestDeps.readTestAudio(sampleLang);
+        } catch (err) {
+          return {
+            ok: false,
+            mode: "transcribe",
+            provider,
+            connected: false,
+            stage: "audio",
+            code: "AUDIO_FORMAT_ERROR",
+            latencyMs: 0,
+            transcript: "",
+            messageZh: `无法加载内置测试音频：${err.message}`,
+            hintZh: "请检查应用资源目录中 test-audio 音频样本是否完整。",
+            rawCode: "TEST_AUDIO_READ_ERROR",
+            requestId: "",
+            retryable: false
+          };
+        }
+        const result = await asrAdapters.testRealtimeTranscribe(
+          { ...withoutCandidateKey(req), provider, apiKey },
+          pcm,
+          { WebSocket: require("ws"), language: sampleLang }
+        );
+        if (req.slot === "asr-realtime") {
+          settings.recordVerification("asr-realtime", {
+            provider,
+            lastTestAt: (/* @__PURE__ */ new Date()).toISOString(),
+            lastTestOk: result.ok,
+            lastTestCode: result.code,
+            latencyMs: result.latencyMs,
+            lastTranscript: result.transcript || ""
+          });
+        }
+        if (!result.ok) {
+          recordDiagnosticError(
+            `asr-test-transcribe/${provider}`,
+            `${result.stage}:${result.code} connected=${result.connected} raw=${result.rawCode || "-"} req=${result.requestId || "-"}`
+          );
+        }
+        console.log(`[asr-test-transcribe] ${provider} -> ${result.stage}:${result.code} ok=${result.ok} (${result.latencyMs ?? "?"}ms)`);
+        return result;
+      }
+    );''',
+        "providerTest realtime adapter + asr:test-transcribe IPC",
+    )
+
     # 2. SessionStore: add saveStrict that surfaces real disk write failures
     text = replace_once(
         text,
@@ -842,6 +1217,16 @@ def patch_main(raw: bytes) -> bytes:
         return { ok: false, models: [], error: err?.message || String(err) };
       }
     });
+    electron.ipcMain.handle("eye-contact:check-camera", async (event) => {
+      assertMainSender(event);
+      return eyeContact?.checkCameraRegistration ? eyeContact.checkCameraRegistration() : null;
+    });
+    electron.ipcMain.handle("app:relaunch", (event) => {
+      assertMainSender(event);
+      electron.app.relaunch();
+      setTimeout(() => electron.app.exit(0), 120);
+      return true;
+    });
     electron.ipcMain.handle(IPC.onboardingRerun, () => {''',
         "models:list IPC handler",
     )
@@ -969,10 +1354,162 @@ def patch_preload(raw: bytes) -> bytes:
   setSecurityPrefs: (patch) => electron.ipcRenderer.invoke("security:set-prefs", patch),
   checkSecurityEnvironment: () => electron.ipcRenderer.invoke("security:check-env"),
   listModels: (req) => electron.ipcRenderer.invoke("models:list", req),
+  testRealtimeTranscribe: (req) => electron.ipcRenderer.invoke("asr:test-transcribe", req),
+  checkEyeContactCamera: () => electron.ipcRenderer.invoke("eye-contact:check-camera"),
+  relaunchApp: () => electron.ipcRenderer.invoke("app:relaunch"),
   hide: () => electron.ipcRenderer.send(IPC.winHide),
   quit: () => electron.ipcRenderer.send(IPC.appQuit)
 };''',
         "preload new window.mc methods",
+    )
+
+    return text.encode("utf-8")
+
+
+def patch_asr_worker(raw: bytes) -> bytes:
+    """Patch out/main/asrWorker.js to load pluggable realtime ASR adapters and prevent stale session leakage."""
+    text = raw.decode("utf-8")
+
+    text = replace_once(
+        text,
+        '''    if (init.backend === "cloud-realtime") {
+      if (!init.cloud) throw new Error("cloud streaming ASR is not configured");
+      engine = await aliyunRealtimeEngine.AliyunRealtimeEngine.load(init.cloud);
+      post({ type: "ready", loadMs: 0, warmMs: 0, ep: "cloud-rt", gpuSuspect: false });''',
+        '''    if (init.backend === "cloud-realtime") {
+      if (!init.cloud) throw new Error("cloud streaming ASR is not configured");
+      const toolsDir = init.toolsDir || path.join(process.resourcesPath || "", "tools");
+      const asrAdapters = require(path.join(toolsDir, "asr-adapters.cjs"));
+      const WebSocket = require("ws");
+      engine = await asrAdapters.createRealtimeEngine(init.cloud, { WebSocket });
+      post({ type: "ready", loadMs: 0, warmMs: 0, ep: "cloud-rt", gpuSuspect: false });''',
+        "asrWorker pluggable realtime engine load",
+    )
+
+    text = replace_once(
+        text,
+        '''function ensureStream(ch) {
+  if (streams[ch] || !engine || !isStreamingEngine(engine)) return;
+  const ringDur = ring[ch].reduce((a, c) => a + c.ms, 0);
+  streamEpoch[ch] = Date.now() - ringDur;
+  const epoch = streamEpoch[ch];
+  const session = engine.openSession(
+    {
+      onPartial: (text) => {
+        if (!shuttingDown && !isJunkTranscript(text)) post({ type: "partial", speaker: ch, text });
+      },
+      onSentence: (s) => {
+        if (shuttingDown || isJunkTranscript(s.text)) return;
+        const now = Date.now();
+        post({
+          type: "segment",
+          id: ++segCounter,
+          text: s.text,
+          lang: void 0,
+          speaker: ch,
+          audioMs: Math.max(0, s.endMs - s.beginMs),
+          speechStartTs: epoch + s.beginMs,
+          speechEndTs: epoch + s.endMs,
+          vadCloseTs: epoch + s.endMs,
+          inferStartTs: epoch + s.endMs,
+          inferEndTs: now
+        });
+      },
+      onError: (message) => {
+        streams[ch] = null;
+        if (!shuttingDown) post({ type: "error", message: `streaming ASR (${ch}): ${message}`, fatal: false });
+      }
+    },
+    { language }
+  );
+  for (const c of ring[ch]) session.push(c.pcm);
+  ring[ch] = [];
+  streams[ch] = session;
+  console.log(`[worker] stream open ch=${ch}`);
+}
+function closeStream(ch) {
+  const s = streams[ch];
+  if (!s) return;
+  streams[ch] = null;
+  console.log(`[worker] stream close ch=${ch}`);
+  void s.close().catch(() => void 0);
+}''',
+        '''const streamGen = { them: 0, me: 0 };
+function ensureStream(ch) {
+  if (streams[ch] || !engine || !isStreamingEngine(engine)) return;
+  const gen = ++streamGen[ch];
+  const ringDur = ring[ch].reduce((a, c) => a + c.ms, 0);
+  streamEpoch[ch] = Date.now() - ringDur;
+  const epoch = streamEpoch[ch];
+  const session = engine.openSession(
+    {
+      onPartial: (text) => {
+        if (!shuttingDown && gen === streamGen[ch] && !isJunkTranscript(text)) {
+          post({ type: "partial", speaker: ch, text });
+        }
+      },
+      onSentence: (s) => {
+        if (shuttingDown || gen !== streamGen[ch] || isJunkTranscript(s.text)) return;
+        const now = Date.now();
+        post({
+          type: "segment",
+          id: ++segCounter,
+          text: s.text,
+          lang: void 0,
+          speaker: ch,
+          audioMs: Math.max(0, s.endMs - s.beginMs),
+          speechStartTs: epoch + s.beginMs,
+          speechEndTs: epoch + s.endMs,
+          vadCloseTs: epoch + s.endMs,
+          inferStartTs: epoch + s.endMs,
+          inferEndTs: now
+        });
+      },
+      onError: (message) => {
+        if (gen !== streamGen[ch]) return;
+        streams[ch] = null;
+        if (!shuttingDown) post({ type: "error", message: `streaming ASR (${ch}): ${message}`, fatal: false });
+      }
+    },
+    { language }
+  );
+  for (const c of ring[ch]) session.push(c.pcm);
+  ring[ch] = [];
+  streams[ch] = session;
+  console.log(`[worker] stream open ch=${ch} gen=${gen}`);
+}
+function closeStream(ch, discard = false) {
+  const s = streams[ch];
+  if (discard) streamGen[ch] += 1;
+  if (!s) return;
+  streams[ch] = null;
+  console.log(`[worker] stream close ch=${ch} discard=${discard}`);
+  if (discard && typeof s.cancel === "function") {
+    try { s.cancel(); } catch {}
+  } else {
+    void s.close().catch(() => void 0);
+  }
+}''',
+        "asrWorker streamGen stale-session guard",
+    )
+
+    text = replace_once(
+        text,
+        '''    case "shutdown":
+      shuttingDown = true;
+      queue = [];
+      closeStream("them");
+      closeStream("me");
+      setImmediate(() => process.exit(0));
+      break;''',
+        '''    case "shutdown":
+      shuttingDown = true;
+      queue = [];
+      closeStream("them", true);
+      closeStream("me", true);
+      setImmediate(() => process.exit(0));
+      break;''',
+        "asrWorker shutdown discard streams",
     )
 
     return text.encode("utf-8")

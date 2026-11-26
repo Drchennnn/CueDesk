@@ -2,10 +2,43 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Switch, eyeContactStatusText } from './SharedWidgets.jsx';
 import { CustomSelect } from './CustomSelect.jsx';
 
+function normalizeCamLabel(label) {
+  return String(label || '').trim().replace(/\s+/g, ' ');
+}
+
+function stripUsbSuffix(label) {
+  return normalizeCamLabel(label).replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)\s*$/i, '').trim();
+}
+
+export function matchVirtualCameraDevice(devices, virtualCamera) {
+  const videoInputs = (Array.isArray(devices) ? devices : []).filter(
+    item => item && (!item.kind || item.kind === 'videoinput')
+  );
+  const target = normalizeCamLabel(virtualCamera || 'DirectShow Softcam');
+  const targetLower = target.toLowerCase();
+  const targetBase = stripUsbSuffix(target).toLowerCase();
+
+  // 1. Exact label match
+  let found = videoInputs.find(item => item.label === target);
+  if (found) return found;
+  // 2. Normalized case-insensitive match
+  found = videoInputs.find(item => normalizeCamLabel(item.label).toLowerCase() === targetLower);
+  if (found) return found;
+  // 3. Stripped USB-ID suffix match (Chromium sometimes appends (xxxx:xxxx))
+  found = videoInputs.find(item => stripUsbSuffix(item.label).toLowerCase() === targetBase);
+  if (found) return found;
+  // 4. Substring match or DirectShow Softcam fallback
+  found = videoInputs.find(item => {
+    const norm = normalizeCamLabel(item.label).toLowerCase();
+    return (targetBase && norm.includes(targetBase)) || /directshow\s*softcam/i.test(norm);
+  });
+  return found || null;
+}
+
 function createEyeContactPreview(options = {}) {
   const media = options.mediaDevices || navigator.mediaDevices;
   const delay = options.pollMs ?? 250;
-  const enumerationTimeout = options.enumerationTimeout ?? 10000;
+  const enumerationTimeout = options.enumerationTimeout ?? 6000;
   let version = 0;
   let stream = null;
   let video = null;
@@ -58,15 +91,20 @@ function createEyeContactPreview(options = {}) {
     const token = version;
     let devices = await bounded(media.enumerateDevices(), enumerationTimeout, '读取摄像头列表超时。', token);
     if (requestPermission && !devices.some(item => item.kind === 'videoinput' && item.label)) {
-      const temporary = await bounded(
-        media.getUserMedia({ video: true, audio: false }),
-        options.openTimeout ?? 15000,
-        '摄像头权限请求超时，请检查系统权限。',
-        token,
-        stopTracks
-      );
-      stopTracks(temporary);
-      devices = await bounded(media.enumerateDevices(), enumerationTimeout, '读取摄像头列表超时。', token);
+      try {
+        const temporary = await bounded(
+          media.getUserMedia({ video: true, audio: false }),
+          options.openTimeout ?? 15000,
+          '摄像头权限请求超时，请检查系统权限。',
+          token,
+          stopTracks
+        );
+        stopTracks(temporary);
+        devices = await bounded(media.enumerateDevices(), enumerationTimeout, '读取摄像头列表超时。', token);
+      } catch (err) {
+        // If another process/engine temporarily occupies default physical cam, still return enumerated list
+        if (err?.name === 'NotAllowedError' || err?.name === 'SecurityError') throw err;
+      }
     }
     return devices.filter(item => item.kind === 'videoinput');
   }
@@ -85,6 +123,7 @@ function createEyeContactPreview(options = {}) {
         cancellations.delete(cancel);
         if (frameId !== undefined) element.cancelVideoFrameCallback?.(frameId);
         element.removeEventListener?.('loadeddata', check);
+        element.removeEventListener?.('playing', check);
         err ? reject(err) : resolve();
       };
       const cancel = () => finish(abortError());
@@ -93,18 +132,25 @@ function createEyeContactPreview(options = {}) {
         else if (element.readyState >= 2 && element.videoWidth > 0 && element.videoHeight > 0) finish();
       };
       cancellations.add(cancel);
-      timeout = setTimeout(() => finish(new Error('虚拟摄像头已打开，但没有收到首帧。')), options.frameTimeout ?? 8000);
+      timeout = setTimeout(() => {
+        const err = new Error('虚拟摄像头已打开，但没有收到首帧。请确认物理摄像头未被遮挡或被其他程序独占。');
+        err.previewCode = 'NO_FIRST_FRAME';
+        finish(err);
+      }, options.frameTimeout ?? 10000);
       if (typeof element.requestVideoFrameCallback === 'function') {
-        frameId = element.requestVideoFrameCallback(() => token === version ? finish() : finish(abortError()));
-      } else {
-        element.addEventListener?.('loadeddata', check);
-        poll = setInterval(check, 100);
+        frameId = element.requestVideoFrameCallback(() => {
+          if (token !== version) finish(abortError());
+          else if (element.videoWidth > 0 && element.videoHeight > 0) finish();
+        });
       }
+      element.addEventListener?.('loadeddata', check);
+      element.addEventListener?.('playing', check);
+      poll = setInterval(check, 120);
       try { Promise.resolve(element.play()).catch(err => finish(err)); } catch (err) { finish(err); }
     });
   }
 
-  async function start({ virtualCamera, element, sessionId: id }) {
+  async function start({ virtualCamera, element, sessionId: id, cameraRegistered = false, justRegistered = false }) {
     stop();
     const token = version;
     sessionId = id;
@@ -112,20 +158,31 @@ function createEyeContactPreview(options = {}) {
     emit({ status: 'waiting' });
     try {
       let devices = await listDevices(true);
-      let device;
+      let device = null;
       const deadline = Date.now() + enumerationTimeout;
       while (token === version) {
-        device = devices.find(item => item.label === virtualCamera);
+        device = matchVirtualCameraDevice(devices, virtualCamera);
         if (device) break;
-        if (Date.now() >= deadline) throw new Error('没有发现虚拟摄像头；若刚安装组件，请重启相关视频软件。');
+        if (Date.now() >= deadline) {
+          const labels = devices.map(d => d.label || '(未命名)').filter(Boolean);
+          const err = new Error(
+            cameraRegistered
+              ? `系统已注册虚拟摄像头（${virtualCamera || 'DirectShow Softcam'}），其他会议软件可直接识别，但当前应用内预览列表尚未刷新${justRegistered ? '（本轮刚完成注册）' : ''}。请点击「重启应用刷新设备列表」。`
+              : '未在系统与浏览器中发现虚拟摄像头；请先点击「开启引擎」完成注册，如刚安装请重启本应用与会议软件。'
+          );
+          err.previewCode = cameraRegistered ? 'NOT_ENUMERATED_REGISTERED' : 'NOT_REGISTERED';
+          err.enumeratedLabels = labels;
+          throw err;
+        }
         await bounded(new Promise(r => setTimeout(r, delay)), delay + 1000, '等待设备列表超时。', token);
-        devices = await bounded(media.enumerateDevices(), enumerationTimeout, '读取摄像头列表超时。', token);
+        const rawDevs = await bounded(media.enumerateDevices(), enumerationTimeout, '读取摄像头列表超时。', token);
+        devices = rawDevs.filter(item => item.kind === 'videoinput');
       }
       if (token !== version) throw abortError();
       const obtained = await bounded(
         media.getUserMedia({ video: { deviceId: { exact: device.deviceId } }, audio: false }),
         options.openTimeout ?? 15000,
-        '虚拟摄像头打开超时，请检查其他预览是否已停止。',
+        '虚拟摄像头打开超时，请检查其他预览或会议软件是否正在占用。',
         token,
         stopTracks
       );
@@ -135,9 +192,17 @@ function createEyeContactPreview(options = {}) {
       video.muted = true;
       video.playsInline = true;
       video.srcObject = stream;
+      // Allow React to remove display:none before starting frame callbacks
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      if (token !== version) throw abortError();
       await waitForFrame(video, token);
       if (token !== version) throw abortError();
-      const report = { status: 'first-frame', width: video.videoWidth, height: video.videoHeight };
+      const report = {
+        status: 'first-frame',
+        width: video.videoWidth,
+        height: video.videoHeight,
+        matchedLabel: device.label || virtualCamera
+      };
       emit(report);
       const timer = setTimeout(() => { if (token === version) stop(); }, options.previewTimeout ?? 300000);
       cancellations.add(() => clearTimeout(timer));
@@ -147,7 +212,21 @@ function createEyeContactPreview(options = {}) {
         stopTracks(stream);
         stream = null;
         if (video) { try { video.pause(); } catch {} video.srcObject = null; video = null; }
-        emit({ status: err.name === 'AbortError' ? 'stopped' : 'error', message: `${err.name || 'Error'}: ${err.message}` });
+        let code = err.previewCode || '';
+        let msg = err.message || '预览失败';
+        if (!code && (err.name === 'NotAllowedError' || err.name === 'SecurityError')) {
+          code = 'PERMISSION_DENIED';
+          msg = '摄像头访问权限被拒绝，请在 Windows 隐私设置中允许桌面应用访问摄像头。';
+        } else if (!code && (err.name === 'NotReadableError' || err.name === 'TrackStartError')) {
+          code = 'BUSY_OR_OCCUPIED';
+          msg = '虚拟摄像头或物理摄像头正被其他软件占用，请先关闭其他视频预览后重试。';
+        }
+        emit({
+          status: err.name === 'AbortError' ? 'stopped' : 'error',
+          code,
+          message: err.name === 'AbortError' ? '' : msg,
+          enumeratedLabels: err.enumeratedLabels
+        });
       }
       throw err;
     }
@@ -158,6 +237,7 @@ function createEyeContactPreview(options = {}) {
 
 export function EyeContactSettings({ active = true }) {
   const [eye, setEye] = useState({ phase: 'off', preview: {} });
+  const [camReg, setCamReg] = useState(null);
   const [config, setConfig] = useState(null);
   const [devices, setDevices] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -178,15 +258,36 @@ export function EyeContactSettings({ active = true }) {
     });
   }
 
+  const refreshRegistrationAndDevices = async (requestPermission = false) => {
+    const [reg, list] = await Promise.all([
+      window.mc.checkEyeContactCamera?.().catch(() => null),
+      previewerRef.current.listDevices(requestPermission).catch(() => [])
+    ]);
+    if (!aliveRef.current) return { reg, list };
+    if (reg) setCamReg(reg);
+    setDevices(list);
+    return { reg, list };
+  };
+
   useEffect(() => {
     aliveRef.current = true;
-    Promise.all([window.mc.getEyeContactState(), window.mc.getEyeContactSettings()])
-      .then(([st, cfg]) => { if (aliveRef.current) { setEye(st); setConfig(cfg); } })
+    Promise.all([
+      window.mc.getEyeContactState(),
+      window.mc.getEyeContactSettings(),
+      window.mc.checkEyeContactCamera?.().catch(() => null)
+    ])
+      .then(([st, cfg, reg]) => {
+        if (!aliveRef.current) return;
+        setEye(st);
+        setConfig(cfg);
+        if (reg || st?.cameraRegistration) setCamReg(reg || st.cameraRegistration);
+      })
       .catch(err => { if (aliveRef.current) setError(err.message); });
     previewerRef.current.listDevices().then(list => { if (aliveRef.current) setDevices(list); }).catch(() => {});
     const off = window.mc.onEyeContactState((st) => {
       if (!aliveRef.current) return;
       setEye(st);
+      if (st?.cameraRegistration) setCamReg(st.cameraRegistration);
       if ((!st.enabled || ['restarting', 'error'].includes(st.phase)) && previewerRef.current.isActive()) {
         previewerRef.current.stop();
       }
@@ -233,21 +334,39 @@ export function EyeContactSettings({ active = true }) {
     const st = await window.mc.setEyeContactEnabled(true);
     if (!aliveRef.current || !visibleRef.current || token !== opRef.current) return;
     setEye(st);
+    const effectiveReg = st.cameraRegistration || camReg || await window.mc.checkEyeContactCamera?.().catch(() => null);
+    if (effectiveReg && aliveRef.current) setCamReg(effectiveReg);
     if (!st.enabled) throw new Error(st.error || '摄像头引擎未就绪。');
     if (st.pendingSettings) throw new Error('请先应用已保存的摄像头设置。');
-    await previewerRef.current.start({ virtualCamera: st.virtualCamera, element: videoRef.current, sessionId: st.sessionId });
+    const latestDevs = await previewerRef.current.listDevices(true).catch(() => devices);
+    if (aliveRef.current && latestDevs.length) setDevices(latestDevs);
+    await previewerRef.current.start({
+      virtualCamera: st.virtualCamera || effectiveReg?.name || 'DirectShow Softcam',
+      element: videoRef.current,
+      sessionId: st.sessionId,
+      cameraRegistered: Boolean(effectiveReg?.registered ?? st.enabled),
+      justRegistered: Boolean(effectiveReg?.justRegistered)
+    });
   };
 
   const control = async (restart = false) => {
     stopPreview();
     const st = restart ? await window.mc.restartEyeContact() : await window.mc.setEyeContactEnabled(!eye.enabled);
-    if (aliveRef.current) setEye(st);
+    if (aliveRef.current) {
+      setEye(st);
+      if (st?.cameraRegistration) setCamReg(st.cameraRegistration);
+    }
+    void refreshRegistrationAndDevices(false);
     if (st.error && st.phase === 'error') throw new Error(st.error);
   };
 
-  const sources = devices.filter(item => item.label && item.label !== eye.virtualCamera && !/DirectShow Softcam|SuiSi Virtual Camera|-ss(?:-uat)?$/i.test(item.label));
+  const targetVcamName = eye.virtualCamera || camReg?.name || 'DirectShow Softcam';
+  const matchedVcam = matchVirtualCameraDevice(devices, targetVcamName);
+  const effectiveReg = eye.cameraRegistration || camReg;
+  const sources = devices.filter(item => item.label && item.label !== targetVcamName && !/DirectShow Softcam|SuiSi Virtual Camera|-ss(?:-uat)?$/i.test(item.label));
   const selected = sources.find(item => item.deviceId === config?.sourceDeviceId || item.label === config?.sourceDeviceName);
   const previewing = ['waiting', 'first-frame'].includes(preview.status);
+  const needsAppRelaunchForPreview = Boolean(effectiveReg?.registered && !matchedVcam);
 
   return (
     <section className="mc-card">
@@ -367,7 +486,7 @@ export function EyeContactSettings({ active = true }) {
             </details>
 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              <button type="button" className="mc-btn mc-btn-sm" disabled={busy} onClick={() => void run(async () => setDevices(await previewerRef.current.listDevices(true)))}>
+              <button type="button" className="mc-btn mc-btn-sm" disabled={busy} onClick={() => void run(async () => { await refreshRegistrationAndDevices(true); })}>
                 刷新摄像头 / 申请权限
               </button>
               <button type="button" className="mc-btn mc-btn-sm mc-btn-primary" disabled={busy} onClick={() => void run(() => control(false))}>
@@ -388,7 +507,13 @@ export function EyeContactSettings({ active = true }) {
                 disabled={busy}
                 onClick={() => void run(async () => {
                   const diag = await window.mc.getEyeContactDiagnostics();
-                  await navigator.clipboard.writeText(JSON.stringify(diag, null, 2));
+                  const payload = {
+                    ...diag,
+                    rendererDevices: devices.map(d => ({ label: d.label, kind: d.kind })),
+                    matchedVirtualCamera: matchedVcam?.label || null,
+                    previewState: preview
+                  };
+                  await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
                   setNote('诊断已复制（不含画面）');
                 })}
               >
@@ -396,24 +521,71 @@ export function EyeContactSettings({ active = true }) {
               </button>
             </div>
 
-            <div className="mc-alert" role="status">
-              <div><strong>状态：</strong>{eyeContactStatusText(eye)}</div>
-              <div className="mc-field-hint">虚拟摄像头：{eye.virtualCamera || '开启引擎后显示'}</div>
-              {eye.device && (
-                <div className="mc-field-hint">
-                  实际输入：{eye.device}{eye.width ? ` · ${eye.width}×${eye.height}` : ''}{eye.deviceFallback ? ' · 已回退设备' : ''}
-                </div>
-              )}
-              {eye.connected && <div className="mc-field-hint">帧率：{eye.fps ?? '—'} FPS · 推理：{eye.inferMs ?? '—'} ms</div>}
+            {/* 4-Layer Diagnostic Status */}
+            <div className="mc-alert" role="status" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div>
+                <strong>1. 虚拟设备注册：</strong>
+                {effectiveReg
+                  ? (effectiveReg.registered
+                    ? `已注册（${effectiveReg.name || targetVcamName}${effectiveReg.justRegistered ? ' · 本次会话刚注册' : ''}）`
+                    : '尚未注册（首次点击「开启引擎」时自动引导注册）')
+                  : '检测中…'}
+              </div>
+              <div>
+                <strong>2. 引擎推理状态：</strong>{eyeContactStatusText(eye)}
+                {eye.device && ` · 输入 ${eye.device}${eye.width ? ` (${eye.width}×${eye.height})` : ''}${eye.deviceFallback ? ' · 已回退' : ''}`}
+                {eye.connected && ` · ${typeof eye.fps === 'number' ? eye.fps.toFixed(1) : '—'} FPS · 推理 ${typeof eye.inferMs === 'number' ? eye.inferMs.toFixed(1) : '—'} ms`}
+              </div>
+              <div>
+                <strong>3. 应用内设备枚举：</strong>
+                {matchedVcam
+                  ? `已发现虚拟摄像头「${matchedVcam.label}」（共 ${devices.length} 个视频设备）`
+                  : devices.length > 0
+                    ? `未命中「${targetVcamName}」（当前枚举：${devices.map(d => d.label || '未命名').join('、')}）`
+                    : '尚未枚举到视频设备（可点击「刷新摄像头 / 申请权限」）'}
+              </div>
+              <div>
+                <strong>4. 首帧画面检查：</strong>
+                {preview.status === 'first-frame'
+                  ? `已收到首帧 · ${preview.width}×${preview.height}（${preview.matchedLabel || targetVcamName}）`
+                  : preview.status === 'waiting'
+                    ? '正在打开虚拟摄像头并等待首帧…'
+                    : preview.status === 'error'
+                      ? (preview.message || '预览失败')
+                      : '未开启预览（预览最长 5 分钟，离开本页自动停止）'}
+              </div>
             </div>
 
-            <video ref={videoRef} muted playsInline hidden={!previewing} style={{ width: '100%', maxWidth: 640, borderRadius: 8, background: '#090b10' }} />
-            <div className="mc-field-hint">
-              {preview.status === 'first-frame' ? `预览已收到首帧 · ${preview.width}×${preview.height}` :
-                preview.status === 'waiting' ? '正在打开虚拟摄像头并等待首帧…' :
-                  preview.status === 'error' ? preview.message :
-                    '预览最长 5 分钟；切换页签或离开设置时自动停止。'}
-            </div>
+            {(needsAppRelaunchForPreview || preview.code === 'NOT_ENUMERATED_REGISTERED') && (
+              <div className="mc-alert mc-alert-warn" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                <div style={{ fontSize: 12 }}>
+                  <strong>虚拟摄像头已在系统注册（外部会议软件可直接识别）</strong>，但本应用启动后尚未刷新 Chromium 视频设备列表。重启本应用即可恢复应用内首帧预览，无需重装组件。
+                </div>
+                {window.mc?.relaunchApp && (
+                  <button
+                    type="button"
+                    className="mc-btn mc-btn-sm mc-btn-primary"
+                    style={{ flexShrink: 0 }}
+                    onClick={() => void window.mc.relaunchApp()}
+                  >
+                    重启应用刷新列表
+                  </button>
+                )}
+              </div>
+            )}
+
+            <video
+              ref={videoRef}
+              muted
+              playsInline
+              style={{
+                display: previewing ? 'block' : 'none',
+                width: '100%',
+                maxWidth: 640,
+                borderRadius: 8,
+                background: '#090b10'
+              }}
+            />
             {note && <div className="mc-alert mc-alert-ok">{note}</div>}
             {error && <div className="mc-alert mc-alert-err">{error}</div>}
           </div>

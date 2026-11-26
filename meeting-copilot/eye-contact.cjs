@@ -64,7 +64,7 @@ function comparisonImageDimensions(url) {
 
 function createWindowsPlatform({ resourcesPath = process.resourcesPath || path.resolve(__dirname, '..'),
   engineDirectory = process.env.MC_EYE_ENGINE_DIR, sdkDirectory = process.env.MC_EYE_SDK_DIR,
-  settingsFile, userDataDirectory, log = () => {} }) {
+  settingsFile, userDataDirectory, appData, log = () => {} }) {
   const helperDir = engineDirectory || path.join(resourcesPath, 'eye-contact', 'engine');
   const helper = path.join(helperDir, 'EyeContactEngine.exe');
   const softcam = path.join(helperDir, 'softcam.dll');
@@ -72,17 +72,39 @@ function createWindowsPlatform({ resourcesPath = process.resourcesPath || path.r
   let sdkDir = sdkDirectory || bundledSdkDir;
   let sdkManager;
   let reportSdkProgress = () => {};
+  let justRegistered = false;
+  function findCachedSdk(baseDir) {
+    if (!baseDir || !fs.existsSync(baseDir)) return '';
+    if (fs.existsSync(path.join(baseDir, 'nvARPose.dll'))) return baseDir;
+    try {
+      for (const entry of fs.readdirSync(baseDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const candidate = path.join(baseDir, entry.name);
+        if (fs.existsSync(path.join(candidate, 'nvARPose.dll')) && fs.existsSync(path.join(candidate, 'models'))) {
+          return candidate;
+        }
+      }
+    } catch {}
+    return '';
+  }
   async function resources(onProgress = () => {}) {
     if (!fs.existsSync(helper) || !fs.existsSync(softcam)) throw new Error('眼神矫正引擎缺失，请检查 eye-contact/engine 中的 EyeContactEngine.exe 和 softcam.dll。');
     reportSdkProgress = onProgress;
     if (!sdkDirectory && !fs.existsSync(path.join(bundledSdkDir, 'nvARPose.dll'))) {
-      const { createMaxineSdk } = require('./maxine-sdk.cjs');
       const dataDirectory = userDataDirectory || (settingsFile && path.dirname(settingsFile)) ||
         path.join(process.env.LOCALAPPDATA, 'MeetingCopilot');
-      if (!sdkManager) sdkManager = createMaxineSdk({ directory: path.join(dataDirectory, 'maxine-sdk'),
-        extractor: path.join(resourcesPath, 'tools', 'maxine', '7z.exe'), onProgress: progress => reportSdkProgress(progress) });
-      const installed = await sdkManager.ensureInstalled();
-      sdkDir = installed.sdkDir;
+      const existingCached = findCachedSdk(path.join(dataDirectory, 'maxine-sdk')) ||
+        findCachedSdk(appData ? path.join(appData, 'MeetingCopilot', 'maxine-sdk') : '') ||
+        findCachedSdk(process.env.APPDATA ? path.join(process.env.APPDATA, 'MeetingCopilot', 'maxine-sdk') : '');
+      if (existingCached) {
+        sdkDir = existingCached;
+      } else {
+        const { createMaxineSdk } = require('./maxine-sdk.cjs');
+        if (!sdkManager) sdkManager = createMaxineSdk({ directory: path.join(dataDirectory, 'maxine-sdk'),
+          extractor: path.join(resourcesPath, 'tools', 'maxine', '7z.exe'), onProgress: progress => reportSdkProgress(progress) });
+        const installed = await sdkManager.ensureInstalled();
+        sdkDir = installed.sdkDir;
+      }
     }
     const models = path.join(sdkDir, 'models');
     if (!fs.existsSync(path.join(sdkDir, 'nvARPose.dll')) || !fs.existsSync(models) || !fs.statSync(models).isDirectory()) {
@@ -97,7 +119,8 @@ function createWindowsPlatform({ resourcesPath = process.resourcesPath || path.r
   }
   async function cameraStatus() {
     const script = `$ErrorActionPreference='Stop'; $class='Registry::HKEY_CLASSES_ROOT\\CLSID\\${CLSID}'; $device='Registry::HKEY_CLASSES_ROOT\\CLSID\\${CATEGORY}\\Instance\\DirectShow Softcam'; $dll=$null; $name=$null; if(Test-Path -LiteralPath ($class+'\\InprocServer32')){$dll=(Get-Item -LiteralPath ($class+'\\InprocServer32')).GetValue('')}; if(Test-Path -LiteralPath $device){$name=(Get-ItemProperty -LiteralPath $device).FriendlyName}; @{registered=([bool]$dll -and [bool]$name);dll=$dll;name=$name}|ConvertTo-Json -Compress`;
-    return JSON.parse(await runPowerShell(script));
+    const parsed = JSON.parse(await runPowerShell(script));
+    return { ...parsed, justRegistered };
   }
   async function ensureCamera(res, onPermission) {
     let status = await cameraStatus();
@@ -119,6 +142,7 @@ function createWindowsPlatform({ resourcesPath = process.resourcesPath || path.r
     const script = `$ErrorActionPreference='Stop'; try {$p=Start-Process -FilePath powershell.exe -Verb RunAs -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand','${encoded}'); $p.WaitForExit(); if($p.ExitCode -ne 0){throw ('摄像头组件注册失败：'+$p.ExitCode)}} catch {Write-Error $_;exit 1}`;
     try { await runPowerShell(script, 180000); }
     catch (error) { log(error.message); throw new Error('虚拟摄像头安装未完成，请允许 Windows 权限提示后重试。'); }
+    justRegistered = true;
     status = await cameraStatus();
     if (!status.registered) throw new Error('虚拟摄像头注册后仍不可用，请重启会议软件后重试。');
     return status;
@@ -127,7 +151,7 @@ function createWindowsPlatform({ resourcesPath = process.resourcesPath || path.r
     const rows = JSON.parse(await runPowerShell("@(Get-CimInstance Win32_Process -Filter \"Name='EyeContactEngine.exe' OR Name='suisi-eye-contact.exe' OR Name='suisi-eye-contact-cpu.exe'\" | Select-Object -ExpandProperty ProcessId) | ConvertTo-Json -Compress") || '[]');
     if (Array.isArray(rows) ? rows.length : rows) throw new Error('眼神引擎正在被其他窗口使用，请先关闭现有摄像头引擎。');
   }
-  return { resources, ensureCamera, assertAvailable, cancelResources: () => sdkManager?.cancel?.() };
+  return { resources, ensureCamera, cameraStatus, assertAvailable, cancelResources: () => sdkManager?.cancel?.() };
 }
 
 function createEyeContact(options) {
@@ -141,10 +165,27 @@ function createEyeContact(options) {
   let comparison = null;
   let startupReject = null, retryTimer = null, idleTimer = null, disconnectAt = null, retries = 0, appliedMode = 'idle', connectedStreak = 0;
   let state = { engine: 'full', enabled: false, phase: 'off', mode: 'idle', requestedMode: 'idle', device: '',
-    virtualCamera: '', width: null, height: null, fps: null, connected: false, deviceFallback: false, sdk: null,
+    virtualCamera: '', cameraRegistration: null, width: null, height: null, fps: null, connected: false, deviceFallback: false, sdk: null,
     sourceReleased: null, inferMs: null, frames: null, warmupMs: null, lastStatsAt: null, lastStatus: null,
     pendingSettings: false, restartCount: 0, sessionId: 0, preview: { status: 'stopped' }, error: '' };
-  function getState() { return { ...state, sdk: state.sdk && { ...state.sdk }, preview: { ...state.preview }, lastStatus: state.lastStatus && { ...state.lastStatus } }; }
+  function getState() { return { ...state, cameraRegistration: state.cameraRegistration && { ...state.cameraRegistration }, sdk: state.sdk && { ...state.sdk }, preview: { ...state.preview }, lastStatus: state.lastStatus && { ...state.lastStatus } }; }
+  async function checkCameraRegistration() {
+    if (typeof platform.cameraStatus !== 'function') return state.cameraRegistration;
+    try {
+      const status = await platform.cameraStatus();
+      const cameraRegistration = {
+        registered: Boolean(status?.registered),
+        name: String(status?.name || ''),
+        dll: String(status?.dll || ''),
+        justRegistered: Boolean(status?.justRegistered)
+      };
+      update({ cameraRegistration, ...(cameraRegistration.name && !state.virtualCamera ? { virtualCamera: cameraRegistration.name } : {}) });
+      return cameraRegistration;
+    } catch (error) {
+      diagnostic('camera-status-error', { message: error.message });
+      return state.cameraRegistration;
+    }
+  }
   function update(patch) { state = { ...state, ...patch }; options.onChange?.(getState()); }
   function diagnostic(event, detail = {}) {
     const entry = { at: new Date(now()).toISOString(), sessionId: state.sessionId, event, ...detail };
@@ -300,7 +341,17 @@ function createEyeContact(options) {
         }); valid();
         const camera = await platform.ensureCamera(res, () => { if (current === generation) update({ phase: 'permission' }); }); valid();
         activeSettings = getSettings(); appliedMode = 'idle';
-        update({ phase: 'starting', virtualCamera: camera.name || 'DirectShow Softcam', pendingSettings: false });
+        update({
+          phase: 'starting',
+          virtualCamera: camera.name || 'DirectShow Softcam',
+          cameraRegistration: {
+            registered: Boolean(camera?.registered ?? true),
+            name: String(camera?.name || 'DirectShow Softcam'),
+            dll: String(camera?.dll || ''),
+            justRegistered: Boolean(camera?.justRegistered)
+          },
+          pendingSettings: false
+        });
         const args = helperArguments(activeSettings, '.');
         diagnostic('launch', { args, helper: res.helper, sdkDir: res.sdkDir });
         const proc = launch(res.helper, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], cwd: res.sdkDir,
@@ -452,7 +503,7 @@ function createEyeContact(options) {
     const proc = child; child = null;
     if (proc) { try { proc.stdin.write('stop\n'); } catch {} try { proc.kill(); } catch {} }
   }
-  return { getState, start, stop, restart, dispose, getSettings, setSettings, reportPreview, captureComparison, getDiagnostics };
+  return { getState, start, stop, restart, dispose, getSettings, setSettings, reportPreview, captureComparison, checkCameraRegistration, getDiagnostics };
 }
 module.exports = { createEyeContact, createWindowsPlatform, DEFAULT_SETTINGS, validateSettings, helperArguments };
 

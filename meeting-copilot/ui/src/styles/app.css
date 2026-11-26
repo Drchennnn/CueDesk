@@ -1099,12 +1099,15 @@ button:disabled {
   display: flex;
   flex-direction: column;
   border-radius: var(--radius-lg);
-  border: 1px solid var(--border);
-  background: rgba(var(--wb-bg-rgb), var(--wb-bg-alpha));
+  border: 1px solid var(--border-strong);
+  background: rgba(var(--wb-bg-rgb), max(0.74, var(--wb-bg-alpha, 0.92)));
+  backdrop-filter: blur(12px) saturate(1.12);
+  -webkit-backdrop-filter: blur(12px) saturate(1.12);
   overflow: hidden;
   position: relative;
   opacity: calc(var(--wb-hover-fade, 1) * var(--mc-window-opacity, 1));
   transition: opacity 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  box-shadow: var(--shadow-lg);
 }
 .mc-wb-shell.is-hover-in {
   transition: opacity 180ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -2366,10 +2369,10 @@ html.mc-hide-real-cursor * {
 .mc-wf-shell {
   --wb-bg-rgb: 255, 255, 255;
   --wb-subtle-rgb: 244, 244, 245;
-  --wf-surface-bg: rgba(var(--wb-bg-rgb), calc(var(--mc-bg-alpha, 0.88) * 0.76));
-  --wf-subtle-bg: rgba(var(--wb-subtle-rgb), calc(var(--mc-bg-alpha, 0.88) * 0.68));
-  --wf-pill-bg: rgba(var(--wb-bg-rgb), min(0.96, calc(var(--mc-bg-alpha, 0.88) + 0.14)));
-  --wf-code-bg: rgba(var(--wb-subtle-rgb), min(0.92, calc(var(--mc-bg-alpha, 0.88) * 0.84 + 0.08)));
+  --wf-surface-bg: rgba(var(--wb-bg-rgb), min(0.97, max(0.84, calc(var(--mc-bg-alpha, 0.88) + 0.08))));
+  --wf-subtle-bg: rgba(var(--wb-subtle-rgb), min(0.95, max(0.80, calc(var(--mc-bg-alpha, 0.88) + 0.04))));
+  --wf-pill-bg: rgba(var(--wb-bg-rgb), min(0.98, max(0.90, calc(var(--mc-bg-alpha, 0.88) + 0.14))));
+  --wf-code-bg: rgba(var(--wb-subtle-rgb), min(0.96, max(0.86, calc(var(--mc-bg-alpha, 0.88) + 0.06))));
   position: relative;
   display: flex;
   flex-direction: column;
@@ -2380,6 +2383,8 @@ html.mc-hide-real-cursor * {
   border-radius: 12px;
   border: 1px solid var(--border-strong);
   background: rgba(var(--wb-bg-rgb), var(--mc-bg-alpha, 0.88));
+  backdrop-filter: blur(12px) saturate(1.12);
+  -webkit-backdrop-filter: blur(12px) saturate(1.12);
   color: var(--text);
   overflow: hidden;
   box-shadow: var(--shadow-lg);

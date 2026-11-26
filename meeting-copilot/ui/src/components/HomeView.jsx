@@ -28,6 +28,7 @@ import { ScreenshotBatchPanel, Switch, computeServiceHealth } from './SharedWidg
 import { CustomSelect } from './CustomSelect.jsx';
 import { WorkbenchShortcutsModal } from './WorkbenchShortcutsModal.jsx';
 import { formatCodingSummary } from '../core/codingPrefs.js';
+import { summarizeWrittenCounts } from '../core/sessionModel.js';
 
 const MAX_NAME = 100;
 const MAX_DESC = 2000;
@@ -243,6 +244,7 @@ function PreSessionModal({
   const [autoSaveOnClose, setAutoSaveOnClose] = useState(workbenchPrefs?.autoSaveOnClose !== false);
   const [enableSessionSecurity, setEnableSessionSecurity] = useState(Boolean(windowState?.securityMode?.enabled));
   const [autoStartCapture, setAutoStartCapture] = useState(true);
+  const [enableSecondaryMic, setEnableSecondaryMic] = useState(false);
   const [startAudioRecording, setStartAudioRecording] = useState(false);
 
   const health = computeServiceHealth(settings, asr, library);
@@ -400,11 +402,27 @@ function PreSessionModal({
               </div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div>
-                  <div style={{ fontSize: 12.5, fontWeight: 500 }}>进入后自动开启音频采集</div>
+                  <div style={{ fontSize: 12.5, fontWeight: 500 }}>
+                    {audioSource === 'system' ? '进入后自动转写面试官（系统音频）' : '进入后自动开启麦克风转写'}
+                  </div>
                   <div className="mc-field-hint">关闭则先以暂停状态进入浮窗，手动点按钮再开始</div>
                 </div>
                 <Switch checked={autoStartCapture} onChange={setAutoStartCapture} aria-label="进入后自动开启采集" />
               </div>
+              {audioSource === 'system' && (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div>
+                    <div style={{ fontSize: 12.5, fontWeight: 500 }}>同时转写我的回答（本人麦克风）</div>
+                    <div className="mc-field-hint">本人发言标为「我」记入上下文与历史记录，不会单独触发 AI 回答；会中可在顶栏随时切换</div>
+                  </div>
+                  <Switch
+                    checked={enableSecondaryMic || startAudioRecording}
+                    disabled={startAudioRecording}
+                    onChange={setEnableSecondaryMic}
+                    aria-label="同时转写我的回答（麦克风）"
+                  />
+                </div>
+              )}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div>
                   <div style={{ fontSize: 12.5, fontWeight: 500 }}>本场开启安全模式（防截屏 + 不抢焦点）</div>
@@ -421,7 +439,7 @@ function PreSessionModal({
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div>
                   <div style={{ fontSize: 12.5, fontWeight: 500 }}>进入后开启整场双轨 WAV 录音</div>
-                  <div className="mc-field-hint">默认关闭；也可随时在工作台顶栏点击录音按钮手动启停</div>
+                  <div className="mc-field-hint">独立保存对方轨与本人轨 WAV（开启双轨录音将同时启用本人麦克风）；也可会中手动启停</div>
                 </div>
                 <Switch checked={startAudioRecording} onChange={setStartAudioRecording} aria-label="进入后开启整场录音" />
               </div>
@@ -466,6 +484,7 @@ function PreSessionModal({
               autoSaveOnClose,
               enableSessionSecurity,
               autoStartCapture: autoStartCapture && health.asr.ready,
+              enableSecondaryMic: audioSource === 'system' && (enableSecondaryMic || startAudioRecording),
               startAudioRecording
             })}
           >
@@ -1176,7 +1195,7 @@ export function HomeView({
                         <div className="mc-alert mc-alert-ok" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
                           <div>
                             <strong>当前笔试：{activeWrittenSession.name}</strong>
-                            <span style={{ marginLeft: 8, fontSize: 12 }}>已作答 {activeWrittenSession.questions.length} 题</span>
+                            <span style={{ marginLeft: 8, fontSize: 12 }}>{summarizeWrittenCounts(activeWrittenSession).summaryText}</span>
                           </div>
                           <div style={{ display: 'flex', gap: 6 }}>
                             <button type="button" className="mc-btn mc-btn-sm mc-btn-success" onClick={() => onEnterWrittenCompact({ fresh: false })}>
