@@ -148,6 +148,7 @@ export function migrateSession(raw) {
     answerLang: raw.answerLang === 'english' ? 'english' : 'chinese',
     scene: raw.scene === 'written' ? 'written' : 'interview',
     role: String(raw.role || ''),
+    introDocumentId: String(raw.introDocumentId || ''),
     libraryEnabled: typeof raw.libraryEnabled === 'boolean' ? raw.libraryEnabled : null,
     transcriptionMode: ['auto', 'manual', 'transcript-only'].includes(raw.transcriptionMode) ? raw.transcriptionMode : 'auto',
     resume: String(raw.resume ?? raw.resumeText ?? ''),
@@ -193,6 +194,7 @@ export function createEmptySession(overrides = {}) {
     answerLang: overrides.answerLang === 'english' ? 'english' : 'chinese',
     scene: overrides.scene === 'written' ? 'written' : 'interview',
     role: String(overrides.role || ''),
+    introDocumentId: String(overrides.introDocumentId || ''),
     libraryEnabled: typeof overrides.libraryEnabled === 'boolean' ? overrides.libraryEnabled : null,
     transcriptionMode: ['auto', 'manual', 'transcript-only'].includes(overrides.transcriptionMode) ? overrides.transcriptionMode : 'auto',
     resume: String(overrides.resume || ''),
@@ -485,6 +487,18 @@ export function cancelAttempt(session, requestId) {
   };
 }
 
+export function pruneSegmentsByIds(session, segmentIds = []) {
+  if (!session || !Array.isArray(segmentIds) || !segmentIds.length) return session;
+  const drop = new Set(segmentIds);
+  const nextSegments = (session.segments || []).filter(s => !drop.has(s.id));
+  if (nextSegments.length === (session.segments || []).length) return session;
+  return {
+    ...session,
+    updatedAt: Date.now(),
+    segments: nextSegments
+  };
+}
+
 export function applyLlmEvent(session, ev) {
   if (!ev || !ev.requestId) return session;
   const hit = findByRequestId(session, ev.requestId);
@@ -493,6 +507,29 @@ export function applyLlmEvent(session, ev) {
   if (TERMINAL_ATTEMPT_STATUSES.has(hit.attempt.status)) return session;
 
   const now = Date.now();
+  // Silently retract auto-dispatched placeholder cards that the backend skipped (backchannels, chat-box transitions, goodbyes).
+  if (
+    ev.kind === 'done' &&
+    ev.skipped === true &&
+    !String(ev.text || '').trim() &&
+    !String(hit.attempt.text || '').trim() &&
+    hit.question.kind === 'segment' &&
+    hit.question.attempts.length === 1
+  ) {
+    const remaining = session.questions
+      .filter(q => q.id !== hit.question.id)
+      .map((q, idx) => ({ ...q, ordinal: idx + 1 }));
+    const nextSelected = session.selectedQuestionId === hit.question.id
+      ? (remaining[Math.max(0, hit.questionIndex - 1)]?.id || remaining[remaining.length - 1]?.id || null)
+      : session.selectedQuestionId;
+    return {
+      ...session,
+      updatedAt: now,
+      questions: remaining,
+      selectedQuestionId: nextSelected,
+      unreadQuestionIds: (session.unreadQuestionIds || []).filter(id => id !== hit.question.id)
+    };
+  }
   let nextAttempt = { ...hit.attempt };
   let nextDialogueState = session.dialogueState;
   let contentUpdated = false;

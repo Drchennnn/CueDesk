@@ -23,7 +23,8 @@ function parseAnswer(raw,evidence=[],final=false,policy={}){
  }else if(tag.startsWith('NOTE:'))notes.push(tag.slice(5));else invalid.push(tag);cursor=end+2;}
  const en=policy.lang==='english';
  // Hide internal source locators, not numeric facts or ordinary technology names.
- oral=oral.replace(/\bparent_id\b/g,en?'parent chunk ID':'父块 ID').replace(/`([\s\S]*?)`/g,'$1').replace(/(?:[A-Za-z]:[\\/]|\/Users\/)[^\s，。；\n]+/g,en?'(see evidence panel)':'（来源见依据区）').replace(/[\w.\-\u4e00-\u9fff]+\.md(?:#[^\s，。]+)?/gi,en?'(see evidence panel)':'（来源见依据区）').replace(/\b[a-zA-Z][a-zA-Z0-9]*_[a-zA-Z0-9_]+\s*=\s*([-+]?\d+(?:\.\d+)?%?)/g,'$1').replace(/\b[a-zA-Z][a-zA-Z0-9]*_[a-zA-Z0-9_]+\b/g,en?'this field':'这个字段');
+ oral=oral.replace(/\bparent_id\b/g,en?'parent chunk ID':'父块 ID').replace(/`([\s\S]*?)`/g,'$1').replace(/(?:[A-Za-z]:[\\/]|\/Users\/)[^\s，。；\n]+/g,en?'(see evidence panel)':'（来源见依据区）').replace(/[\w.\-\u4e00-\u9fff]+\.md(?:#[^\s，。]+)?/gi,en?'(see evidence panel)':'（来源见依据区）').replace(/\b[a-zA-Z][a-zA-Z0-9]*_[a-zA-Z0-9_]+\s*=\s*([-+]?\d+(?:\.\d+)?%?)/g,'$1');
+ if(!policy.preserveIdentifiers)oral=oral.replace(/\b[a-zA-Z][a-zA-Z0-9]*_[a-zA-Z0-9_]+\b/g,en?'this field':'这个字段');
  if(!en)oral=oral.replace(/\btrial\s*(\d+)/gi,'第$1次试验');
  const splitSegments=(text,clause=false)=>{
   const re=en?(clause?/(?:[^,;.!?\n，。！？；]|(?<!\s)[.](?!\s|$))+(?:[,;.!?\n，。！？；]+|$)/g:/(?:[^.!?\n。！？；]|(?<!\s)[.](?!\s|$))+(?:[.!?\n。！？；]+|$)/g):(clause?/[^，。！？；\n]*[，。！？；\n]|[^，。！？；\n]+$/g:/[^。！？；\n]*[。！？；\n]|[^。！？；\n]+$/g);

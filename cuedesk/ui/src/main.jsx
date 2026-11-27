@@ -14,6 +14,7 @@ import {
   jumpToLatestQuestion,
   mergeQuestions,
   migrateSessionsFile,
+  pruneSegmentsByIds,
   regenerateQuestion,
   reviseQuestionWithAttempt,
   selectAttempt,
@@ -28,12 +29,14 @@ import {
   commitManualDraft,
   createManualDraftState,
   createTurnAggregator,
+  findRetroactiveEchoMeIds,
   handleAudioSourceSwitch,
   isEchoOfRecentThem
 } from './core/turnPolicy.js';
 import { createAudioController } from './core/audioController.js';
 import { installGlobalTooltip } from './core/globalTooltip.js';
 import { AppShell } from './components/AppShell.jsx';
+import { GuideView } from './components/GuideView.jsx';
 import { HomeView } from './components/HomeView.jsx';
 import { KnowledgeView } from './components/KnowledgeView.jsx';
 import { RecordsView } from './components/RecordsView.jsx';
@@ -154,10 +157,13 @@ function App() {
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(null); // Strictly interview workbench session
   const [writtenSessionId, setWrittenSessionId] = useState(null); // Strictly isolated written-exam session (M02)
-  const [route, setRoute] = useState('home'); // 'home' | 'knowledge' | 'records' | 'settings' | 'workbench'
+  const [route, setRoute] = useState('home'); // 'home' | 'knowledge' | 'records' | 'guide' | 'settings' | 'workbench'
+  const [guideStep, setGuideStep] = useState('asr');
   const [homeTab, setHomeTab] = useState('interview'); // Lifted so returning from written compact restores tab (M12)
   const [settingsTab, setSettingsTab] = useState('models');
   const [settingsFocus, setSettingsFocus] = useState(null); // { section, seq } for M13/M14/M21 deep-links
+  const windowStateRef = useRef(null);
+  windowStateRef.current = windowState;
   const [asr, setAsr] = useState({ phase: 'loading', workerState: 'loading' });
   const [hud, setHud] = useState({ count: 0 });
   const [capturing, setCapturing] = useState(false);
@@ -226,6 +232,7 @@ function App() {
     const override = {};
     if (typeof session.libraryEnabled === 'boolean') override.enabled = session.libraryEnabled;
     if (session.role) override.role = session.role;
+    if (session.introDocumentId) override.introDocumentId = session.introDocumentId;
     return Object.keys(override).length ? override : undefined;
   }, []);
 
@@ -602,19 +609,27 @@ function App() {
         if (cur) {
           const speaker = ev.speaker === 'me' ? 'me' : 'them';
           const segTs = ev.timings?.speechEndTs || Date.now();
-          // Text-level speaker echo deduplication for external speaker playback in system-audio mode
-          if (speaker === 'me' && cur.audioSource === 'system' && settingsRef.current?.asr?.echoGuard !== false) {
+          const echoGuardOn = cur.audioSource === 'system' && settingsRef.current?.asr?.echoGuard !== false;
+          // Forward echo check: drop "me" segment duplicating a recent "them" segment
+          if (speaker === 'me' && echoGuardOn) {
             const echo = isEchoOfRecentThem(ev.text, cur.segments, segTs);
             if (echo.isEcho) return;
           }
+          // Reverse echo check: when "me" ASR finalized 50ms–2500ms before "them", prune the duplicate "me" segment
+          const retroEchoIds = speaker === 'them' && echoGuardOn
+            ? findRetroactiveEchoMeIds(ev.text, cur.segments, segTs)
+            : [];
           const segId = cur.nextSegmentId || 1;
-          patchSessionById(cur.id, (s) => appendSegment(s, {
-            id: segId,
-            speaker,
-            text: ev.text,
-            startTs: ev.timings?.speechStartTs,
-            endTs: ev.timings?.speechEndTs
-          }));
+          patchSessionById(cur.id, (s) => {
+            const cleaned = retroEchoIds.length ? pruneSegmentsByIds(s, retroEchoIds) : s;
+            return appendSegment(cleaned, {
+              id: segId,
+              speaker,
+              text: ev.text,
+              startTs: ev.timings?.speechStartTs,
+              endTs: ev.timings?.speechEndTs
+            });
+          });
           if (speaker === 'me') {
             turnAggregatorRef.current?.onMeSpeech();
           } else {
@@ -710,24 +725,27 @@ function App() {
   }, [sessions, activeSessionId]);
 
   const navigateWithFlush = useCallback((nextRoute, tab, focusSection = null) => {
-    const proceed = () => {
+    const proceed = async () => {
       if (tab) setSettingsTab(tab);
       if (focusSection) {
         focusSeqRef.current += 1;
         setSettingsFocus({ section: focusSection, seq: focusSeqRef.current });
       }
       setRoute(nextRoute);
-      if (nextRoute === 'workbench') {
-        void window.mc.setWindowMode('workbench').catch(() => {});
-      } else {
-        void window.mc.setWindowMode('home').catch(() => {});
-      }
+      // Let React commit and release the initiating pointer click before toggling Win32 focusable/bounds.
+      await new Promise(resolve => (typeof requestAnimationFrame === 'function' ? requestAnimationFrame(() => resolve()) : setTimeout(resolve, 16)));
+      const nextWinMode = nextRoute === 'workbench' ? 'workbench' : 'home';
+      const st = await window.mc.setWindowMode(nextWinMode).catch(() => null);
+      if (st) setWindowState(st);
     };
     if (route === 'settings' && nextRoute !== 'settings' && settingsCloseRef.current) {
-      void settingsCloseRef.current(proceed);
-    } else {
-      proceed();
+      return new Promise(resolve => {
+        void settingsCloseRef.current(() => {
+          void proceed().finally(resolve);
+        });
+      });
     }
+    return proceed();
   }, [route]);
 
   // Unified capability deep-link router (fixes M06 / M13 / M14 / M21)
@@ -756,12 +774,26 @@ function App() {
       case 'shortcuts':
         navigateWithFlush('settings', 'shortcuts', 'shortcuts');
         break;
+      case 'memory':
+        navigateWithFlush('settings', 'general', 'memory');
+        break;
+      case 'guide-asr':
+      case 'guide-llm':
+      case 'guide-vision':
+        setGuideStep(capability.replace('guide-', ''));
+        navigateWithFlush('guide');
+        break;
       case 'text-llm':
       case 'models':
       default:
         navigateWithFlush('settings', 'models', 'text-llm');
         break;
     }
+  }, [navigateWithFlush]);
+
+  const openGuide = useCallback((step = 'asr') => {
+    setGuideStep(step);
+    navigateWithFlush('guide');
   }, [navigateWithFlush]);
 
   const handleSaveTemplates = useCallback(async (nextStore) => {
@@ -816,6 +848,7 @@ function App() {
       answerLang: config.answerLang,
       scene: config.scene || 'interview',
       role: config.role || '',
+      introDocumentId: config.introDocumentId || '',
       libraryEnabled: config.libraryEnabled,
       transcriptionMode: config.transcriptionMode || 'auto',
       resume: config.resume || '',
@@ -831,10 +864,15 @@ function App() {
     if (typeof config.autoSaveOnClose === 'boolean') {
       void handleUpdateWorkbenchPrefs({ autoSaveOnClose: config.autoSaveOnClose });
     }
-    if (config.enableSessionSecurity) {
+    const alreadyPersistentSecurity = Boolean(
+      windowStateRef.current?.securityMode?.enabled &&
+      windowStateRef.current?.securityMode?.scope === 'persistent'
+    );
+    if (config.enableSessionSecurity && !alreadyPersistentSecurity) {
       await window.mc.enableSecurity({ scope: 'session' }).then(setWindowState).catch(() => {});
     }
-    navigateWithFlush('workbench');
+    // Await window mode + focusable transition cleanly before starting getDisplayMedia() capture to avoid Windows focus deadlocks.
+    await navigateWithFlush('workbench');
     window.mc.prewarm({ resume: session.resume || undefined, jd: session.jd || undefined, immediate: true });
     if (config.autoStartCapture || config.startAudioRecording) {
       try {
@@ -973,7 +1011,11 @@ function App() {
         const updated = await window.mc.setWrittenWindow({ enabled: false });
         setSettings(updated);
       }
-      if (autoSecurity) {
+      const alreadyPersistentSecurity = Boolean(
+        windowStateRef.current?.securityMode?.enabled &&
+        windowStateRef.current?.securityMode?.scope === 'persistent'
+      );
+      if (autoSecurity && !alreadyPersistentSecurity) {
         await window.mc.enableSecurity({ scope: 'session' }).then(setWindowState).catch(() => {});
       }
       setRoute('written');
@@ -1243,6 +1285,7 @@ function App() {
         onResumeWorkbench={() => navigateWithFlush('workbench')}
         onToggleSecurity={(next) => void handleToggleSecurity(next)}
         onOpenHealth={() => setModal('health')}
+        onOpenGuide={() => openGuide('asr')}
         onMinimize={() => void window.mc.minimizeWindow()}
         onToggleMaximize={() => void window.mc.toggleMaximizeWindow()}
         onQuit={() => window.mc.quit()}
@@ -1291,6 +1334,7 @@ function App() {
             library={library}
             workbenchPrefs={workbenchPrefs}
             onUpdateWorkbenchPrefs={handleUpdateWorkbenchPrefs}
+            onOpenMemorySettings={() => navigateToCapability('memory')}
             onResumeFromRecord={handleResumeFromRecord}
             onRenameSession={(id, name) => patchSessionById(id, s => ({ ...s, name }))}
             onDeleteSession={(id) => {
@@ -1301,6 +1345,17 @@ function App() {
               }
               setSessions(list => list.filter(s => s.id !== id));
             }}
+          />
+        )}
+
+        {route === 'guide' && (
+          <GuideView
+            initialStep={guideStep}
+            settings={settings}
+            asr={asr}
+            library={library}
+            onNavigateCapability={navigateToCapability}
+            onBackHome={() => navigateWithFlush('home')}
           />
         )}
 
@@ -1318,6 +1373,7 @@ function App() {
               onToggleSecurity={(next) => void handleToggleSecurity(next)}
               onSetSecurityPrefs={(patch) => void window.mc.setSecurityPrefs(patch).then(setWindowState).catch(() => {})}
               onResumeWorkbench={() => navigateWithFlush('workbench')}
+              onOpenGuide={openGuide}
               onOpenQuickStart={() => setModal('quickstart')}
               onOpenDiagnostics={() => setModal('diagnostics')}
               closeRef={settingsCloseRef}

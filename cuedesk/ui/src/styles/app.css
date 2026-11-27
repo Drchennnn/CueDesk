@@ -282,7 +282,7 @@ button:disabled {
   padding: 0 10px 0 14px;
   background: var(--bg-subtle);
   border-bottom: 1px solid var(--border);
-  -webkit-app-region: drag;
+  cursor: default;
   flex-shrink: 0;
   user-select: none;
 }
@@ -593,10 +593,26 @@ button:disabled {
 }
 .mc-template-grid {
   display: grid;
-  grid-template-columns: minmax(320px, 1fr) 104px repeat(3, 84px) 64px;
-  column-gap: 12px;
+  grid-template-columns: minmax(220px, 1fr) 94px 94px minmax(156px, 210px) 60px 64px;
+  column-gap: 10px;
   align-items: center;
   padding: 0 12px;
+}
+.mc-tpl-role-cell {
+  min-width: 0;
+  width: 100%;
+  justify-content: center;
+}
+.mc-tpl-role-badge {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+}
+.mc-tpl-role-badge:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 .mc-list-header {
   position: sticky;
@@ -1126,7 +1142,7 @@ button:disabled {
   user-select: none;
   flex-shrink: 0;
   opacity: var(--wb-chrome-opacity, 1);
-  transition: height 200ms ease, opacity 180ms ease, border-color 180ms ease;
+  transition: opacity 90ms ease;
   overflow: visible;
 }
 .mc-wb-shell.is-chrome-collapsed .mc-wb-topbar {
@@ -1221,7 +1237,7 @@ button:disabled {
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   opacity: var(--wb-chrome-opacity, 1);
-  transition: height 200ms ease, opacity 180ms ease;
+  transition: opacity 90ms ease;
 }
 .mc-wb-shell.is-chrome-collapsed .mc-wb-pane-header {
   height: 0;
@@ -1365,7 +1381,7 @@ button:disabled {
   gap: 6px;
   flex-shrink: 0;
   opacity: var(--wb-chrome-opacity, 1);
-  transition: max-height 200ms ease, opacity 180ms ease, padding 200ms ease;
+  transition: opacity 90ms ease;
   max-height: 160px;
 }
 .mc-wb-shell.is-chrome-collapsed .mc-wb-input-wrap,
@@ -1391,7 +1407,7 @@ button:disabled {
   font-size: 11.5px;
   color: var(--text-muted);
   opacity: var(--wb-chrome-opacity, 1);
-  transition: max-height 200ms ease, opacity 180ms ease;
+  transition: opacity 90ms ease;
   max-height: 48px;
 }
 
@@ -2412,7 +2428,7 @@ html.mc-hide-real-cursor * {
   user-select: none;
   cursor: move;
   opacity: var(--mc-icon-alpha, 1);
-  transition: height 160ms ease, opacity 160ms ease, border-color 160ms ease, padding 160ms ease;
+  transition: opacity 90ms ease;
 }
 .mc-wf-shell.is-chrome-collapsed .mc-wf-topbar {
   height: 0;
@@ -2515,7 +2531,7 @@ html.mc-hide-real-cursor * {
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   opacity: var(--mc-icon-alpha, 1);
-  transition: height 160ms ease, opacity 160ms ease, border-color 160ms ease;
+  transition: opacity 90ms ease;
 }
 .mc-wf-shell.is-chrome-collapsed .mc-wf-subbar {
   height: 0;
@@ -2937,7 +2953,7 @@ html.mc-hide-real-cursor * {
   box-shadow: 0 4px 16px rgba(15, 23, 42, 0.09), 0 1px 3px rgba(15, 23, 42, 0.05);
   flex-shrink: 0;
   opacity: var(--mc-icon-alpha, 1);
-  transition: height 160ms ease, margin 160ms ease, opacity 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+  transition: opacity 90ms ease;
 }
 [data-theme="dark"] .mc-wf-footer {
   border-color: rgba(255, 255, 255, 0.1);
@@ -3098,28 +3114,192 @@ html.mc-hide-real-cursor * {
   border-color: var(--border-strong) !important;
 }
 
-/* Home Written Tab Config Grid */
-.mc-written-home-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+/* Home Written Tab Compact Shortcut Bar */
+.mc-written-shortcuts-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-secondary);
 }
-@media (max-width: 720px) {
-  .mc-written-home-grid {
+.mc-written-shortcuts-items {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.mc-written-shortcuts-items > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Unified Settings Range Slider (replaces mismatched browser-default accent colors) */
+.mc-range {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 5px;
+  border-radius: 99px;
+  background: var(--border-strong);
+  outline: none;
+  cursor: pointer;
+  flex: 1;
+  min-width: 120px;
+}
+.mc-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 2px solid var(--bg-base);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.22);
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+.mc-range:hover::-webkit-slider-thumb {
+  transform: scale(1.08);
+}
+.mc-range:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 24%, transparent);
+}
+.mc-range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 28%, transparent);
+}
+
+/* Progressive Onboarding Tutorial (GuideView) */
+.mc-guide-stepper {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+@media (max-width: 680px) {
+  .mc-guide-stepper {
     grid-template-columns: 1fr;
   }
 }
-.mc-written-hotkey-row {
+.mc-guide-step-tab {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--bg-base);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.mc-guide-step-tab:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-subtle);
+}
+.mc-guide-step-tab.is-active {
+  border-color: var(--primary);
+  background: var(--bg-subtle);
+}
+.mc-guide-step-num {
+  width: 24px;
+  height: 24px;
+  border-radius: 99px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-strong);
+}
+.mc-guide-step-tab.is-active .mc-guide-step-num {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+.mc-guide-step-tab.is-done .mc-guide-step-num {
+  background: var(--success);
+  color: #fff;
+  border-color: var(--success);
+}
+.mc-guide-kv {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 8px 12px;
+  font-size: 12.5px;
+  align-items: baseline;
+}
+.mc-guide-kv-label {
+  color: var(--text-muted);
+}
+.mc-guide-kv-val {
+  color: var(--text);
+  word-break: break-word;
+}
+
+/* Clean Collapsible Cards & Sub-sections */
+details.mc-fold-card > summary.mc-fold-summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px;
+  cursor: pointer;
+  user-select: none;
+}
+details.mc-fold-card > summary.mc-fold-summary::-webkit-details-marker {
+  display: none;
+}
+details.mc-fold-card > summary.mc-fold-summary:hover {
+  background: var(--bg-subtle);
+}
+details.mc-fold-card[open] > summary.mc-fold-summary {
+  border-bottom: 1px solid var(--border);
+}
+.mc-fold-chevron {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted);
+  transition: transform 140ms ease;
+  flex-shrink: 0;
+}
+details.mc-fold-card[open] > summary.mc-fold-summary .mc-fold-chevron,
+details.mc-fold-inline[open] > summary.mc-fold-inline-summary .mc-fold-chevron {
+  transform: rotate(90deg);
+}
+details.mc-fold-inline {
+  border-top: 1px solid var(--border);
+}
+details.mc-fold-inline > summary.mc-fold-inline-summary {
+  list-style: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 6px 0;
-  border-bottom: 1px solid var(--border);
-  font-size: 12.5px;
+  padding: 9px 16px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
 }
-.mc-written-hotkey-row:last-child {
-  border-bottom: 0;
+details.mc-fold-inline > summary.mc-fold-inline-summary::-webkit-details-marker {
+  display: none;
+}
+details.mc-fold-inline > summary.mc-fold-inline-summary:hover {
+  background: var(--bg-subtle);
+  color: var(--text);
+}
+details.mc-fold-inline[open] > summary.mc-fold-inline-summary {
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle);
 }
 
 

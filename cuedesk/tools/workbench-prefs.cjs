@@ -74,6 +74,8 @@ const DEFAULT_PREFS = Object.freeze({
   memoryRecallEnabled: true,
   memoryMaxChars: 1600,
   memoryAutoRemind: true,
+  memoryTidyBaseVersion: 0,
+  memoryTidyDismissedVersion: 0,
   workbenchHotkeysEnabled: true,
   workbenchHotkeys: DEFAULT_WORKBENCH_HOTKEYS,
   codingPrefs: Object.freeze({
@@ -257,6 +259,8 @@ function normalizePrefs(raw, base = DEFAULT_PREFS) {
     memoryRecallEnabled: typeof src.memoryRecallEnabled === 'boolean' ? src.memoryRecallEnabled : (base.memoryRecallEnabled !== false),
     memoryMaxChars: clampInt(src.memoryMaxChars, 200, 3000, base.memoryMaxChars ?? 1600),
     memoryAutoRemind: typeof src.memoryAutoRemind === 'boolean' ? src.memoryAutoRemind : (base.memoryAutoRemind !== false),
+    memoryTidyBaseVersion: clampInt(src.memoryTidyBaseVersion, 0, 100000, base.memoryTidyBaseVersion ?? 0),
+    memoryTidyDismissedVersion: clampInt(src.memoryTidyDismissedVersion, 0, 100000, base.memoryTidyDismissedVersion ?? 0),
     workbenchHotkeysEnabled: typeof src.workbenchHotkeysEnabled === 'boolean' ? src.workbenchHotkeysEnabled : (base.workbenchHotkeysEnabled !== false),
     workbenchHotkeys: wbHotkeys,
     codingPrefs: normalizeCodingPrefs(src.codingPrefs, base.codingPrefs),

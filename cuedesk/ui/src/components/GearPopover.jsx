@@ -240,7 +240,7 @@ export function GearPopover({
 
       {securityLocked && (
         <div className="mc-field-hint" style={{ padding: '4px 6px', fontSize: 11 }}>
-          安全模式运行中，部分开关已锁定。
+          安全模式运行中，防截屏、不抢焦点与窗口置顶已锁定。
         </div>
       )}
       {error && (

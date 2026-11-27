@@ -137,6 +137,17 @@ def copy_baseline_runtime(baseline: Path, destination: Path) -> None:
     if ico_src.is_file():
         shutil.copy2(ico_src, res_dir / "app-icon.ico")
         iu.stamp_exe_icon(app_exe, ico_src)
+    if app_exe.is_file():
+        iu.stamp_exe_version_info(
+            app_exe,
+            product_name=APP_NAME,
+            file_description=APP_NAME,
+            company_name=APP_NAME,
+            internal_name=APP_NAME,
+            original_filename="CueDesk.exe",
+            file_version=f"{APP_VERSION}.0",
+            product_version=APP_VERSION,
+        )
     png_src = assets_dir / "app-icon.png"
     if png_src.is_file():
         shutil.copy2(png_src, res_dir / "app-icon.png")
@@ -287,7 +298,17 @@ def main() -> None:
     html_patched = bp.asar.read_member(original, header, offset, RENDERER_HTML).replace(
         b"<title>MeetingCopilot</title>", b"<title>CueDesk</title>"
     )
+    pkg_raw = bp.asar.read_member(original, header, offset, "package.json")
+    pkg_data = json.loads(pkg_raw.decode("utf-8"))
+    pkg_data["name"] = "cuedesk"
+    pkg_data["productName"] = APP_NAME
+    pkg_data["version"] = APP_VERSION
+    pkg_data["description"] = "CueDesk 实时面试与笔试辅助工作台"
+    pkg_data["author"] = APP_NAME
+    pkg_data["repository"] = {"type": "git", "url": "https://github.com/Drchennnn/CueDesk.git"}
+    pkg_patched = (json.dumps(pkg_data, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     replacements = {
+        "package.json": pkg_patched,
         MAIN: main_patched,
         ASR_WORKER: worker_patched,
         PRELOAD: preload_patched,

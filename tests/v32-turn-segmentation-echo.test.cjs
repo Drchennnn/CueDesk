@@ -381,3 +381,26 @@ test('SessionModel & settingsPatch: reviseQuestionWithAttempt replaces short str
   assert.equal(p.asr.echoGuard, false);
   assert.equal(p.asr.realtime, undefined, 'Changing segmentationMode/echoGuard must NOT rewrite realtime credentials');
 });
+
+test('applyLlmEvent retracts skipped empty auto cards & findRetroactiveEchoMeIds prunes early me-echo', async () => {
+  const { addQuestionWithAttempt, applyLlmEvent, appendSegment, createEmptySession, pruneSegmentsByIds } = await import('../cuedesk/ui/src/core/sessionModel.js');
+  const { findRetroactiveEchoMeIds } = await import('../cuedesk/ui/src/core/turnPolicy.js');
+
+  let s = createEmptySession();
+  s = addQuestionWithAttempt(s, { questionId: 'q1', requestId: 'r1', prompt: '真实问题', kind: 'segment' });
+  s = applyLlmEvent(s, { requestId: 'r1', kind: 'done', text: '真实回答' });
+  s = addQuestionWithAttempt(s, { questionId: 'q2', requestId: 'r2', prompt: '我给你出一道题。', kind: 'segment' });
+  assert.equal(s.questions.length, 2);
+  s = applyLlmEvent(s, { requestId: 'r2', kind: 'done', skipped: true, text: '' });
+  assert.equal(s.questions.length, 1, 'skipped empty auto card must be retracted cleanly');
+  assert.equal(s.selectedQuestionId, 'q1');
+
+  // Reverse echo check: me finalized 150ms BEFORE them, with homophone ASR drift
+  const t0 = 1700000000000;
+  s = appendSegment(s, { id: 1, speaker: 'me', text: 'OK，我给你出道 my logo 的题，你看这个是要什么样的才是？', startTs: t0 - 150, endTs: t0 - 150 });
+  s = appendSegment(s, { id: 2, speaker: 'me', text: '我之前在项目里用过 SQLite 存储索引。', startTs: t0 - 6000, endTs: t0 - 6000 });
+  const ids = findRetroactiveEchoMeIds('okay，我给你出道 MySQL 的题，你看这个是用什么样的查询？', s.segments, t0);
+  assert.deepEqual(ids, [1], 'retroactive echo check must catch early me segment with ASR drift without touching real user speech');
+  const pruned = pruneSegmentsByIds(s, ids);
+  assert.deepEqual(pruned.segments.map(x => x.id), [2]);
+});

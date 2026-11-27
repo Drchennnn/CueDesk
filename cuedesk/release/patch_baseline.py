@@ -105,8 +105,8 @@ def patch_main(raw: bytes) -> bytes:
     text = replace_once(
         text,
         'electron.app.setName("MeetingCopilot");',
-        'electron.app.setName("CueDesk");',
-        "app.setName CueDesk",
+        'electron.app.setName("CueDesk");\nif (process.platform === "win32" && typeof electron.app.setAppUserModelId === "function") electron.app.setAppUserModelId("com.cuedesk.app");',
+        "app.setName CueDesk + Win32 AppUserModelId",
     )
     text = replace_once(
         text,
@@ -155,6 +155,188 @@ def patch_main(raw: bytes) -> bytes:
         '    "theme": "dark",',
         '    "theme": "light",',
         "defaultSettings light theme",
+    )
+
+    # 1a. Unlock Windows System Tray & add reliable window/security recovery entries
+    text = replace_once(
+        text,
+        '''function buildTrayMenu(state, labels) {
+  return [
+    { id: "brand", label: labels.brand, kind: "label" },
+    SEPARATOR,
+    {
+      id: "toggle-window",
+      label: state.windowVisible ? labels.hideWindow : labels.showWindow,
+      kind: "command"
+    },''',
+        '''function buildTrayMenu(state, labels) {
+  return [
+    { id: "brand", label: labels.brand, kind: "label" },
+    SEPARATOR,
+    { id: "recover-window", label: "显示 / 找回 CueDesk 窗口", kind: "command" },
+    { id: "exit-security-recover", label: "退出安全模式并恢复窗口", kind: "command" },
+    {
+      id: "toggle-window",
+      label: state.windowVisible ? labels.hideWindow : labels.showWindow,
+      kind: "command"
+    },''',
+        "tray menu recovery items",
+    )
+    text = replace_once(
+        text,
+        '''  create(options) {
+    if (process.platform === "win32") return false;
+    if (this.tray) return true;
+    try {
+      const image = electron.nativeImage.createFromPath(options.iconPath);
+      if (image.isEmpty()) {
+        console.warn(`[tray] icon missing or unreadable: ${options.iconPath}`);
+        return false;
+      }''',
+        '''  create(options) {
+    if (this.tray) return true;
+    try {
+      const candidates = [
+        options.iconPath,
+        path.join(path.dirname(path.dirname(options.iconPath || "")), "app-icon.ico"),
+        path.join(path.dirname(path.dirname(options.iconPath || "")), "app-icon.png")
+      ].filter(Boolean);
+      let image = electron.nativeImage.createEmpty();
+      for (const p of candidates) {
+        if (!fs.existsSync(p)) continue;
+        const loaded = electron.nativeImage.createFromPath(p);
+        if (!loaded.isEmpty()) {
+          image = loaded;
+          break;
+        }
+      }
+      if (image.isEmpty()) {
+        console.warn(`[tray] icon missing or unreadable: ${candidates.join(", ")}`);
+        return false;
+      }''',
+        "enable Windows tray with icon fallback",
+    )
+    text = replace_once(
+        text,
+        '''  function showWindow() {
+    if (!win) return;
+    writtenWindow?.unlock();
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  }
+  function toggleWindow() {
+    if (!win) return;
+    if (win.isVisible()) win.hide();
+    else writtenWindow.showInactive();
+  }
+  function trayState() {
+    return { windowVisible: !!win?.isVisible(), capturing };
+  }
+  function refreshTray() {
+    tray.refresh();
+  }
+  function handleTrayCommand(command) {
+    if (command === "quit") {
+      electron.app.quit();
+      return;
+    }
+    if (command === "toggle-window") {
+      toggleWindow();
+      return;
+    }''',
+        '''  function showWindow(source = "show_window") {
+    if (!win) return;
+    writtenWindow?.unlock();
+    if (workbenchWindow) {
+      workbenchWindow.recoverWindow({ source });
+      return;
+    }
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  }
+  function toggleWindow(source = "toggle_window") {
+    if (!win) return;
+    if (win.isVisible() && !win.isMinimized()) {
+      workbenchWindow?.recordHideRequest?.(source);
+      win.hide();
+    } else if (workbenchWindow) {
+      workbenchWindow.recoverWindow({ source });
+    } else {
+      writtenWindow.showInactive();
+    }
+  }
+  function syncTrayForSecurity() {
+    const secOn = !!workbenchWindow?.getWindowState?.()?.securityMode?.enabled;
+    if (secOn) {
+      if (tray.exists) {
+        tray.destroy();
+        workbenchWindow?.traceEvent?.("tray_hidden_security");
+        console.log("[tray] hidden for security mode");
+      }
+      return;
+    }
+    if (!tray.exists) {
+      ensureTray();
+      if (tray.exists) workbenchWindow?.traceEvent?.("tray_restored");
+    } else {
+      refreshTray();
+    }
+  }
+  function handleTrayClick() {
+    if (!win) return;
+    if (!win.isVisible() || win.isMinimized()) {
+      showWindow("tray_click");
+      return;
+    }
+    const st = workbenchWindow?.getWindowState?.();
+    if (st && (st.mode !== "home" || st.securityMode?.enabled)) {
+      workbenchWindow.recoverWindow({ source: "tray_click" });
+      return;
+    }
+    if (win.isFocused?.()) {
+      workbenchWindow?.recordHideRequest?.("tray_click");
+      win.hide();
+    } else {
+      showWindow("tray_click");
+    }
+  }
+  function trayState() {
+    return { windowVisible: !!win?.isVisible() && !win?.isMinimized?.(), capturing };
+  }
+  function refreshTray() {
+    tray.refresh();
+  }
+  function handleTrayCommand(command) {
+    if (command === "quit") {
+      electron.app.quit();
+      return;
+    }
+    if (command === "recover-window") {
+      showWindow("tray_menu_recover");
+      return;
+    }
+    if (command === "exit-security-recover") {
+      if (workbenchWindow) workbenchWindow.recoverWindow({ exitSecurity: true, source: "tray_menu_exit_security" });
+      else showWindow("tray_menu_exit_security");
+      return;
+    }
+    if (command === "toggle-window") {
+      toggleWindow("tray_menu_toggle");
+      return;
+    }''',
+        "tray recovery commands and click behavior",
+    )
+    text = replace_once(
+        text,
+        '''      onCommand: handleTrayCommand,
+      onClick: toggleWindow,
+      onDoubleClick: showWindow''',
+        '''      onCommand: handleTrayCommand,
+      onClick: handleTrayClick,
+      onDoubleClick: showWindow''',
+        "tray onClick uses handleTrayClick",
     )
 
     # 1b. Expose llm.reasoningEffort in settings.getPublic() and inject reasoning_effort/thinking into chatStream
@@ -805,9 +987,20 @@ def patch_main(raw: bytes) -> bytes:
         '''    writtenWindow.attach(win);
     windowControls.attach(win);
     workbenchWindow?.attach(win);
+    if (process.platform === "win32" && typeof win.setAppDetails === "function") {
+      try {
+        win.setAppDetails({
+          appId: "com.cuedesk.app",
+          appIconPath: fs.existsSync(appIconPath) ? appIconPath : process.execPath,
+          appIconIndex: 0,
+          relaunchCommand: `"${process.execPath}"`,
+          relaunchDisplayName: "CueDesk"
+        });
+      } catch {}
+    }
     if (writtenWindow.getPublic().enabled) win.setAlwaysOnTop(true, "screen-saver");
     win.setContentProtection(settings.data.ui.stealth);''',
-        "createWindow attach workbenchWindow",
+        "createWindow attach workbenchWindow + Win32 setAppDetails",
     )
 
     text = replace_once(
@@ -823,6 +1016,24 @@ def patch_main(raw: bytes) -> bytes:
       refreshTray();
     });''',
         "win show taskbar delegation",
+    )
+    text = replace_once(
+        text,
+        '    ensureTray();\n  }\n  function startMainApp()',
+        '    syncTrayForSecurity();\n  }\n  function startMainApp()',
+        "createWindow tray respects security mode",
+    )
+    text = replace_once(
+        text,
+        '    electron.ipcMain.on(IPC.winHide, () => win?.hide());',
+        '    electron.ipcMain.on(IPC.winHide, () => { workbenchWindow?.recordHideRequest?.("ipc_win_hide"); win?.hide(); });',
+        "IPC.winHide trace source",
+    )
+    text = replace_once(
+        text,
+        '      onToggle: () => toggleWindow(),',
+        '      onToggle: () => toggleWindow("hotkey_toggle"),',
+        "shortcutRuntime onToggle trace source",
     )
 
     # 6. Add interview-library:pick-root and interview-library:read-doc IPCs
@@ -857,6 +1068,10 @@ def patch_main(raw: bytes) -> bytes:
     electron.ipcMain.handle("interview-library:rag-status", async (event) => {
       assertLibrarySender(event);
       return interviewLibrary.getRagStatus();
+    });
+    electron.ipcMain.handle("interview-library:retire-missing", async (event, filePaths) => {
+      assertLibrarySender(event);
+      return interviewLibrary.retireMissing(Array.isArray(filePaths) ? filePaths : null);
     });
     const { createKbWorkspace } = require(path.join(process.resourcesPath, "tools", "kb-workspace.cjs"));
     const kbWorkspace = createKbWorkspace({
@@ -947,6 +1162,12 @@ def patch_main(raw: bytes) -> bytes:
       await interviewLibrary.getPublic().catch(() => {});
       return state;
     });
+    electron.ipcMain.handle("memory:resolve-pending-batch", async (event, payload) => {
+      assertLibrarySender(event);
+      const state = memoryStore.resolvePendingBatch(payload);
+      await interviewLibrary.getPublic().catch(() => {});
+      return state;
+    });
     electron.ipcMain.handle("memory:rollback", async (event, version) => {
       assertLibrarySender(event);
       const state = memoryStore.rollbackSnapshot(version);
@@ -1029,6 +1250,8 @@ def patch_main(raw: bytes) -> bytes:
       file: path.join(electron.app.getPath("userData"), "workbench-prefs.json"),
       onChange: (value) => { if (win && !win.isDestroyed()) win.webContents.send("workbench-prefs:state", value); }
     });
+    const { createWinNativeHelper } = require(path.join(process.resourcesPath, "tools", "win-native.cjs"));
+    const winNative = createWinNativeHelper({ helperPath: path.join(process.resourcesPath, "tools", "QuietCapture.exe") });
     const { createWorkbenchWindow } = require(path.join(process.resourcesPath, "tools", "workbench-window.cjs"));
     workbenchWindow = createWorkbenchWindow({
       prefs: workbenchPrefs,
@@ -1040,10 +1263,15 @@ def patch_main(raw: bytes) -> bytes:
         win?.setContentProtection(!!on);
       },
       isWrittenCompact: () => !!writtenWindow?.getPublic().enabled,
-      onStateChange: (state) => { if (win && !win.isDestroyed()) win.webContents.send("win:state", state); },
+      onStateChange: (state) => {
+        if (win && !win.isDestroyed()) win.webContents.send("win:state", state);
+        try { syncTrayForSecurity(); } catch {}
+      },
       onHoverChange: (inside) => { if (win && !win.isDestroyed()) win.webContents.send("win:hover-state", { inside }); },
       onHotkeyAction: (action) => { if (win && !win.isDestroyed()) win.webContents.send("win:hotkey-action", { action }); },
-      onHotkeysChanged: () => { if (!shortcutRuntime?.recording) shortcutRuntime?.register(); }
+      onHotkeysChanged: () => { if (!shortcutRuntime?.recording) shortcutRuntime?.register(); },
+      traceLogPath: path.join(electron.app.getPath("userData"), "window-trace.log"),
+      winNative
     });
     const reapplyCapture = () => { workbenchWindow?.reapplyContentProtection(); };
     electron.powerMonitor?.on?.("resume", reapplyCapture);
@@ -1098,6 +1326,15 @@ def patch_main(raw: bytes) -> bytes:
     electron.ipcMain.handle("security:disable", (event, options) => { assertMainSender(event); return workbenchWindow.disableSecurity(options); });
     electron.ipcMain.handle("security:set-prefs", (event, patch) => { assertMainSender(event); return workbenchWindow.setSecurityPrefs(patch); });
     electron.ipcMain.handle("security:check-env", (event) => { assertMainSender(event); return workbenchWindow.checkEnvironment(); });
+    electron.ipcMain.handle("win:recover", (event, opts) => { assertMainSender(event); return workbenchWindow.recoverWindow(opts || {}); });
+    electron.ipcMain.handle("win:get-trace", (event) => { assertMainSender(event); return workbenchWindow.getTrace(); });
+    electron.ipcMain.handle("guide:open-url", async (event, url) => {
+      assertMainSender(event);
+      const raw = String(url || "").trim();
+      if (!/^https?:\/\//i.test(raw)) throw new Error("仅支持打开 http/https 链接");
+      await electron.shell.openExternal(raw);
+      return { ok: true };
+    });
     const { createAudioRecorder } = require(path.join(process.resourcesPath, "tools", "audio-recorder.cjs"));
     audioRecorder = createAudioRecorder({
       defaultDir: path.join(electron.app.getPath("userData"), "recordings"),
@@ -1233,6 +1470,13 @@ def patch_main(raw: bytes) -> bytes:
       const evidence = messages.evidence;
       const stream = evidence ?''',
         "llmAsk coding directive",
+    )
+
+    text = replace_once(
+        text,
+        '        sendEv({ requestId: payload.requestId, kind: "done", text: stream ? stream.finish(r.text).oral_answer : r.text });',
+        '        sendEv({ requestId: payload.requestId, kind: "done", skipped: Boolean(messages.skipGeneration), text: stream ? stream.finish(r.text).oral_answer : r.text });',
+        "llmAsk done skipped flag",
     )
 
     text = replace_once(
@@ -1452,6 +1696,7 @@ def patch_preload(raw: bytes) -> bytes:
   openInterviewDocument: (ref) => electron.ipcRenderer.invoke("interview-library:open-doc", ref),
   readInterviewChunks: (ref) => electron.ipcRenderer.invoke("interview-library:read-chunks", ref),
   getRagStatus: () => electron.ipcRenderer.invoke("interview-library:rag-status"),
+  retireMissingSources: (filePaths) => electron.ipcRenderer.invoke("interview-library:retire-missing", filePaths),
   kbWriteDoc: (payload) => electron.ipcRenderer.invoke("kb:write-doc", payload),
   kbTrashDoc: (payload) => electron.ipcRenderer.invoke("kb:trash-doc", payload),
   kbCreateRole: (payload) => electron.ipcRenderer.invoke("kb:create-role", payload),
@@ -1466,6 +1711,7 @@ def patch_preload(raw: bytes) -> bytes:
   memorySaveBucket: (payload) => electron.ipcRenderer.invoke("memory:save-bucket", payload),
   memoryAppendItem: (payload) => electron.ipcRenderer.invoke("memory:append-item", payload),
   memoryResolvePending: (payload) => electron.ipcRenderer.invoke("memory:resolve-pending", payload),
+  memoryResolvePendingBatch: (payload) => electron.ipcRenderer.invoke("memory:resolve-pending-batch", payload),
   memoryRollback: (version) => electron.ipcRenderer.invoke("memory:rollback", version),
   memoryOpenDir: () => electron.ipcRenderer.invoke("memory:open-dir"),
   memoryArchiveSession: (payload) => electron.ipcRenderer.invoke("memory:archive-session", payload),
@@ -1531,6 +1777,9 @@ def patch_preload(raw: bytes) -> bytes:
   disableSecurity: (options) => electron.ipcRenderer.invoke("security:disable", options),
   setSecurityPrefs: (patch) => electron.ipcRenderer.invoke("security:set-prefs", patch),
   checkSecurityEnvironment: () => electron.ipcRenderer.invoke("security:check-env"),
+  recoverWindow: (opts) => electron.ipcRenderer.invoke("win:recover", opts),
+  getWindowTrace: () => electron.ipcRenderer.invoke("win:get-trace"),
+  openExternalUrl: (url) => electron.ipcRenderer.invoke("guide:open-url", url),
   listModels: (req) => electron.ipcRenderer.invoke("models:list", req),
   testRealtimeTranscribe: (req) => electron.ipcRenderer.invoke("asr:test-transcribe", req),
   checkEyeContactCamera: () => electron.ipcRenderer.invoke("eye-contact:check-camera"),

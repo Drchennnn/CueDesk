@@ -4,7 +4,7 @@ const FACETS=[
  {id:'chunking',label:'切块',re:/切块|切割|分块|chunk(?:ing)?|split(?:ting)?|overlap|parent[\s-]?child/i,terms:['切块','切割','分块','chunking']},
  {id:'embedding',label:'向量表示',re:/向量化|向量表示|嵌入|embedding|dense|sparse|编码.{0,4}向量|\bvector\b|semantic\s+search/i,terms:['向量','dense','sparse','embedding']},
  {id:'retrieval',label:'检索与融合',re:/召回|混合检索|融合|rrf|精排|重排|rerank|hybrid\s+(?:search|retrieval)|retriev\w*|bm25|fts5/i,terms:['检索','召回','融合','rrf']},
- {id:'testing',label:'测试与验证',re:/验证|验收|测试|回归|检查|\b(?:test(?:ing|s|case)?|qa|sdet|verif\w*|validat\w*|regression|bug|defect|assert\w*|pytest|automation)\b/i,terms:['验证','测试','回归','用例','缺陷','测试开发']},
+ {id:'testing',label:'测试与验证',re:/验证|验收|测试|回归|检查|自动化测试|测试经验|测试实践|\b(?:test(?:ing|s|case)?|qa|sdet|verif\w*|validat\w*|regression|bug|defect|assert\w*|pytest|automation)\b/i,terms:['验证','测试','回归','用例','缺陷','测试开发','pytest']},
  {id:'evaluation',label:'效果评估',re:/评估|评测|准确率|正确率|效果|质量|检验|衡量|好坏|靠不靠谱|是否可靠|量化.{0,8}(?:效果|质量|表现)|\b(?:eval(?:uat\w*)?|accuracy|precision|recall|f1|metric|benchmark|rubric|quality|hallucination)\b/i,terms:['评估','评测','效果','质量','量化']},
  {id:'storage',label:'存储',re:/存储|数据库|sqlite|qdrant|mysql|redis|\b(?:storage|database|sql|table|schema)\b/i,terms:['存储','数据库']},
  {id:'frontend',label:'前端',re:/前端|页面|\bvue\b|\breact\b|组件|\bjsx\b|\bprops\b|\busestate\b|\b(?:frontend|front-end|dashboard|echarts)\b/i,terms:['前端','页面','组件']},

@@ -131,12 +131,46 @@ function bigramContainment(shortStr, longStr) {
   return totalA > 0 ? overlap / totalA : 0;
 }
 
+function charOverlapRatio(a, b) {
+  if (!a || !b) return 0;
+  const counts = new Map();
+  for (const ch of a) counts.set(ch, (counts.get(ch) || 0) + 1);
+  let shared = 0;
+  for (const ch of b) {
+    const n = counts.get(ch) || 0;
+    if (n > 0) {
+      shared += 1;
+      counts.set(ch, n - 1);
+    }
+  }
+  const denom = Math.min(a.length, b.length);
+  return denom > 0 ? shared / denom : 0;
+}
+
+function echoSimilarity(normA, normB, deltaMs = 0) {
+  if (!normA || !normB) return { match: false, score: 0 };
+  if (normA.length <= 3 || normB.length <= 3) {
+    const shorter = normA.length <= normB.length ? normA : normB;
+    const longer = normA.length <= normB.length ? normB : normA;
+    if (shorter.length >= 2 && (longer === shorter || (longer.length <= 8 && longer.endsWith(shorter)))) {
+      return { match: true, score: 1 };
+    }
+    return { match: false, score: 0 };
+  }
+  const shorter = normA.length <= normB.length ? normA : normB;
+  const longer = normA.length <= normB.length ? normB : normA;
+  if (shorter.length < 4) return { match: false, score: 0 };
+  const bg = bigramContainment(shorter, longer);
+  // Close-in-time cross-channel ASR often mishears an English term (e.g. MySQL vs my logo) while keeping high Chinese char overlap.
+  const charRatio = deltaMs <= 2200 && shorter.length >= 6 ? charOverlapRatio(shorter, longer) : 0;
+  const score = Math.max(bg, charRatio >= 0.72 ? charRatio : 0);
+  return { match: score >= 0.65 || (deltaMs <= 2200 && bg >= 0.56 && charRatio >= 0.68), score };
+}
+
 /**
  * Text-level speaker-echo deduplicator:
- * In Windows system-audio mode with external speakers, interviewer speech can
- * leak acoustically into the user's mic ("me" channel) 50ms–2500ms later.
- * Comparing each incoming "me" segment against recent "them" segments within
- * `windowMs` catches leaked speaker echo with zero latency overhead on "them".
+ * In Windows system-audio mode (or headset crosstalk/default-mic pickup), interviewer speech can
+ * leak into the user's mic ("me" channel) before or after the "them" segment finalizes.
  */
 export function isEchoOfRecentThem(meText, recentThemSegments = [], nowTs = Date.now(), {
   windowMs = 3500,
@@ -153,40 +187,67 @@ export function isEchoOfRecentThem(meText, recentThemSegments = [], nowTs = Date
   if (!recent.length) return { isEcho: false, score: 0, matchedSegmentId: null };
 
   // Check individual recent segments plus the concatenation of the last 2–3 them segments
-  const candidates = recent.map((s) => ({ id: s.id ?? null, norm: normalizeForEcho(s.text) }));
+  const candidates = recent.map((s) => ({
+    id: s.id ?? null,
+    norm: normalizeForEcho(s.text),
+    deltaMs: Number(s.endTs ?? s.startTs ?? 0) ? Math.abs(nowTs - Number(s.endTs ?? s.startTs ?? 0)) : 0
+  }));
   if (recent.length >= 2) {
     const tail = recent.slice(-3);
+    const tailTs = Number(tail[tail.length - 1]?.endTs ?? tail[tail.length - 1]?.startTs ?? 0);
     candidates.push({
       id: tail[tail.length - 1]?.id ?? null,
-      norm: tail.map((s) => normalizeForEcho(s.text)).join('')
+      norm: tail.map((s) => normalizeForEcho(s.text)).join(''),
+      deltaMs: tailTs ? Math.abs(nowTs - tailTs) : 0
     });
   }
 
   let bestScore = 0;
   let bestId = null;
+  let matched = false;
   for (const cand of candidates) {
     if (!cand.norm) continue;
-    if (normMe.length <= 3) {
-      if (cand.norm === normMe || (cand.norm.length >= normMe.length && cand.norm.endsWith(normMe))) {
-        return { isEcho: true, score: 1, matchedSegmentId: cand.id };
-      }
-      continue;
-    }
-    const shorter = normMe.length <= cand.norm.length ? normMe : cand.norm;
-    const longer = normMe.length <= cand.norm.length ? cand.norm : normMe;
-    // Avoid false positive when a 2-char word matches inside a huge sentence
-    if (shorter.length < 4) continue;
-    const score = bigramContainment(shorter, longer);
-    if (score > bestScore) {
-      bestScore = score;
+    const res = echoSimilarity(normMe, cand.norm, cand.deltaMs);
+    if (res.score > bestScore) {
+      bestScore = res.score;
       bestId = cand.id;
+    }
+    if (res.match || res.score >= minContainment) {
+      matched = true;
+      if (res.score >= bestScore) bestId = cand.id;
     }
   }
   return {
-    isEcho: bestScore >= minContainment,
+    isEcho: matched && bestScore >= Math.min(minContainment, 0.56),
     score: Number(bestScore.toFixed(3)),
-    matchedSegmentId: bestScore >= minContainment ? bestId : null
+    matchedSegmentId: matched ? bestId : null
   };
+}
+
+/**
+ * Reverse echo sweep: when the "me" ASR stream finalizes 50ms–2500ms BEFORE the
+ * corresponding "them" stream, prune those duplicate "me" segments once "them" arrives.
+ */
+export function findRetroactiveEchoMeIds(themText, recentSegments = [], nowTs = Date.now(), {
+  windowMs = 2800,
+  minContainment = 0.65
+} = {}) {
+  const normThem = normalizeForEcho(themText);
+  if (normThem.length < 2) return [];
+  const ids = [];
+  for (const seg of Array.isArray(recentSegments) ? recentSegments : []) {
+    if (!seg || seg.speaker !== 'me' || seg.id == null) continue;
+    const ts = Number(seg.endTs ?? seg.startTs ?? 0);
+    const deltaMs = ts ? Math.abs(nowTs - ts) : 0;
+    if (ts && deltaMs > windowMs) continue;
+    const normMe = normalizeForEcho(seg.text);
+    if (normMe.length < 2) continue;
+    const res = echoSimilarity(normMe, normThem, deltaMs);
+    if (res.match || res.score >= minContainment) {
+      ids.push(seg.id);
+    }
+  }
+  return ids;
 }
 
 /**

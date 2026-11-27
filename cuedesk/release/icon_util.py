@@ -10,6 +10,7 @@ import sys
 
 RT_ICON = 3
 RT_GROUP_ICON = 14
+RT_VERSION = 16
 LANG_EN_US = 1033
 LOAD_LIBRARY_AS_DATAFILE = 0x00000002
 
@@ -201,6 +202,144 @@ def stamp_exe_icon(exe_path: Path, ico_path: Path) -> dict:
         "group_id": primary_group_id,
         "lang": primary_lang,
     }
+
+
+def _pad4(data: bytes) -> bytes:
+    rem = len(data) % 4
+    return data + (b"\x00" * (4 - rem)) if rem else data
+
+
+def _ver_node(key: str, value: bytes = b"", w_type: int = 1, children: list[bytes] | None = None, value_len: int | None = None) -> bytes:
+    key_bytes = (key + "\x00").encode("utf-16-le")
+    header_plus_key = _pad4(struct.pack("<HHH", 0, 0, w_type) + key_bytes)
+    if value_len is None:
+        value_len = (len(value) // 2) if w_type == 1 else len(value)
+    body = header_plus_key + value
+    if children:
+        body = _pad4(body)
+        for idx, child in enumerate(children):
+            body += child if idx == len(children) - 1 else _pad4(child)
+    return struct.pack("<HHH", len(body), value_len, w_type) + body[6:]
+
+
+def _parse_ver_quad(ver: str) -> tuple[int, int, int, int]:
+    nums = [int(p) for p in str(ver or "1.0.0.0").split(".") if p.isdigit()]
+    while len(nums) < 4:
+        nums.append(0)
+    return tuple(max(0, min(65535, n)) for n in nums[:4])
+
+
+def build_vs_version_info(
+    *,
+    product_name: str = "CueDesk",
+    file_description: str = "CueDesk",
+    company_name: str = "CueDesk",
+    internal_name: str = "CueDesk",
+    original_filename: str = "CueDesk.exe",
+    file_version: str = "1.0.0.0",
+    product_version: str = "1.0.0",
+) -> bytes:
+    """Build a Win32 RT_VERSION (VS_VERSION_INFO) resource blob with UTF-16 string tables."""
+    f1, f2, f3, f4 = _parse_ver_quad(file_version)
+    p1, p2, p3, p4 = _parse_ver_quad(product_version)
+    fixed = struct.pack(
+        "<13I",
+        0xFEEF04BD,
+        0x00010000,
+        (f1 << 16) | f2,
+        (f3 << 16) | f4,
+        (p1 << 16) | p2,
+        (p3 << 16) | p4,
+        0x0000003F,
+        0x00000000,
+        0x00040004,
+        0x00000001,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+    )
+    strings = [
+        ("CompanyName", company_name),
+        ("FileDescription", file_description),
+        ("FileVersion", file_version),
+        ("InternalName", internal_name),
+        ("OriginalFilename", original_filename),
+        ("ProductName", product_name),
+        ("ProductVersion", product_version),
+    ]
+    string_nodes = [
+        _ver_node(k, (v + "\x00").encode("utf-16-le"), w_type=1)
+        for k, v in strings
+    ]
+    string_table = _ver_node("040904b0", b"", w_type=1, children=string_nodes, value_len=0)
+    string_file_info = _ver_node("StringFileInfo", b"", w_type=1, children=[string_table], value_len=0)
+    translation = _ver_node("Translation", struct.pack("<HH", 0x0409, 0x04B0), w_type=0, value_len=4)
+    var_file_info = _ver_node("VarFileInfo", b"", w_type=1, children=[translation], value_len=0)
+    return _ver_node("VS_VERSION_INFO", fixed, w_type=0, children=[string_file_info, var_file_info], value_len=len(fixed))
+
+
+def stamp_exe_version_info(
+    exe_path: Path,
+    *,
+    product_name: str = "CueDesk",
+    file_description: str = "CueDesk",
+    company_name: str = "CueDesk",
+    internal_name: str = "CueDesk",
+    original_filename: str = "CueDesk.exe",
+    file_version: str = "1.0.0.0",
+    product_version: str = "1.0.0",
+) -> dict:
+    """Replace the PE RT_VERSION resource so Windows Taskbar, Explorer, and Mic Privacy show CueDesk."""
+    if sys.platform != "win32":
+        return {"skipped": True, "reason": "non-win32"}
+    exe_path = exe_path.resolve()
+    k32, enum_name_cb, enum_lang_cb = _setup_kernel32()
+    hmod = k32.LoadLibraryExW(str(exe_path), None, LOAD_LIBRARY_AS_DATAFILE)
+    if not hmod:
+        raise OSError(f"LoadLibraryExW failed for {exe_path} (err={ctypes.get_last_error()})")
+    existing_ver: list[tuple[int | str, list[int]]] = []
+    try:
+        def on_name(h, t, name, _lp):
+            langs: list[int] = []
+            def on_lang(_h2, _t2, _n2, lang, _lp2):
+                langs.append(int(lang))
+                return True
+            k32.EnumResourceLanguagesW(h, t, name, enum_lang_cb(on_lang), 0)
+            key: int | str = int(name) if name < 0x10000 else ctypes.wstring_at(name)
+            existing_ver.append((key, langs))
+            return True
+        k32.EnumResourceNamesW(hmod, ctypes.c_void_p(RT_VERSION), enum_name_cb(on_name), 0)
+    finally:
+        k32.FreeLibrary(hmod)
+
+    payload = build_vs_version_info(
+        product_name=product_name,
+        file_description=file_description,
+        company_name=company_name,
+        internal_name=internal_name,
+        original_filename=original_filename,
+        file_version=file_version,
+        product_version=product_version,
+    )
+    hupdate = k32.BeginUpdateResourceW(str(exe_path), False)
+    if not hupdate:
+        raise OSError(f"BeginUpdateResourceW failed for {exe_path} (err={ctypes.get_last_error()})")
+    committed = False
+    try:
+        for vid, langs in existing_ver:
+            for lang in langs or [LANG_EN_US]:
+                k32.UpdateResourceW(hupdate, ctypes.c_void_p(RT_VERSION), _res_id_ptr(vid), lang, None, 0)
+        buf = ctypes.create_string_buffer(payload, len(payload))
+        ok = k32.UpdateResourceW(hupdate, ctypes.c_void_p(RT_VERSION), ctypes.c_void_p(1), LANG_EN_US, buf, len(payload))
+        if not ok:
+            raise OSError(f"UpdateResourceW(RT_VERSION) failed (err={ctypes.get_last_error()})")
+        if not k32.EndUpdateResourceW(hupdate, False):
+            raise OSError(f"EndUpdateResourceW(RT_VERSION) failed (err={ctypes.get_last_error()})")
+        committed = True
+    finally:
+        if not committed:
+            k32.EndUpdateResourceW(hupdate, True)
+    return {"exe": str(exe_path), "product_name": product_name, "bytes": len(payload)}
 
 
 def compile_launcher_exe(src_cs: Path, ico_path: Path, out_exe: Path) -> Path:

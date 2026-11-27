@@ -154,6 +154,7 @@ export function WorkbenchView({
   const [exitSaving, setExitSaving] = useState(false);
   const [exitError, setExitError] = useState('');
   const [saveToast, setSaveToast] = useState(null);
+  const [pinNotice, setPinNotice] = useState('');
   const [clearArmed, setClearArmed] = useState(false);
   const [modePopoverOpen, setModePopoverOpen] = useState(false);
   const [codingPopoverOpen, setCodingPopoverOpen] = useState(false);
@@ -162,6 +163,7 @@ export function WorkbenchView({
   const [kbMenuOpen, setKbMenuOpen] = useState(false);
   const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
   const [inputFocused, setInputFocused] = useState(false);
+  const [localHoverInside, setLocalHoverInside] = useState(true);
   const [copiedAnswer, setCopiedAnswer] = useState(false);
   const [dragQuestionId, setDragQuestionId] = useState(null);
   const [dropQuestionId, setDropQuestionId] = useState(null);
@@ -181,12 +183,14 @@ export function WorkbenchView({
   const codingBtnRef = useRef(null);
   const modelBtnRef = useRef(null);
 
+  const shellRef = useRef(null);
   const contentRef = useRef(null);
   const leftPaneRef = useRef(null);
   const answerScrollRef = useRef(null);
   const scrollMemoryRef = useRef(new Map());
   const prevQuestionIdRef = useRef(null);
   const audioPillTimerRef = useRef(null);
+  const pinNoticeTimerRef = useRef(null);
   const mouseInteractiveRef = useRef(false);
   const windowDraggingRef = useRef(false);
 
@@ -208,8 +212,27 @@ export function WorkbenchView({
   const translationTargetLang = workbenchPrefs?.translationTargetLang || 'zh-CN';
   const preventFocus = Boolean(windowState?.preventFocus);
   const clickThrough = Boolean(windowState?.clickThrough);
+  const securityLocked = Boolean(windowState?.securityMode?.enabled);
   const alwaysOnTop = windowState?.alwaysOnTop !== false;
   const virtualCursorActive = Boolean(windowState?.securityMode?.enabled && windowState?.securityMode?.hideCursor !== false);
+
+  const showPinNotice = useCallback((text) => {
+    clearTimeout(pinNoticeTimerRef.current);
+    setPinNotice(text);
+    pinNoticeTimerRef.current = setTimeout(() => setPinNotice(''), 2400);
+  }, []);
+
+  const handlePinClick = useCallback(async () => {
+    if (securityLocked) {
+      showPinNotice('安全模式已锁定窗口置顶，退出安全模式后可取消');
+      return;
+    }
+    try {
+      await onSetAlwaysOnTop(!alwaysOnTop);
+    } catch (err) {
+      showPinNotice(err?.message || '无法切换窗口置顶');
+    }
+  }, [securityLocked, alwaysOnTop, onSetAlwaysOnTop, showPinNotice]);
   const clickThroughKeyLabel = (windowState?.workbenchHotkeys?.toggleClickThrough || windowState?.hotkeys?.toggleClickThrough || 'Control+Shift+9')
     .replace(/Control/gi, 'Ctrl')
     .replace(/\+/g, ' + ');
@@ -404,8 +427,8 @@ export function WorkbenchView({
     window.addEventListener('blur', onUp);
   };
 
-  // Layered opacity CSS custom properties
-  const effectiveHoverInside = hoverInside || isAnimationSuppressed;
+  // Layered opacity CSS custom properties (local DOM hover guards against main-process polling lag locking auto-collapsed chrome)
+  const effectiveHoverInside = hoverInside || localHoverInside || isAnimationSuppressed;
   const shouldHoverFade = hoverReveal && !effectiveHoverInside;
   const shouldCollapseChrome = autoCollapseChrome && !effectiveHoverInside;
 
@@ -634,11 +657,26 @@ export function WorkbenchView({
     );
   };
 
+  const revealChromeSync = useCallback(() => {
+    shellRef.current?.classList.remove('is-chrome-collapsed');
+    if (!localHoverInside) setLocalHoverInside(true);
+    if (!hoverInside) void window.mc?.setHoverTracking?.(true)?.catch?.(() => {});
+  }, [localHoverInside, hoverInside]);
+
   return (
     <>
       <div
+        ref={shellRef}
         className={`mc-wb-shell${effectiveHoverInside ? ' is-hover-in' : ''}${shouldCollapseChrome ? ' is-chrome-collapsed' : ''}${windowState?.maximized ? ' is-maximized' : ''}`}
         style={shellStyle}
+        onPointerEnter={revealChromeSync}
+        onMouseEnter={revealChromeSync}
+        onPointerMove={() => {
+          shellRef.current?.classList.remove('is-chrome-collapsed');
+          if (!localHoverInside) setLocalHoverInside(true);
+        }}
+        onPointerDownCapture={revealChromeSync}
+        onMouseLeave={() => setLocalHoverInside(false)}
       >
         {/* 44px TOP CHROME (JS pointer drag, zero -webkit-app-region: drag) */}
         <header
@@ -734,10 +772,14 @@ export function WorkbenchView({
               <button
                 type="button"
                 className={`mc-icon-btn${alwaysOnTop ? ' is-active' : ''}`}
-                title={alwaysOnTop ? '已置顶（点击取消置顶）' : '窗口置顶'}
+                title={securityLocked
+                  ? '安全模式已锁定窗口置顶（防止不抢焦点浮窗沉底，退出安全模式后可取消）'
+                  : (alwaysOnTop ? '已置顶（点击取消置顶）' : '窗口置顶')}
                 aria-label="窗口置顶"
                 aria-pressed={alwaysOnTop}
-                onClick={() => void onSetAlwaysOnTop(!alwaysOnTop)}
+                aria-disabled={securityLocked || undefined}
+                style={securityLocked ? { opacity: 0.62, cursor: 'not-allowed' } : undefined}
+                onClick={() => void handlePinClick()}
               >
                 <IconPin size={14} filled={alwaysOnTop} />
               </button>
@@ -1136,6 +1178,14 @@ export function WorkbenchView({
                 >
                   <IconX size={12} />
                 </button>
+              </div>
+            )}
+
+            {/* LOCKED PIN FEEDBACK PILL */}
+            {pinNotice && !clickThrough && (
+              <div className="mc-floating-click-pill" data-interactive="true" role="status">
+                <IconPin size={12} filled style={{ color: 'var(--primary)' }} />
+                <span>{pinNotice}</span>
               </div>
             )}
 

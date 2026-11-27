@@ -332,6 +332,64 @@ function createMemoryStore({ getRoot, snapshotDir }) {
     return getState();
   }
 
+  function resolvePendingBatch({ actions = [] } = {}) {
+    const list = Array.isArray(actions) ? actions.filter(a => a && Number.isInteger(Number(a.lineIndex))) : [];
+    if (!list.length) return getState();
+    const root = requireRoot();
+    const dir = memoryDir(root);
+    const pendingPath = path.join(dir, '待审核新事实.md');
+    const raw = fs.readFileSync(pendingPath, 'utf8').replace(/^\uFEFF/, '');
+    const lines = raw.split(/\r?\n/);
+
+    // Sort descending by lineIndex so deletions never shift remaining target indices.
+    const sorted = [...list].sort((a, b) => Number(b.lineIndex) - Number(a.lineIndex));
+    const destAppends = new Map();
+    let approvedCount = 0;
+    let rejectedCount = 0;
+
+    for (const act of sorted) {
+      const idx = Number(act.lineIndex);
+      if (idx < 0 || idx >= lines.length) continue;
+      const m = /^-\s+\[\s\]\s+(.+)$/.exec(lines[idx].trim());
+      if (!m) continue;
+      const cleanFact = m[1].replace(/^\*\*\[pending\]\*\*\s*/i, '').trim();
+      const note = String(act.note || '').trim().replace(/\r?\n+/g, ' ');
+      if (act.decision === 'approve') {
+        const mergedText = note ? `${cleanFact}（本人补充：${note}）` : cleanFact;
+        lines[idx] = `- [x] **[approved ${formatYmd()}]** ${mergedText}`;
+        const destMeta = BUCKET_MAP.get(act.targetBucket) || BUCKET_MAP.get('weakness_pitfall');
+        if (destMeta && destMeta.id !== 'pending_fact') {
+          if (!destAppends.has(destMeta.id)) destAppends.set(destMeta.id, []);
+          destAppends.get(destMeta.id).push(`- **[已审核确认 ${formatYmd()}]** ${mergedText}`);
+        }
+        approvedCount += 1;
+      } else if (act.decision === 'reject') {
+        lines.splice(idx, 1);
+        rejectedCount += 1;
+      }
+    }
+
+    if (approvedCount === 0 && rejectedCount === 0) return getState();
+    writeAtomic(pendingPath, lines.join('\n'));
+    for (const [bucketId, items] of destAppends.entries()) {
+      const destMeta = BUCKET_MAP.get(bucketId);
+      if (!destMeta) continue;
+      const destPath = path.join(dir, destMeta.file);
+      const destRaw = fs.existsSync(destPath) ? fs.readFileSync(destPath, 'utf8') : defaultBucketContent(destMeta);
+      writeAtomic(destPath, destRaw.trimEnd() + '\n' + items.reverse().join('\n') + '\n');
+    }
+
+    const parts = [];
+    if (approvedCount > 0) parts.push(`并入 ${approvedCount} 条`);
+    if (rejectedCount > 0) parts.push(`驳回 ${rejectedCount} 条`);
+    const { files, combinedHash } = readAllBuckets(root);
+    recordSnapshotIfChanged(files, combinedHash, {
+      source: 'approval',
+      summary: `批量处理待审核新事实（${parts.join('，')}）`
+    });
+    return getState();
+  }
+
   function rollbackSnapshot(version) {
     const v = Number(version);
     const snapFiles = readSnapshotFiles(v);
@@ -358,11 +416,69 @@ function createMemoryStore({ getRoot, snapshotDir }) {
     if (!cleanRole) throw new Error('请先选择要归档的目标岗位目录');
     const safeRound = String(roundLabel || '一面').replace(/[\\/:*?"<>|]/g, '-').trim() || '一面';
     const ymd = formatYmd(session.createdAt || Date.now());
-    const folderName = `${ymd}-${safeRound}`;
+    const baseFolderName = `${ymd}-${safeRound}`;
     const roleDir = insideRoot(root, path.join(root, '岗位档案', cleanRole));
     if (!fs.existsSync(roleDir)) throw new Error(`岗位目录不存在：${cleanRole}`);
 
-    const archiveDir = insideRoot(root, path.join(roleDir, '面试记录', folderName));
+    const recordsRoot = insideRoot(root, path.join(roleDir, '面试记录'));
+    const readArchivedSessionId = (dirPath) => {
+      try {
+        const metaFile = path.join(dirPath, 'session.json');
+        if (!fs.existsSync(metaFile)) return null;
+        const parsed = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+        return parsed?.session?.id ? String(parsed.session.id) : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const targetSid = String(session.id);
+    let folderName = baseFolderName;
+    let archiveDir = insideRoot(root, path.join(recordsRoot, folderName));
+    let updatedExisting = false;
+    let collisionResolved = false;
+
+    // 1) Reuse existing directory ONLY if it belongs to the exact same session.id
+    let matchedExisting = null;
+    if (fs.existsSync(recordsRoot)) {
+      const siblingDirs = fs.readdirSync(recordsRoot, { withFileTypes: true })
+        .filter(e => e.isDirectory() && (e.name === baseFolderName || e.name.startsWith(`${baseFolderName}-`)))
+        .map(e => e.name)
+        .sort();
+      for (const name of siblingDirs) {
+        const candDir = insideRoot(root, path.join(recordsRoot, name));
+        if (readArchivedSessionId(candDir) === targetSid) {
+          matchedExisting = { name, dir: candDir };
+          break;
+        }
+      }
+    }
+
+    if (matchedExisting) {
+      folderName = matchedExisting.name;
+      archiveDir = matchedExisting.dir;
+      updatedExisting = true;
+    } else if (fs.existsSync(archiveDir)) {
+      const existingSid = readArchivedSessionId(archiveDir);
+      const hasExistingFiles = fs.readdirSync(archiveDir).length > 0;
+      if (existingSid === targetSid) {
+        updatedExisting = true;
+      } else if (existingSid || hasExistingFiles) {
+        let seq = 2;
+        while (seq < 1000) {
+          const candidateName = `${baseFolderName}-${seq}`;
+          const candidateDir = insideRoot(root, path.join(recordsRoot, candidateName));
+          if (!fs.existsSync(candidateDir)) {
+            folderName = candidateName;
+            archiveDir = candidateDir;
+            collisionResolved = true;
+            break;
+          }
+          seq += 1;
+        }
+      }
+    }
+
     fs.mkdirSync(archiveDir, { recursive: true });
 
     // 1. Build immutable raw transcript + AI reference Markdown
@@ -394,13 +510,38 @@ function createMemoryStore({ getRoot, snapshotDir }) {
 
     lines.push('## 二、当场提问与 AI 参考回答（仅供对照，非本人发言）', '');
     const qs = session.questions || [];
+    const savedScreenshots = [];
+    const shotsDir = path.join(archiveDir, 'screenshots');
+    const saveDataUrlImage = (dataUrl, fileBase) => {
+      const m = /^data:image\/(png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=\s]+)$/i.exec(String(dataUrl || ''));
+      if (!m) return null;
+      const ext = m[1].toLowerCase() === 'jpeg' ? 'jpg' : m[1].toLowerCase();
+      const buf = Buffer.from(m[2].replace(/\s+/g, ''), 'base64');
+      if (!buf.length || buf.length > 20 * 1024 * 1024) return null;
+      fs.mkdirSync(shotsDir, { recursive: true });
+      const fileName = `${fileBase}.${ext}`;
+      fs.writeFileSync(path.join(shotsDir, fileName), buf);
+      return { rel: `screenshots/${fileName}`, bytes: buf.length };
+    };
     if (!qs.length) {
       lines.push('（本场未记录 AI 问答）', '');
     } else {
       qs.forEach((q, idx) => {
+        const qTag = `Q${String(idx + 1).padStart(2, '0')}`;
         const activeAtt = (q.attempts || []).find(a => a.id === q.activeAttemptId) || (q.attempts || []).at(-1);
-        lines.push(`### Q${String(idx + 1).padStart(2, '0')}：${q.prompt}`);
+        lines.push(`### ${qTag}：${q.prompt}`);
         lines.push('');
+        const imgs = Array.isArray(activeAtt?.images) ? activeAtt.images : [];
+        if (imgs.length) {
+          imgs.forEach((url, imgIdx) => {
+            const saved = saveDataUrlImage(url, `${qTag}-${imgIdx + 1}`);
+            if (saved) {
+              savedScreenshots.push({ question: qTag, file: saved.rel, bytes: saved.bytes });
+              lines.push(`![${qTag} 截图 ${imgIdx + 1}](${saved.rel})`);
+            }
+          });
+          lines.push('');
+        }
         lines.push('**[AI 参考草稿]**');
         lines.push('');
         lines.push(activeAtt?.text || '（无回答文本）');
@@ -428,6 +569,7 @@ function createMemoryStore({ getRoot, snapshotDir }) {
         segmentsCount: segs.length,
         questionsCount: qs.length
       },
+      screenshots: savedScreenshots,
       audio_takes: audioTakes.map(t => ({
         takeId: t.takeId,
         durationSec: t.durationSec,
@@ -466,6 +608,7 @@ function createMemoryStore({ getRoot, snapshotDir }) {
       `- 本场归档目录：\`${archiveDir}\`（相对路径：\`${relArchive}\`）`,
       `- 原始转录与 AI 参考（只读原件）：\`${rawMdPath}\``,
       `- 会话元数据与双轨 WAV 指针：\`${sessionJsonPath}\``,
+      ...(savedScreenshots.length ? [`- 本场原题截图（共 ${savedScreenshots.length} 张）：\`${path.join(archiveDir, 'screenshots')}\`（已在原始转录中按题号关联，请结合原图核对题面）`] : []),
       ...(reflectionPath ? [`- 本人面试后感受：\`${reflectionPath}\``] : []),
       feelingLine,
       '',
@@ -477,6 +620,8 @@ function createMemoryStore({ getRoot, snapshotDir }) {
 
     return {
       ok: true,
+      updated: updatedExisting,
+      collisionResolved,
       archiveDir,
       relArchive,
       rawMdPath,
@@ -500,6 +645,7 @@ function createMemoryStore({ getRoot, snapshotDir }) {
     saveBucket,
     appendItem,
     resolvePendingFact,
+    resolvePendingBatch,
     rollbackSnapshot,
     archiveSessionToRole
   };

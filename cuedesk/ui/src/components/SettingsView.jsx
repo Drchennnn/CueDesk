@@ -11,7 +11,7 @@ import {
 import { buildSettingsDiffPatch } from '../core/settingsPatch.js';
 import { EyeContactSettings } from './EyeContactSettings.jsx';
 import { WorkbenchShortcutsModal } from './GearPopover.jsx';
-import { IconCheck, IconFolder, IconKeyboard, IconMic, IconRefresh, IconShield, IconX } from './Icons.jsx';
+import { IconCheck, IconChevronRight, IconFolder, IconKeyboard, IconMic, IconRefresh, IconShield, IconX } from './Icons.jsx';
 import {
   ShortcutRecorder,
   Switch,
@@ -379,22 +379,22 @@ const NAV_GROUPS = [
   {
     label: '核心能力',
     items: [
-      { id: 'models', title: '模型接口', desc: '配置文本大模型与截图多模态接口（BYOK，密钥加密存于本机）。' },
-      { id: 'audio', title: '语音与录制', desc: '配置语音识别引擎、麦克风电平测试与整场 WAV 录音目录。' },
-      { id: 'camera', title: '摄像头与眼神矫正', desc: '输入摄像头、NVIDIA Maxine 眼神矫正预览与状态。' }
+      { id: 'models', title: '模型接口', desc: '回答模型与截图视觉接口（密钥仅加密存于本机）。' },
+      { id: 'audio', title: '语音与录制', desc: '实时语音转写、麦克风与双轨录音。' },
+      { id: 'camera', title: '摄像头与眼神矫正', desc: '摄像头输入与眼神矫正。' }
     ]
   },
   {
     label: '安全与控制',
     items: [
-      { id: 'security', title: '安全模式', desc: '防截屏隐身、启动自动开启、安全模式虚拟光标与环境检测。' },
-      { id: 'shortcuts', title: '快捷键', desc: '点击直接录制全局快捷键、窗口控制热键与会中工作台热键。' }
+      { id: 'security', title: '安全模式', desc: '防截屏隐身、启动偏好与环境检测。' },
+      { id: 'shortcuts', title: '快捷键', desc: '点击录制按键或鼠标侧键（Delete 清除）。' }
     ]
   },
   {
     label: '偏好',
     items: [
-      { id: 'general', title: '通用偏好', desc: '外观主题、字号阅读偏好、语言与会话保存策略。' }
+      { id: 'general', title: '通用偏好', desc: '外观、阅读字号与面试记忆。' }
     ]
   }
 ];
@@ -555,46 +555,45 @@ function WindowControlsCard() {
   );
 
   const labels = [
-    ['left', '窗口左移', '键盘控制悬浮窗向左微移'],
-    ['right', '窗口右移', '键盘控制悬浮窗向右微移'],
-    ['up', '窗口上移', '键盘控制悬浮窗向上微移'],
-    ['down', '窗口下移', '键盘控制悬浮窗向下微移'],
-    ['grow', '放大窗口', '等比放大悬浮窗与字号'],
-    ['shrink', '缩小窗口', '等比缩小悬浮窗与字号'],
-    ['toggleBatch', '多图暂存开关', '笔试模式开启/关闭多图连拍暂存'],
-    ['sendBatch', '发送暂存多图', '一键提交全部暂存截图给视觉模型']
+    ['left', '窗口左移'],
+    ['right', '窗口右移'],
+    ['up', '窗口上移'],
+    ['down', '窗口下移'],
+    ['grow', '放大窗口'],
+    ['shrink', '缩小窗口'],
+    ['toggleBatch', '多图暂存开关'],
+    ['sendBatch', '发送暂存多图']
   ];
 
   return (
-    <section className="mc-card">
-      <div className="mc-card-head">
-        <div>
-          <h3 className="mc-card-title">窗口移动、缩放与多图快捷键</h3>
-          <p className="mc-card-desc">点击「录制」后直接按下组合键或鼠标侧键；Delete / Backspace 清除绑定，冲突自动回滚。</p>
+    <details className="mc-card mc-fold-card">
+      <summary className="mc-fold-summary">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span className="mc-fold-chevron"><IconChevronRight size={14} /></span>
+          <h3 className="mc-card-title">窗口微调与多图快捷键（进阶）</h3>
         </div>
         <span className="mc-field-hint" role="status">
-          {auto.error || (auto.status === 'saved' ? '已自动保存' : auto.status === 'saving' ? '保存中…' : '待保存…')}
+          {auto.error || (auto.status === 'saved' ? '已保存' : auto.status === 'saving' ? '保存中…' : '展开配置')}
         </span>
-      </div>
+      </summary>
       {draft ? (
         <>
-          <div className="mc-srow">
-            <div>
-              <div className="mc-srow-label">全局窗口总不透明度 ({Math.round(draft.opacity * 100)}%)</div>
-              <div className="mc-srow-desc">在工作台中也可通过齿轮菜单分层调节背景 / 文字 / 悬停透明度</div>
-            </div>
-            <div className="mc-srow-control">
+          <div className="mc-srow mc-srow-compact">
+            <div><div className="mc-srow-label">窗口总不透明度</div></div>
+            <div className="mc-srow-control is-inline">
               <input
                 type="range"
+                className="mc-range"
                 min={20}
                 max={100}
                 value={Math.round(draft.opacity * 100)}
                 onChange={e => setDraft({ ...draft, opacity: Number(e.target.value) / 100 })}
               />
+              <span style={{ minWidth: 42, textAlign: 'right', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>{Math.round(draft.opacity * 100)}%</span>
             </div>
           </div>
           <div className="mc-srow mc-srow-compact">
-            <div><div className="mc-srow-label">键盘单次移动步长（px）</div></div>
+            <div><div className="mc-srow-label">键盘移动步长（px）</div></div>
             <div className="mc-srow-control">
               <input
                 className="mc-input"
@@ -606,11 +605,10 @@ function WindowControlsCard() {
               />
             </div>
           </div>
-          {labels.map(([key, label, desc]) => (
+          {labels.map(([key, label]) => (
             <ShortcutRecorder
               key={key}
               label={label}
-              description={desc}
               value={draft.bindings?.[key] || ''}
               onChange={(val) => setDraft({ ...draft, bindings: { ...draft.bindings, [key]: val } })}
             />
@@ -620,9 +618,9 @@ function WindowControlsCard() {
           )}
         </>
       ) : (
-        <div className="mc-card-body"><span className="mc-field-hint">{error || '正在读取窗口控制设置…'}</span></div>
+        <div className="mc-card-body"><span className="mc-field-hint">{error || '读取中…'}</span></div>
       )}
-    </section>
+    </details>
   );
 }
 
@@ -638,6 +636,7 @@ export function SettingsView({
   onToggleSecurity,
   onSetSecurityPrefs,
   onResumeWorkbench,
+  onOpenGuide,
   onOpenQuickStart,
   onOpenDiagnostics,
   closeRef
@@ -973,8 +972,8 @@ export function SettingsView({
           <div className="mc-srow-label">{label}</div>
           <div className="mc-srow-desc">
             {apiKeySet && !slot.editing && !slot.pendingDelete
-              ? `已安全加密保存${hint ? `（尾号 ••••${hint}）` : ''}；不编辑时不会覆盖`
-              : '仅保存在本机，自动清理首尾空格'}
+              ? `已保存${hint ? `（••••${hint}）` : ''}`
+              : '仅存本机'}
           </div>
         </div>
         <div className="mc-srow-control">
@@ -1088,6 +1087,11 @@ export function SettingsView({
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {onOpenGuide && (
+            <button type="button" className="mc-btn mc-btn-sm mc-btn-ghost" onClick={() => onOpenGuide(activeTab === 'audio' ? 'asr' : 'llm')}>
+              使用教程
+            </button>
+          )}
           {dirty && (
             <button type="button" className="mc-btn mc-btn-sm mc-btn-primary" disabled={saving} onClick={() => void commitSave()}>
               立即保存
@@ -1173,31 +1177,33 @@ export function SettingsView({
               <section id="settings-section-text-llm" className={`mc-card${highlightedSection === 'text-llm' ? ' is-highlight-flash' : ''}`}>
                 <div className="mc-card-head">
                   <div>
-                    <h3 className="mc-card-title">文本大模型（回答模型）</h3>
-                    <p className="mc-card-desc">任意 OpenAI 兼容接口（自定义 Base URL + 模型列表动态拉取）；配好这一项即可直接提问。</p>
+                    <h3 className="mc-card-title">回答模型（文本大模型）</h3>
+                    <p className="mc-card-desc">推荐 DeepSeek，兼容任意 OpenAI 接口。</p>
                   </div>
+                  {onOpenGuide && (
+                    <button type="button" className="mc-link-subtle" style={{ flexShrink: 0 }} onClick={() => onOpenGuide('llm')}>
+                      查看教程 →
+                    </button>
+                  )}
                 </div>
-                <div className="mc-srow">
+                <div className="mc-srow mc-srow-compact">
                   <div><div className="mc-srow-label">Base URL</div></div>
                   <div className="mc-srow-control">
-                    <input className="mc-input" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} spellCheck={false} placeholder="https://your-api-host/v1" />
+                    <input className="mc-input" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} spellCheck={false} placeholder="https://api.deepseek.com/v1" />
                   </div>
                 </div>
-                {renderKeySlotRow('文本模型 API Key', llmKey, 'llm', {
+                {renderKeySlotRow('API Key', llmKey, 'llm', {
                   capability: 'text-llm',
                   providerId: 'custom',
                   baseUrl, model, slot: 'llm'
                 })}
-                <div className="mc-srow">
-                  <div>
-                    <div className="mc-srow-label">模型名称</div>
-                    <div className="mc-srow-desc">可手动输入模型 ID，或点击「获取模型列表」从接口拉取后选择</div>
-                  </div>
+                <div className="mc-srow mc-srow-compact">
+                  <div><div className="mc-srow-label">模型名称</div></div>
                   <div className="mc-srow-control">
                     <ModelPickerField
                       value={model}
                       onChange={setModel}
-                      placeholder="例如：gpt-5.4 / deepseek-chat / claude-sonnet-4"
+                      placeholder="例如：deepseek-chat / gpt-4o"
                       ariaLabel="文本模型名称"
                       baseUrl={baseUrl}
                       apiKey={sanitizeApiKeyInput(llmKey.value).value}
@@ -1205,96 +1211,82 @@ export function SettingsView({
                     />
                   </div>
                 </div>
-                <div className="mc-srow">
-                  <div>
-                    <div className="mc-srow-label">思考等级（可选）</div>
-                    <div className="mc-srow-desc">仅非默认时向接口传标准 reasoning_effort（百炼自动映射 enable_thinking）；普通非思考模型请保持默认</div>
+                <details className="mc-fold-inline">
+                  <summary className="mc-fold-inline-summary">
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <span className="mc-fold-chevron"><IconChevronRight size={13} /></span>
+                      进阶选项（思考等级 / 默认语言）
+                    </span>
+                    <span className="mc-field-hint">
+                      {answerLang === 'english' ? 'English' : '中文'} · {reasoningEffort === 'default' ? '默认思考' : reasoningEffort}
+                    </span>
+                  </summary>
+                  <div className="mc-srow mc-srow-compact">
+                    <div>
+                      <div className="mc-srow-label">思考等级</div>
+                      <div className="mc-srow-desc">非思考模型保持默认即可</div>
+                    </div>
+                    <div className="mc-srow-control">
+                      <CustomSelect
+                        className="mc-select"
+                        ariaLabel="文本模型思考等级"
+                        value={reasoningEffort}
+                        onChange={setReasoningEffort}
+                        options={REASONING_EFFORT_OPTIONS}
+                      />
+                    </div>
                   </div>
-                  <div className="mc-srow-control">
-                    <CustomSelect
-                      className="mc-select"
-                      ariaLabel="文本模型思考等级"
-                      value={reasoningEffort}
-                      onChange={setReasoningEffort}
-                      options={REASONING_EFFORT_OPTIONS}
-                    />
+                  <div className="mc-srow mc-srow-compact">
+                    <div><div className="mc-srow-label">默认回答语言</div></div>
+                    <div className="mc-srow-control">
+                      <CustomSelect
+                        className="mc-select"
+                        ariaLabel="默认回答语言"
+                        value={answerLang}
+                        onChange={setAnswerLang}
+                        options={[
+                          { value: 'chinese', label: '中文' },
+                          { value: 'english', label: 'English' }
+                        ]}
+                      />
+                    </div>
                   </div>
-                </div>
-                <div className="mc-srow mc-srow-compact">
-                  <div><div className="mc-srow-label">默认回答语言</div></div>
-                  <div className="mc-srow-control">
-                    <CustomSelect
-                      className="mc-select"
-                      ariaLabel="默认回答语言"
-                      value={answerLang}
-                      onChange={setAnswerLang}
-                      options={[
-                        { value: 'chinese', label: '中文' },
-                        { value: 'english', label: 'English' }
-                      ]}
-                    />
-                  </div>
-                </div>
+                </details>
               </section>
 
               {mmConfig && (
                 <section id="settings-section-vision" className={`mc-card${highlightedSection === 'vision' ? ' is-highlight-flash' : ''}`}>
                   <div className="mc-card-head">
                     <div>
-                      <h3 className="mc-card-title">截图多模态模型（多接口回退 / 笔试并行）</h3>
-                      <p className="mc-card-desc">OpenAI 兼容图片接口；面试按序回退，笔试可多模型同时作答。</p>
+                      <h3 className="mc-card-title">截图视觉模型</h3>
+                      <p className="mc-card-desc">用于截屏识题与笔试助手。</p>
                     </div>
-                    <button
-                      type="button"
-                      className="mc-btn mc-btn-sm"
-                      onClick={() => updateMm({
-                        endpoints: [...mmConfig.endpoints, {
-                          id: crypto.randomUUID(), name: '', enabled: true, baseUrl: '', model: '', reasoningEffort: 'default', proxyUrl: '', timeoutMs: 30000, apiKeySet: false
-                        }]
-                      })}
-                    >
-                      ＋ 添加接口
-                    </button>
-                  </div>
-                  <div className="mc-srow mc-srow-compact">
-                    <div><div className="mc-srow-label">启用截图问答</div></div>
-                    <div className="mc-srow-control is-inline"><Switch checked={!!mmConfig.enabled} onChange={v => updateMm({ enabled: v })} /></div>
-                  </div>
-                  <div className="mc-srow mc-srow-compact">
-                    <div><div className="mc-srow-label">默认截图场景</div></div>
-                    <div className="mc-srow-control">
-                      <CustomSelect
-                        className="mc-select"
-                        ariaLabel="默认截图场景"
-                        value={mmConfig.mode}
-                        onChange={val => updateMm({ mode: val })}
-                        options={[
-                          { value: 'auto', label: '自动判断' },
-                          { value: 'interview', label: '面试截图' },
-                          { value: 'written', label: '笔试截图' }
-                        ]}
-                      />
-                    </div>
-                  </div>
-                  <div className="mc-srow mc-srow-compact">
-                    <div>
-                      <div className="mc-srow-label">笔试截图同时回答</div>
-                      <div className="mc-srow-desc">笔试场景下同时请求所有已启用视觉接口，按模型分栏显示</div>
-                    </div>
-                    <div className="mc-srow-control is-inline"><Switch checked={!!mmConfig.simultaneousAnswers} onChange={v => updateMm({ simultaneousAnswers: v })} /></div>
-                  </div>
-                  <div className="mc-srow mc-srow-compact">
-                    <div><div className="mc-srow-label">拒答时自动切换备用接口</div></div>
-                    <div className="mc-srow-control is-inline">
-                      <Switch checked={!!mmConfig.retryOnRefusal} disabled={mmConfig.mode === 'written' && !!mmConfig.simultaneousAnswers} onChange={v => updateMm({ retryOnRefusal: v })} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                      {onOpenGuide && (
+                        <button type="button" className="mc-link-subtle" onClick={() => onOpenGuide('vision')}>
+                          查看教程 →
+                        </button>
+                      )}
+                      <Switch checked={!!mmConfig.enabled} onChange={v => updateMm({ enabled: v })} aria-label="启用截图问答" />
+                      <button
+                        type="button"
+                        className="mc-btn mc-btn-sm"
+                        onClick={() => updateMm({
+                          endpoints: [...mmConfig.endpoints, {
+                            id: crypto.randomUUID(), name: '', enabled: true, baseUrl: '', model: '', reasoningEffort: 'default', proxyUrl: '', timeoutMs: 30000, apiKeySet: false
+                          }]
+                        })}
+                      >
+                        ＋ 添加接口
+                      </button>
                     </div>
                   </div>
 
-                  <div className="mc-card-body" style={{ borderTop: '1px solid var(--border)' }}>
+                  <div className="mc-card-body" style={{ gap: 10 }}>
                     {mmConfig.endpoints.map((ep, idx) => (
                       <div key={ep.id} className="mc-card" style={{ background: 'var(--bg-subtle)' }}>
                         <div className="mc-card-head" style={{ padding: '10px 14px' }}>
-                          <strong style={{ fontSize: 13 }}>接口 {idx + 1}{idx === 0 ? '（主接口）' : '（备用）'}</strong>
+                          <strong style={{ fontSize: 13 }}>{ep.name || `接口 ${idx + 1}`}{idx === 0 ? '（主）' : '（备）'}</strong>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                             <Switch checked={ep.enabled !== false} onChange={v => updateEndpoint(idx, { enabled: v })} aria-label={`启用接口 ${idx + 1}`} />
                             {mmConfig.endpoints.length > 1 && (
@@ -1304,10 +1296,10 @@ export function SettingsView({
                             )}
                           </div>
                         </div>
-                        <div className="mc-card-body" style={{ padding: 12 }}>
+                        <div className="mc-card-body" style={{ padding: 12, gap: 10 }}>
                           <div className="mc-grid-2">
                             <div className="mc-field">
-                              <label className="mc-field-label">接口备注名</label>
+                              <label className="mc-field-label">备注名</label>
                               <input className="mc-input" value={ep.name || ''} placeholder={`接口 ${idx + 1}`} onChange={e => updateEndpoint(idx, { name: e.target.value })} />
                             </div>
                             <div className="mc-field">
@@ -1321,7 +1313,7 @@ export function SettingsView({
                                 type="password"
                                 autoComplete="new-password"
                                 value={ep.apiKey ?? ''}
-                                placeholder={ep.apiKeySet ? '已保存；留空保留原密钥' : '未填写（本地接口可留空）'}
+                                placeholder={ep.apiKeySet ? '已保存（留空不变）' : '填写 API Key'}
                                 onChange={e => {
                                   const next = { ...ep };
                                   if (e.target.value) next.apiKey = e.target.value;
@@ -1331,58 +1323,110 @@ export function SettingsView({
                               />
                             </div>
                             <div className="mc-field">
-                              <label className="mc-field-label">代理（可选）与超时（秒）</label>
-                              <div style={{ display: 'flex', gap: 6 }}>
-                                <input className="mc-input" value={ep.proxyUrl || ''} placeholder="http://127.0.0.1:7890" onChange={e => updateEndpoint(idx, { proxyUrl: e.target.value })} />
-                                <input className="mc-input" type="number" min={5} max={180} style={{ width: 76 }} value={Math.round((ep.timeoutMs || 30000) / 1000)} onChange={e => updateEndpoint(idx, { timeoutMs: Number(e.target.value) * 1000 })} />
+                              <label className="mc-field-label">视觉模型 ID</label>
+                              <ModelPickerField
+                                value={ep.model || ''}
+                                onChange={val => updateEndpoint(idx, { model: val })}
+                                placeholder="填写或拉取视觉模型 ID"
+                                ariaLabel={`接口 ${idx + 1} 视觉模型 ID`}
+                                baseUrl={ep.baseUrl}
+                                apiKey={ep.apiKey}
+                                slot="vision-endpoint"
+                                endpointId={ep.id}
+                                proxyUrl={ep.proxyUrl}
+                                compact
+                              />
+                            </div>
+                          </div>
+
+                          <details className="mc-fold-inline" style={{ margin: '0 -12px -12px' }}>
+                            <summary className="mc-fold-inline-summary" style={{ padding: '7px 12px' }}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                <span className="mc-fold-chevron"><IconChevronRight size={12} /></span>
+                                高级参数（代理 / 超时 / 思考等级）
+                              </span>
+                              <span className="mc-field-hint">{Math.round((ep.timeoutMs || 30000) / 1000)}s</span>
+                            </summary>
+                            <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                              <div className="mc-grid-2">
+                                <div className="mc-field">
+                                  <label className="mc-field-label">代理与超时（秒）</label>
+                                  <div style={{ display: 'flex', gap: 6 }}>
+                                    <input className="mc-input" value={ep.proxyUrl || ''} placeholder="http://127.0.0.1:7890" onChange={e => updateEndpoint(idx, { proxyUrl: e.target.value })} />
+                                    <input className="mc-input" type="number" min={5} max={180} style={{ width: 72 }} value={Math.round((ep.timeoutMs || 30000) / 1000)} onChange={e => updateEndpoint(idx, { timeoutMs: Number(e.target.value) * 1000 })} />
+                                  </div>
+                                </div>
+                                <div className="mc-field">
+                                  <label className="mc-field-label">思考等级</label>
+                                  <CustomSelect
+                                    className="mc-select"
+                                    ariaLabel={`接口 ${idx + 1} 思考等级`}
+                                    value={ep.reasoningEffort || 'default'}
+                                    onChange={val => updateEndpoint(idx, { reasoningEffort: val })}
+                                    options={REASONING_EFFORT_OPTIONS}
+                                  />
+                                </div>
                               </div>
+                              {ep.apiKeySet && (
+                                <div>
+                                  <button type="button" className="mc-btn mc-btn-sm" onClick={() => updateEndpoint(idx, { apiKey: '' })}>
+                                    {ep.apiKey === '' ? '已标记清除密钥' : '清除已保存密钥'}
+                                  </button>
+                                </div>
+                              )}
                             </div>
-                          </div>
-                          <div className="mc-field">
-                            <label className="mc-field-label">视觉模型 ID</label>
-                            <ModelPickerField
-                              value={ep.model || ''}
-                              onChange={val => updateEndpoint(idx, { model: val })}
-                              placeholder="填写模型 ID，或点击右侧按钮拉取列表"
-                              ariaLabel={`接口 ${idx + 1} 视觉模型 ID`}
-                              baseUrl={ep.baseUrl}
-                              apiKey={ep.apiKey}
-                              slot="vision-endpoint"
-                              endpointId={ep.id}
-                              proxyUrl={ep.proxyUrl}
-                              compact
-                            />
-                          </div>
-                          <div className="mc-field">
-                            <label className="mc-field-label">思考等级（可选）</label>
-                            <CustomSelect
-                              className="mc-select"
-                              ariaLabel={`接口 ${idx + 1} 思考等级`}
-                              value={ep.reasoningEffort || 'default'}
-                              onChange={val => updateEndpoint(idx, { reasoningEffort: val })}
-                              options={REASONING_EFFORT_OPTIONS}
-                            />
-                          </div>
-                          {ep.apiKeySet && (
-                            <div>
-                              <button type="button" className="mc-btn mc-btn-sm" onClick={() => updateEndpoint(idx, { apiKey: '' })}>
-                                {ep.apiKey === '' ? '已标记清除密钥' : '清除已保存密钥'}
-                              </button>
-                            </div>
-                          )}
+                          </details>
                         </div>
                       </div>
                     ))}
-                    <div style={{ display: 'flex', gap: 8 }}>
+                  </div>
+
+                  <details className="mc-fold-inline">
+                    <summary className="mc-fold-inline-summary">
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <span className="mc-fold-chevron"><IconChevronRight size={13} /></span>
+                        识题策略与提示词（进阶）
+                      </span>
+                      <span className="mc-field-hint">
+                        {mmConfig.simultaneousAnswers ? '笔试并行' : '按序回退'}
+                      </span>
+                    </summary>
+                    <div className="mc-srow mc-srow-compact">
+                      <div><div className="mc-srow-label">默认截图场景</div></div>
+                      <div className="mc-srow-control">
+                        <CustomSelect
+                          className="mc-select"
+                          ariaLabel="默认截图场景"
+                          value={mmConfig.mode}
+                          onChange={val => updateMm({ mode: val })}
+                          options={[
+                            { value: 'auto', label: '自动判断' },
+                            { value: 'interview', label: '面试截图' },
+                            { value: 'written', label: '笔试截图' }
+                          ]}
+                        />
+                      </div>
+                    </div>
+                    <div className="mc-srow mc-srow-compact">
+                      <div><div className="mc-srow-label">笔试多模型同时作答</div></div>
+                      <div className="mc-srow-control is-inline"><Switch checked={!!mmConfig.simultaneousAnswers} onChange={v => updateMm({ simultaneousAnswers: v })} /></div>
+                    </div>
+                    <div className="mc-srow mc-srow-compact">
+                      <div><div className="mc-srow-label">拒答时自动切备用接口</div></div>
+                      <div className="mc-srow-control is-inline">
+                        <Switch checked={!!mmConfig.retryOnRefusal} disabled={mmConfig.mode === 'written' && !!mmConfig.simultaneousAnswers} onChange={v => updateMm({ retryOnRefusal: v })} />
+                      </div>
+                    </div>
+                    <div className="mc-card-body" style={{ borderTop: '1px solid var(--border)', flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
                       <button type="button" className="mc-btn mc-btn-sm" onClick={async () => { try { await window.mc.openModelPrompt('written'); setPromptFolderErr(''); } catch (e) { setPromptFolderErr(e.message); } }}>
                         编辑笔试提示词
                       </button>
                       <button type="button" className="mc-btn mc-btn-sm" onClick={async () => { try { await window.mc.openMultimodalPrompts(); setPromptFolderErr(''); } catch (e) { setPromptFolderErr(e.message); } }}>
                         打开提示词文件夹
                       </button>
+                      {promptFolderErr && <div className="mc-alert mc-alert-err" style={{ width: '100%' }}>{promptFolderErr}</div>}
                     </div>
-                    {promptFolderErr && <div className="mc-alert mc-alert-err">{promptFolderErr}</div>}
-                  </div>
+                  </details>
                 </section>
               )}
             </div>
@@ -1390,7 +1434,14 @@ export function SettingsView({
             {/* 2. AUDIO & RECORDING */}
             <div hidden={activeTab !== 'audio'} style={{ display: activeTab === 'audio' ? 'flex' : 'none', flexDirection: 'column', gap: 20 }}>
               <section id="settings-section-asr" className={`mc-card${highlightedSection === 'asr' ? ' is-highlight-flash' : ''}`}>
-                <div className="mc-card-head"><h3 className="mc-card-title">语音识别引擎（ASR）</h3></div>
+                <div className="mc-card-head">
+                  <div><h3 className="mc-card-title">语音识别引擎（ASR）</h3></div>
+                  {onOpenGuide && (
+                    <button type="button" className="mc-link-subtle" style={{ flexShrink: 0 }} onClick={() => onOpenGuide('asr')}>
+                      查看配置教程 →
+                    </button>
+                  )}
+                </div>
                 <div className="mc-srow">
                   <div><div className="mc-srow-label">识别引擎</div></div>
                   <div className="mc-srow-control">
@@ -1445,11 +1496,8 @@ export function SettingsView({
 
                   return (
                     <>
-                      <div className="mc-srow">
-                        <div>
-                          <div className="mc-srow-label">实时流式协议</div>
-                          <div className="mc-srow-desc">选择底层 WebSocket 协议族，地址与模型可完全自定义；各协议配置与加密密钥分别独立保存，切换互不覆盖</div>
-                        </div>
+                      <div className="mc-srow mc-srow-compact">
+                        <div><div className="mc-srow-label">实时流式协议</div></div>
                         <div className="mc-srow-control">
                           <CustomSelect
                             className="mc-select"
@@ -1461,31 +1509,12 @@ export function SettingsView({
                         </div>
                       </div>
 
-                      <div className="mc-srow">
-                        <div>
-                          <div className="mc-srow-label">WebSocket 地址</div>
-                          <div className="mc-srow-desc">{rtMeta.urlDesc}</div>
-                        </div>
-                        <div className="mc-srow-control">
-                          <input
-                            className="mc-input"
-                            aria-label="实时 ASR WebSocket 地址"
-                            value={rtBaseUrl}
-                            onChange={e => setRtBaseUrl(e.target.value)}
-                            spellCheck={false}
-                            placeholder={rtMeta.urlPlaceholder}
-                          />
-                        </div>
-                      </div>
-
                       {rtProvider === 'doubao' && (
                         <>
-                          <div className="mc-srow">
+                          <div className="mc-srow mc-srow-compact">
                             <div>
-                              <div className="mc-srow-label">Resource ID（X-Api-Resource-Id）</div>
-                              <div className="mc-srow-desc">
-                                必填：豆包 2.0 小时版填 <code>volc.seedasr.sauc.duration</code>；1.0 小时版填 <code>volc.bigasr.sauc.duration</code>
-                              </div>
+                              <div className="mc-srow-label">Resource ID</div>
+                              <div className="mc-srow-desc">2.0 填 <code>volc.seedasr.sauc.duration</code></div>
                             </div>
                             <div className="mc-srow-control">
                               <input
@@ -1497,35 +1526,14 @@ export function SettingsView({
                                 placeholder="volc.seedasr.sauc.duration"
                               />
                               {missingResource && (
-                                <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>
-                                  必须填写 Resource ID（例如 volc.seedasr.sauc.duration），否则服务端会拒绝连接
-                                </div>
+                                <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>请填写 Resource ID</div>
                               )}
                             </div>
                           </div>
 
-                          <div className="mc-srow">
-                            <div>
-                              <div className="mc-srow-label">鉴权方式</div>
-                              <div className="mc-srow-desc">新版豆包控制台仅需单 API Key；旧版语音控制台需填 App ID + Access Token</div>
-                            </div>
-                            <div className="mc-srow-control">
-                              <CustomSelect
-                                className="mc-select"
-                                ariaLabel="豆包鉴权方式"
-                                value={rtAuthMode}
-                                onChange={setRtAuthMode}
-                                options={DOUBAO_AUTH_MODE_OPTIONS}
-                              />
-                            </div>
-                          </div>
-
                           {rtAuthMode === 'app-access' && (
-                            <div className="mc-srow">
-                              <div>
-                                <div className="mc-srow-label">App ID（X-Api-App-Key）</div>
-                                <div className="mc-srow-desc">旧版控制台应用 ID，与下方 Access Token 配套使用</div>
-                              </div>
+                            <div className="mc-srow mc-srow-compact">
+                              <div><div className="mc-srow-label">App ID（旧版鉴权）</div></div>
                               <div className="mc-srow-control">
                                 <input
                                   className="mc-input"
@@ -1536,9 +1544,7 @@ export function SettingsView({
                                   placeholder="填写火山控制台 App ID"
                                 />
                                 {missingAppKey && (
-                                  <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>
-                                    旧版鉴权模式必须填写 App ID（X-Api-App-Key）
-                                  </div>
+                                  <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>请填写 App ID</div>
                                 )}
                               </div>
                             </div>
@@ -1548,11 +1554,8 @@ export function SettingsView({
 
                       {rtProvider === 'tencent' && (
                         <>
-                          <div className="mc-srow">
-                            <div>
-                              <div className="mc-srow-label">腾讯云 AppID</div>
-                              <div className="mc-srow-desc">在腾讯云控制台「账号信息」中查看的数字 AppID，用于拼接 /asr/v2/{'{AppID}'}</div>
-                            </div>
+                          <div className="mc-srow mc-srow-compact">
+                            <div><div className="mc-srow-label">腾讯云 AppID</div></div>
                             <div className="mc-srow-control">
                               <input
                                 className="mc-input"
@@ -1562,16 +1565,11 @@ export function SettingsView({
                                 spellCheck={false}
                                 placeholder="例如：1300000000"
                               />
-                              {missingAppId && (
-                                <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>请填写腾讯云数字 AppID</div>
-                              )}
+                              {missingAppId && <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>请填写 AppID</div>}
                             </div>
                           </div>
-                          <div className="mc-srow">
-                            <div>
-                              <div className="mc-srow-label">腾讯云 SecretId</div>
-                              <div className="mc-srow-desc">在「访问管理 → API 密钥管理」获取，与下方 SecretKey 共同参与签名</div>
-                            </div>
+                          <div className="mc-srow mc-srow-compact">
+                            <div><div className="mc-srow-label">腾讯云 SecretId</div></div>
                             <div className="mc-srow-control">
                               <input
                                 className="mc-input"
@@ -1581,20 +1579,15 @@ export function SettingsView({
                                 spellCheck={false}
                                 placeholder="AKID..."
                               />
-                              {missingAppKey && (
-                                <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>请填写腾讯云 SecretId</div>
-                              )}
+                              {missingAppKey && <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>请填写 SecretId</div>}
                             </div>
                           </div>
                         </>
                       )}
 
                       {rtProvider === 'xfyun' && (
-                        <div className="mc-srow">
-                          <div>
-                            <div className="mc-srow-label">科大讯飞 AppID</div>
-                            <div className="mc-srow-desc">在讯飞开放平台「实时语音转写（RTASR）」应用详情页复制 AppID</div>
-                          </div>
+                        <div className="mc-srow mc-srow-compact">
+                          <div><div className="mc-srow-label">科大讯飞 AppID</div></div>
                           <div className="mc-srow-control">
                             <input
                               className="mc-input"
@@ -1604,40 +1597,35 @@ export function SettingsView({
                               spellCheck={false}
                               placeholder="填写讯飞应用 AppID"
                             />
-                            {missingAppId && (
-                              <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>请填写科大讯飞 AppID</div>
-                            )}
+                            {missingAppId && <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>请填写 AppID</div>}
+                          </div>
+                        </div>
+                      )}
+
+                      {(rtProvider === 'dashscope' || rtProvider === 'openai-realtime') && (
+                        <div className="mc-srow mc-srow-compact">
+                          <div><div className="mc-srow-label">{rtMeta.modelLabel}</div></div>
+                          <div className="mc-srow-control">
+                            <input
+                              className="mc-input"
+                              aria-label={rtMeta.modelLabel}
+                              value={rtModel}
+                              onChange={e => setRtModel(e.target.value)}
+                              spellCheck={false}
+                              placeholder={rtMeta.modelPlaceholder}
+                            />
+                            {missingModel && <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>请填写模型名</div>}
                           </div>
                         </div>
                       )}
 
                       <div className="mc-srow">
                         <div>
-                          <div className="mc-srow-label">{rtMeta.modelLabel}</div>
-                          <div className="mc-srow-desc">{rtMeta.modelDesc}</div>
-                        </div>
-                        <div className="mc-srow-control">
-                          <input
-                            className="mc-input"
-                            aria-label={rtMeta.modelLabel}
-                            value={rtModel}
-                            onChange={e => setRtModel(e.target.value)}
-                            spellCheck={false}
-                            placeholder={rtMeta.modelPlaceholder}
-                          />
-                          {missingModel && (
-                            <div className="mc-field-hint" style={{ color: 'var(--danger)' }}>请填写当前实时协议的模型名</div>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="mc-srow">
-                        <div>
                           <div className="mc-srow-label">{keyLabel}</div>
                           <div className="mc-srow-desc">
                             {rtApiKeySet && !rtKey.editing && !rtKey.pendingDelete
-                              ? `已按「${rtMeta.shortName}」独立加密保存${rtHint ? `（尾号 ••••${rtHint}）` : ''}；切换协议互不覆盖`
-                              : '仅加密保存于本机，自动清理首尾空格'}
+                              ? `已保存${rtHint ? `（••••${rtHint}）` : ''}`
+                              : '仅存本机'}
                           </div>
                         </div>
                         <div className="mc-srow-control">
@@ -1668,7 +1656,7 @@ export function SettingsView({
                               spellCheck={false}
                               value={rtKey.value}
                               onChange={e => rtKey.setValue(e.target.value)}
-                              placeholder={rtApiKeySet ? '输入新密钥以替换，留空保留原密钥' : rtMeta.keyPlaceholder}
+                              placeholder={rtApiKeySet ? '输入新密钥（留空不变）' : rtMeta.keyPlaceholder}
                             />
                           )}
 
@@ -1679,16 +1667,15 @@ export function SettingsView({
                               disabled={!canRunRtTest}
                               onClick={() => void runRealtimeCheck('handshake')}
                             >
-                              {rtTestState.running === 'handshake' ? '握手中…' : '测试连接（握手）'}
+                              {rtTestState.running === 'handshake' ? '握手中…' : '测试连接'}
                             </button>
                             <button
                               type="button"
                               className="mc-btn mc-btn-sm mc-btn-primary"
                               disabled={!canRunRtTest}
-                              title="通过当前实时适配器发送内置 16kHz 样本音频，验证建连、分包与真实转写结果"
                               onClick={() => void runRealtimeCheck('transcribe')}
                             >
-                              {rtTestState.running === 'transcribe' ? '试转写中…' : '试转写（发送样本音频）'}
+                              {rtTestState.running === 'transcribe' ? '试转写中…' : '试转写'}
                             </button>
                             {rtProf?.verification?.lastTestAt && (
                               <span className="mc-field-hint">
@@ -1696,10 +1683,6 @@ export function SettingsView({
                               </span>
                             )}
                           </div>
-
-                          {missingKey && !rtTestState.result && (
-                            <div className="mc-field-hint">提示：尚未填写或保存当前协议的密钥，点测试将返回本地缺失提示。</div>
-                          )}
 
                           {rtTestState.error && (
                             <div className="mc-alert mc-alert-err" role="alert">{rtTestState.error}</div>
@@ -1732,16 +1715,68 @@ export function SettingsView({
                               )}
                               {!rtTestState.result.ok && rtTestState.showDetail && (
                                 <div style={{ fontSize: 11.5, opacity: 0.88, marginTop: 2, fontFamily: 'var(--font-mono)' }}>
-                                  阶段：{STAGE_LABELS[rtTestState.result.stage] || rtTestState.result.stage} · 错误类型：{rtTestState.result.code}
-                                  {rtTestState.result.connected ? ' · 握手已成功' : ' · 未完成握手'}
-                                  {rtTestState.result.rawCode ? ` · 原始码：${rtTestState.result.rawCode}` : ''}
-                                  {rtTestState.result.requestId ? ` · 请求 ID：${rtTestState.result.requestId}` : ''}
+                                  阶段：{STAGE_LABELS[rtTestState.result.stage] || rtTestState.result.stage} · {rtTestState.result.code}
+                                  {rtTestState.result.connected ? ' · 已握手' : ' · 未握手'}
+                                  {rtTestState.result.rawCode ? ` · ${rtTestState.result.rawCode}` : ''}
+                                  {rtTestState.result.requestId ? ` · req=${rtTestState.result.requestId}` : ''}
                                 </div>
                               )}
                             </div>
                           )}
                         </div>
                       </div>
+
+                      <details className="mc-fold-inline">
+                        <summary className="mc-fold-inline-summary">
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                            <span className="mc-fold-chevron"><IconChevronRight size={13} /></span>
+                            协议连接参数（地址 / 鉴权 / 模型）
+                          </span>
+                          <span className="mc-field-hint">{rtMeta.shortName}</span>
+                        </summary>
+                        <div className="mc-srow mc-srow-compact">
+                          <div><div className="mc-srow-label">WebSocket 地址</div></div>
+                          <div className="mc-srow-control">
+                            <input
+                              className="mc-input"
+                              aria-label="实时 ASR WebSocket 地址"
+                              value={rtBaseUrl}
+                              onChange={e => setRtBaseUrl(e.target.value)}
+                              spellCheck={false}
+                              placeholder={rtMeta.urlPlaceholder}
+                            />
+                          </div>
+                        </div>
+                        {rtProvider === 'doubao' && (
+                          <div className="mc-srow mc-srow-compact">
+                            <div><div className="mc-srow-label">豆包鉴权方式</div></div>
+                            <div className="mc-srow-control">
+                              <CustomSelect
+                                className="mc-select"
+                                ariaLabel="豆包鉴权方式"
+                                value={rtAuthMode}
+                                onChange={setRtAuthMode}
+                                options={DOUBAO_AUTH_MODE_OPTIONS}
+                              />
+                            </div>
+                          </div>
+                        )}
+                        {rtProvider !== 'dashscope' && rtProvider !== 'openai-realtime' && (
+                          <div className="mc-srow mc-srow-compact">
+                            <div><div className="mc-srow-label">{rtMeta.modelLabel}</div></div>
+                            <div className="mc-srow-control">
+                              <input
+                                className="mc-input"
+                                aria-label={rtMeta.modelLabel}
+                                value={rtModel}
+                                onChange={e => setRtModel(e.target.value)}
+                                spellCheck={false}
+                                placeholder={rtMeta.modelPlaceholder}
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </details>
                     </>
                   );
                 })()}
@@ -1916,85 +1951,90 @@ export function SettingsView({
                   );
                 })()}
 
-                <div className="mc-srow mc-srow-compact">
-                  <div><div className="mc-srow-label">识别语言偏好</div></div>
-                  <div className="mc-srow-control">
-                    <CustomSelect
-                      className="mc-select"
-                      ariaLabel="识别语言偏好"
-                      value={language}
-                      onChange={setLanguage}
-                      options={[
-                        { value: 'auto', label: '自动检测（中/英）' },
-                        { value: 'chinese', label: '中文为主' },
-                        { value: 'english', label: 'English' }
-                      ]}
-                    />
+                <details className="mc-fold-inline">
+                  <summary className="mc-fold-inline-summary">
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <span className="mc-fold-chevron"><IconChevronRight size={13} /></span>
+                      识别偏好（语言 / 断句速度 / 回声过滤）
+                    </span>
+                    <span className="mc-field-hint">
+                      {language === 'auto' ? '中英自动' : language === 'chinese' ? '中文' : 'EN'} · {segmentationMode === 'fast' ? '极速' : segmentationMode === 'long' ? '长句' : '均衡'}
+                    </span>
+                  </summary>
+                  <div className="mc-srow mc-srow-compact">
+                    <div><div className="mc-srow-label">识别语言</div></div>
+                    <div className="mc-srow-control">
+                      <CustomSelect
+                        className="mc-select"
+                        ariaLabel="识别语言偏好"
+                        value={language}
+                        onChange={setLanguage}
+                        options={[
+                          { value: 'auto', label: '自动检测（中/英）' },
+                          { value: 'chinese', label: '中文为主' },
+                          { value: 'english', label: 'English' }
+                        ]}
+                      />
+                    </div>
                   </div>
-                </div>
-
-                <div className="mc-srow">
-                  <div>
-                    <div className="mc-srow-label">断句响应速度与智能修订</div>
-                    <div className="mc-srow-desc">同步调节豆包 end_window_size / 百炼 max_sentence_silence 与前端话轮缓冲；若刚抢答后 3.5 秒内面试官继续补充，自动合并到同一题重答</div>
+                  <div className="mc-srow mc-srow-compact">
+                    <div><div className="mc-srow-label">断句速度</div></div>
+                    <div className="mc-srow-control">
+                      <CustomSelect
+                        className="mc-select"
+                        ariaLabel="断句响应速度"
+                        value={segmentationMode}
+                        onChange={setSegmentationMode}
+                        options={SEGMENTATION_MODE_OPTIONS}
+                      />
+                    </div>
                   </div>
-                  <div className="mc-srow-control">
-                    <CustomSelect
-                      className="mc-select"
-                      ariaLabel="断句响应速度"
-                      value={segmentationMode}
-                      onChange={setSegmentationMode}
-                      options={SEGMENTATION_MODE_OPTIONS}
-                    />
+                  <div className="mc-srow mc-srow-compact">
+                    <div><div className="mc-srow-label">外放双轨回声过滤</div></div>
+                    <div className="mc-srow-control is-inline">
+                      <Switch checked={echoGuard} onChange={setEchoGuard} aria-label="外放双轨回声过滤" />
+                    </div>
                   </div>
-                </div>
-
-                <div className="mc-srow mc-srow-compact">
-                  <div>
-                    <div className="mc-srow-label">外放双轨回声过滤（推荐开启）</div>
-                    <div className="mc-srow-desc">电脑外放开会时自动压制并去重串入本人麦克风的面试官声音，不影响正常说话且不增加系统音频延迟</div>
-                  </div>
-                  <div className="mc-srow-control is-inline">
-                    <Switch checked={echoGuard} onChange={setEchoGuard} aria-label="外放双轨回声过滤" />
-                  </div>
-                </div>
+                </details>
               </section>
 
-              <section className="mc-card">
-                <div className="mc-card-head">
-                  <div><h3 className="mc-card-title">音频输入与麦克风实时检测</h3></div>
-                  <button type="button" className="mc-btn mc-btn-sm" onClick={() => void listMics().then(setDevices).catch(() => {})}>刷新设备</button>
-                </div>
-                <div className="mc-srow">
-                  <div>
-                    <div className="mc-srow-label">麦克风设备</div>
-                    <div className="mc-srow-desc">用于「麦克风模式」主收音及「双轨录音」下的本人轨采集</div>
+              <details className="mc-card mc-fold-card">
+                <summary className="mc-fold-summary">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span className="mc-fold-chevron"><IconChevronRight size={14} /></span>
+                    <h3 className="mc-card-title">麦克风与电平测试</h3>
                   </div>
+                  <span className="mc-field-hint">
+                    {devices.find(d => d.deviceId === micDeviceId)?.label || '系统默认麦克风'}
+                  </span>
+                </summary>
+                <div className="mc-srow mc-srow-compact">
+                  <div><div className="mc-srow-label">麦克风设备</div></div>
                   <div className="mc-srow-control">
-                    <CustomSelect
-                      className="mc-select"
-                      ariaLabel="麦克风设备"
-                      value={micDeviceId}
-                      onChange={setMicDeviceId}
-                      options={[
-                        { value: '', label: '系统默认麦克风' },
-                        ...devices.map(d => ({ value: d.deviceId, label: d.label || d.deviceId }))
-                      ]}
-                    />
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <CustomSelect
+                        className="mc-select"
+                        ariaLabel="麦克风设备"
+                        value={micDeviceId}
+                        onChange={setMicDeviceId}
+                        options={[
+                          { value: '', label: '系统默认麦克风' },
+                          ...devices.map(d => ({ value: d.deviceId, label: d.label || d.deviceId }))
+                        ]}
+                      />
+                      <button type="button" className="mc-btn mc-btn-sm" style={{ flexShrink: 0 }} onClick={() => void listMics().then(setDevices).catch(() => {})}>刷新</button>
+                    </div>
                   </div>
                 </div>
-                <div className="mc-srow">
-                  <div>
-                    <div className="mc-srow-label">实时电平检测</div>
-                    <div className="mc-srow-desc">对着麦克风讲话，确认输入电平随声音波动</div>
-                  </div>
+                <div className="mc-srow mc-srow-compact">
+                  <div><div className="mc-srow-label">实时电平检测</div></div>
                   <div className="mc-srow-control">
                     <MicLevelTester deviceId={micDeviceId} />
                   </div>
                 </div>
                 {window.mc.platform === 'darwin' && (
-                  <div className="mc-srow">
-                    <div><div className="mc-srow-label">对方虚拟音频设备（BlackHole 等）</div></div>
+                  <div className="mc-srow mc-srow-compact">
+                    <div><div className="mc-srow-label">对方虚拟音频设备</div></div>
                     <div className="mc-srow-control">
                       <CustomSelect
                         className="mc-select"
@@ -2009,26 +2049,27 @@ export function SettingsView({
                     </div>
                   </div>
                 )}
-              </section>
+              </details>
 
-              <section className="mc-card">
-                <div className="mc-card-head">
-                  <div>
+              <details className="mc-card mc-fold-card">
+                <summary className="mc-fold-summary">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span className="mc-fold-chevron"><IconChevronRight size={14} /></span>
                     <h3 className="mc-card-title">整场双轨 WAV 录音</h3>
-                    <p className="mc-card-desc">默认手动在工作台顶栏点击开启；独立录制对方轨与本人轨（16kHz PCM WAV），防崩溃损坏且不写入知识库目录。</p>
                   </div>
-                  <button type="button" className="mc-btn mc-btn-sm" onClick={() => void window.mc.openRecordingFolder?.()}>
-                    <IconFolder size={13} /> 打开录音目录
-                  </button>
-                </div>
-                <div className="mc-srow">
+                  <span className="mc-field-hint">{workbenchPrefs?.recordingDir ? '自定义目录' : '默认目录'}</span>
+                </summary>
+                <div className="mc-srow mc-srow-compact">
                   <div>
-                    <div className="mc-srow-label">录音存储路径</div>
+                    <div className="mc-srow-label">存储路径</div>
                     <div className="mc-srow-desc" style={{ wordBreak: 'break-all' }}>
-                      当前：{workbenchPrefs?.recordingDir || recDirInfo || '默认应用数据目录/recordings'}
+                      {workbenchPrefs?.recordingDir || recDirInfo || '默认应用数据目录/recordings'}
                     </div>
                   </div>
                   <div className="mc-srow-control is-inline" style={{ gap: 6 }}>
+                    <button type="button" className="mc-btn mc-btn-sm" onClick={() => void window.mc.openRecordingFolder?.()}>
+                      <IconFolder size={13} /> 打开
+                    </button>
                     <button
                       type="button"
                       className="mc-btn mc-btn-sm"
@@ -2037,7 +2078,7 @@ export function SettingsView({
                         if (picked) void onUpdateWorkbenchPrefs({ recordingDir: picked });
                       }}
                     >
-                      更改目录
+                      更改
                     </button>
                     {workbenchPrefs?.recordingDir && (
                       <button type="button" className="mc-btn mc-btn-sm mc-btn-ghost" onClick={() => void onUpdateWorkbenchPrefs({ recordingDir: '' })}>
@@ -2046,7 +2087,7 @@ export function SettingsView({
                     )}
                   </div>
                 </div>
-              </section>
+              </details>
             </div>
 
             {/* 3. CAMERA & EYE CONTACT */}
@@ -2059,8 +2100,8 @@ export function SettingsView({
               <section className="mc-card">
                 <div className="mc-card-head">
                   <div>
-                    <h3 className="mc-card-title">安全模式（防截屏 + 不抢焦点）</h3>
-                    <p className="mc-card-desc">开启后强制禁止窗口出现在系统截屏/共享屏幕中，并在进入工作台时自动屏蔽焦点抢占。</p>
+                    <h3 className="mc-card-title">安全模式</h3>
+                    <p className="mc-card-desc">开启后防截屏隐藏、工作台不抢焦点并隐藏任务栏与系统托盘（可用 Ctrl+B 显示/隐藏）。</p>
                   </div>
                   <Switch
                     checked={Boolean(windowState?.securityMode?.enabled)}
@@ -2070,10 +2111,7 @@ export function SettingsView({
                   />
                 </div>
                 <div className="mc-srow mc-srow-compact">
-                  <div>
-                    <div className="mc-srow-label">启动时自动开启安全模式</div>
-                    <div className="mc-srow-desc">每次打开 CueDesk 自动进入隐身保护状态</div>
-                  </div>
+                  <div><div className="mc-srow-label">启动时自动开启安全模式</div></div>
                   <div className="mc-srow-control is-inline">
                     <Switch
                       checked={Boolean(workbenchPrefs?.securityMode?.autoEnableOnLaunch)}
@@ -2082,10 +2120,7 @@ export function SettingsView({
                   </div>
                 </div>
                 <div className="mc-srow mc-srow-compact">
-                  <div>
-                    <div className="mc-srow-label">隐藏真实鼠标（启用浮窗内虚拟光标）</div>
-                    <div className="mc-srow-desc">开启安全模式时，工作台内隐藏系统光标并在防截屏保护层内渲染替代 SVG 光标</div>
-                  </div>
+                  <div><div className="mc-srow-label">安全模式下使用浮窗虚拟光标</div></div>
                   <div className="mc-srow-control is-inline">
                     <Switch
                       checked={workbenchPrefs?.securityMode?.hideCursor !== false}
@@ -2096,18 +2131,17 @@ export function SettingsView({
                 <div className="mc-card-body" style={{ borderTop: '1px solid var(--border)' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <button type="button" className="mc-btn mc-btn-sm" disabled={envChecking} onClick={() => void runEnvCheck()}>
-                      <IconShield size={13} /> {envChecking ? '正在检测…' : '检测本机防截屏与录屏软件'}
+                      <IconShield size={13} /> {envChecking ? '检测中…' : '检测防截屏与录屏软件'}
                     </button>
-                    <span className="mc-field-hint">只读本地检查，不改变当前保护状态</span>
                   </div>
                   {envCheck && (
                     <div className={`mc-alert ${envCheck.ok ? 'mc-alert-ok' : 'mc-alert-warn'}`}>
-                      <div><strong>防截屏接口：</strong>{envCheck.contentProtectionSupported ? '系统支持 SetWindowDisplayAffinity' : '不可用'} · 当前{envCheck.contentProtectionActive ? '已隐藏保护' : '允许截屏'}</div>
+                      <div><strong>防截屏：</strong>{envCheck.contentProtectionSupported ? '支持' : '不可用'} · {envCheck.contentProtectionActive ? '已保护' : '未隐藏'}</div>
                       {envCheck.screenRecorders?.length > 0 && (
-                        <div><strong>检测到录屏软件：</strong>{envCheck.screenRecorders.join('、')}</div>
+                        <div><strong>录屏软件：</strong>{envCheck.screenRecorders.join('、')}</div>
                       )}
                       {envCheck.meetingApps?.length > 0 && (
-                        <div><strong>检测到会议软件：</strong>{envCheck.meetingApps.join('、')}</div>
+                        <div><strong>会议软件：</strong>{envCheck.meetingApps.join('、')}</div>
                       )}
                       {(envCheck.warnings || []).map((w, i) => <div key={i}>• {w}</div>)}
                     </div>
@@ -2117,22 +2151,21 @@ export function SettingsView({
             </div>
 
             {/* 5. SHORTCUTS */}
-            <div hidden={activeTab !== 'shortcuts'} style={{ display: activeTab === 'shortcuts' ? 'flex' : 'none', flexDirection: 'column', gap: 20 }}>
+            <div hidden={activeTab !== 'shortcuts'} style={{ display: activeTab === 'shortcuts' ? 'flex' : 'none', flexDirection: 'column', gap: 16 }}>
               <section id="settings-section-shortcuts" className="mc-card">
                 <div className="mc-card-head">
                   <div>
-                    <h3 className="mc-card-title">核心全局快捷键</h3>
-                    <p className="mc-card-desc">点击按钮直接按下按键组合、F1–F24 或鼠标侧键（Mouse4 / Mouse5）完成绑定。</p>
+                    <h3 className="mc-card-title">全局快捷键</h3>
+                    <p className="mc-card-desc">支持组合键、F1–F24 或鼠标侧键（Mouse4 / Mouse5）。</p>
                   </div>
                   <button type="button" className="mc-btn mc-btn-sm" onClick={() => setWbShortcutsOpen(true)}>
-                    <IconKeyboard size={13} /> 配置会中工作台快捷键
+                    <IconKeyboard size={13} /> 会中工作台快捷键
                   </button>
                 </div>
                 <ShortcutRecorder
                   rowId="settings-section-hotkeyToggle"
                   highlighted={highlightedSection === 'hotkeyToggle'}
                   label="隐藏 / 显示主窗口"
-                  description="在任意应用中一键切换窗口显示状态"
                   value={hotkey}
                   onChange={setHotkey}
                 />
@@ -2140,7 +2173,6 @@ export function SettingsView({
                   rowId="settings-section-hotkeyShot"
                   highlighted={highlightedSection === 'hotkeyShot'}
                   label="静默全屏截图识题"
-                  description="支持组合键、F1–F24 或鼠标侧键 Mouse4 / Mouse5"
                   value={hotkeyShot}
                   onChange={setHotkeyShot}
                 />
@@ -2148,7 +2180,6 @@ export function SettingsView({
                   rowId="settings-section-hotkeyRegion"
                   highlighted={highlightedSection === 'hotkeyRegion'}
                   label="框选区域截图识题"
-                  description="拖动选取屏幕局部区域并发送到视觉模型"
                   value={hotkeyRegion}
                   onChange={setHotkeyRegion}
                 />
@@ -2158,14 +2189,11 @@ export function SettingsView({
             </div>
 
             {/* 6. GENERAL PREFERENCES */}
-            <div hidden={activeTab !== 'general'} style={{ display: activeTab === 'general' ? 'flex' : 'none', flexDirection: 'column', gap: 20 }}>
+            <div hidden={activeTab !== 'general'} style={{ display: activeTab === 'general' ? 'flex' : 'none', flexDirection: 'column', gap: 16 }}>
               <section className="mc-card">
-                <div className="mc-card-head"><h3 className="mc-card-title">外观与阅读体验</h3></div>
+                <div className="mc-card-head"><h3 className="mc-card-title">外观与通用</h3></div>
                 <div className="mc-srow mc-srow-compact">
-                  <div>
-                    <div className="mc-srow-label">主题外观</div>
-                    <div className="mc-srow-desc">默认浅色主题，支持暗色或跟随系统切换</div>
-                  </div>
+                  <div><div className="mc-srow-label">主题外观</div></div>
                   <div className="mc-srow-control">
                     <CustomSelect
                       className="mc-select"
@@ -2181,23 +2209,22 @@ export function SettingsView({
                   </div>
                 </div>
                 <div className="mc-srow mc-srow-compact">
-                  <div>
-                    <div className="mc-srow-label">回答默认字号 ({workbenchPrefs?.fontSize ?? 14} px)</div>
-                    <div className="mc-srow-desc">独立保存于工作台偏好，调整时不会重启语音识别</div>
-                  </div>
+                  <div><div className="mc-srow-label">回答默认字号</div></div>
                   <div className="mc-srow-control is-inline">
                     <input
                       type="range"
+                      className="mc-range"
+                      aria-label="回答默认字号"
                       min={10}
                       max={24}
                       value={workbenchPrefs?.fontSize ?? 14}
                       onChange={e => void onUpdateWorkbenchPrefs({ fontSize: Number(e.target.value) })}
                     />
-                    <span style={{ minWidth: 38, textAlign: 'right', fontSize: 12 }}>{workbenchPrefs?.fontSize ?? 14}px</span>
+                    <span style={{ minWidth: 38, textAlign: 'right', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>{workbenchPrefs?.fontSize ?? 14}px</span>
                   </div>
                 </div>
                 <div className="mc-srow mc-srow-compact">
-                  <div><div className="mc-srow-label">界面缩放字号</div></div>
+                  <div><div className="mc-srow-label">界面缩放</div></div>
                   <div className="mc-srow-control">
                     <CustomSelect
                       className="mc-select"
@@ -2212,22 +2239,8 @@ export function SettingsView({
                     />
                   </div>
                 </div>
-                <div className="mc-srow">
-                  <div>
-                    <div className="mc-srow-label">界面语言</div>
-                    <div className="mc-srow-desc">
-                      当前版本界面仅提供简体中文。回答语言（支持英文）与语音识别语言可在各自设置中独立配置：
-                      <button type="button" className="mc-link-subtle" style={{ padding: '0 4px' }} onClick={() => setActiveTab('models')}>默认回答语言</button>
-                      ·
-                      <button type="button" className="mc-link-subtle" style={{ padding: '0 4px' }} onClick={() => setActiveTab('audio')}>识别语言偏好</button>
-                    </div>
-                  </div>
-                  <div className="mc-srow-control is-inline">
-                    <span className="mc-badge">简体中文</span>
-                  </div>
-                </div>
                 <div className="mc-srow mc-srow-compact">
-                  <div><div className="mc-srow-label">结束面试时默认自动保存记录</div></div>
+                  <div><div className="mc-srow-label">结束面试自动保存记录</div></div>
                   <div className="mc-srow-control is-inline">
                     <Switch
                       checked={workbenchPrefs?.autoSaveOnClose !== false}
@@ -2239,6 +2252,50 @@ export function SettingsView({
                   <div><div className="mc-srow-label">开机自动启动</div></div>
                   <div className="mc-srow-control is-inline">
                     <Switch checked={autoLaunch} onChange={setAutoLaunch} />
+                  </div>
+                </div>
+              </section>
+
+              <section id="settings-section-memory" className={`mc-card${highlightedSection === 'memory' ? ' is-highlight-flash' : ''}`}>
+                <div className="mc-card-head">
+                  <div><h3 className="mc-card-title">面试记忆</h3></div>
+                </div>
+                <div className="mc-srow mc-srow-compact">
+                  <div><div className="mc-srow-label">面试中自动使用记忆</div></div>
+                  <div className="mc-srow-control is-inline">
+                    <Switch
+                      checked={workbenchPrefs?.memoryRecallEnabled !== false}
+                      onChange={v => void onUpdateWorkbenchPrefs?.({ memoryRecallEnabled: v })}
+                      aria-label="面试中自动使用记忆"
+                    />
+                  </div>
+                </div>
+                <div className="mc-srow mc-srow-compact">
+                  <div><div className="mc-srow-label">每次使用的记忆字数</div></div>
+                  <div className="mc-srow-control is-inline">
+                    <input
+                      type="range"
+                      className="mc-range"
+                      aria-label="每次使用的记忆字数"
+                      min={200}
+                      max={2400}
+                      step={100}
+                      value={workbenchPrefs?.memoryMaxChars ?? 1600}
+                      onChange={e => void onUpdateWorkbenchPrefs?.({ memoryMaxChars: Number(e.target.value) })}
+                    />
+                    <span style={{ minWidth: 54, textAlign: 'right', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
+                      {workbenchPrefs?.memoryMaxChars ?? 1600} 字
+                    </span>
+                  </div>
+                </div>
+                <div className="mc-srow mc-srow-compact">
+                  <div><div className="mc-srow-label">待确认记忆角标提醒</div></div>
+                  <div className="mc-srow-control is-inline">
+                    <Switch
+                      checked={workbenchPrefs?.memoryAutoRemind !== false}
+                      onChange={v => void onUpdateWorkbenchPrefs?.({ memoryAutoRemind: v })}
+                      aria-label="待确认记忆角标提醒"
+                    />
                   </div>
                 </div>
               </section>

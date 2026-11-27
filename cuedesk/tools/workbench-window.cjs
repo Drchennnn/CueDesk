@@ -1,4 +1,6 @@
 'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { DEFAULT_WORKBENCH_HOTKEYS, WORKBENCH_HOTKEY_ACTIONS } = require('./workbench-prefs.cjs');
 
@@ -87,11 +89,29 @@ function createWorkbenchWindow({
   onHotkeyAction = () => {},
   onHotkeysChanged = () => {},
   listProcesses = defaultListProcesses,
-  pollIntervalMs = 60
+  pollIntervalMs = 60,
+  traceLogPath = '',
+  winNative = null
 }) {
   let win = null;
   let mode = 'home';
   let applyingBounds = false;
+  let boundsSaveSuppressUntil = 0;
+  let pseudoMaximized = false;
+  let restoreBounds = null;
+  let preMaximizeBounds = null;
+  let preMaximizePhysRect = null;
+  let stableNormalBounds = null;
+  let stableNormalPhysRect = null;
+  let lastNormalBounds = null;
+  let lastRestoredBounds = null;
+  let lastRestoredPhysRect = null;
+  const modePhysRects = new Map();
+  let unmaximizeSettleTimers = [];
+  let renderEnsureTimers = [];
+  let pendingHideSource = null;
+  let pendingShowSource = null;
+  let inRecoverShow = false;
   let tempFocus = false;
   let clickThrough = false;
   let mouseInteractive = false;
@@ -103,10 +123,132 @@ function createWorkbenchWindow({
   let dragStart = null;
   let hotkeyErrors = [];
   let disposed = false;
+  let syncingFocus = false;
+  let lastSkipTaskbar = null;
+  let lastAlwaysOnTop = null;
+  let lastIgnoreMouse = null;
   const ownedHotkeys = new Set();
+  const traceRing = [];
+  const TRACE_LIMIT = 240;
 
   function activeWin() {
     return win && !win.isDestroyed() ? win : null;
+  }
+
+  function resetNativeStyleCache() {
+    lastSkipTaskbar = null;
+    lastAlwaysOnTop = null;
+    lastIgnoreMouse = null;
+  }
+
+  function traceEvent(event, extra = {}) {
+    const w = activeWin();
+    let bounds = null;
+    try { bounds = w?.getBounds?.() || null; } catch {}
+    const entry = {
+      ts: new Date().toISOString(),
+      event,
+      mode,
+      security: isSecurityActive(),
+      focusable: typeof w?.isFocusable === 'function' ? w.isFocusable() : undefined,
+      visible: typeof w?.isVisible === 'function' ? w.isVisible() : undefined,
+      minimized: typeof w?.isMinimized === 'function' ? w.isMinimized() : undefined,
+      maximized: isWindowMaximized(w),
+      topmost: typeof w?.isAlwaysOnTop === 'function' ? w.isAlwaysOnTop() : undefined,
+      skipTaskbar: lastSkipTaskbar,
+      ignoreMouse: lastIgnoreMouse,
+      tempFocus,
+      clickThrough,
+      hoverInside,
+      hoverHidden,
+      bounds,
+      ...extra
+    };
+    traceRing.push(entry);
+    if (traceRing.length > TRACE_LIMIT) traceRing.shift();
+    if (traceLogPath) {
+      try {
+        fs.mkdirSync(path.dirname(traceLogPath), { recursive: true });
+        if (fs.existsSync(traceLogPath) && fs.statSync(traceLogPath).size > 262144) {
+          const tail = fs.readFileSync(traceLogPath, 'utf8').split(/\r?\n/).slice(-120).join('\n');
+          fs.writeFileSync(traceLogPath, tail ? tail + '\n' : '', 'utf8');
+        }
+        fs.appendFileSync(traceLogPath, JSON.stringify(entry) + '\n', 'utf8');
+      } catch {}
+    }
+  }
+
+  function getTrace() {
+    return traceRing.slice();
+  }
+
+  function recordHideRequest(source = 'unknown') {
+    pendingHideSource = { source: String(source || 'unknown'), at: Date.now() };
+    traceEvent('hide_request', { source: pendingHideSource.source });
+  }
+
+  function recordShowRequest(source = 'unknown') {
+    pendingShowSource = { source: String(source || 'unknown'), at: Date.now() };
+    traceEvent('show_request', { source: pendingShowSource.source });
+  }
+
+  function consumePendingSource(kind) {
+    const slot = kind === 'hide' ? pendingHideSource : pendingShowSource;
+    if (kind === 'hide') pendingHideSource = null;
+    else pendingShowSource = null;
+    if (slot && Date.now() - slot.at <= 1500) return slot.source;
+    return 'external_or_os';
+  }
+
+  function clearUnmaximizeSettleTimers() {
+    for (const id of unmaximizeSettleTimers) clearTimeout(id);
+    unmaximizeSettleTimers = [];
+  }
+
+  function clearRenderEnsureTimers() {
+    for (const id of renderEnsureTimers) clearTimeout(id);
+    renderEnsureTimers = [];
+  }
+
+  function ensureRenderHostVisible(source = 'show', { raiseTopmost = false } = {}) {
+    const w = activeWin();
+    if (!w || !winNative || typeof winNative.ensureRenderVisible !== 'function') return null;
+    if (typeof w.isVisible === 'function' && !w.isVisible()) return null;
+    if (typeof w.isMinimized === 'function' && w.isMinimized()) return null;
+    const handleResult = (result) => {
+      if (!result) return null;
+      traceEvent('ensure_render_visible', { source, ...result });
+      if (result.repaired > 0) {
+        try { activeWin()?.webContents?.invalidate?.(); } catch {}
+      }
+      return result;
+    };
+    const res = winNative.ensureRenderVisible(w, { raiseTopmost });
+    if (res && typeof res.then === 'function') {
+      return res.then(handleResult).catch(() => null);
+    }
+    return handleResult(res);
+  }
+
+  function scheduleEnsureRenderHostVisible(source = 'show', opts = {}) {
+    clearRenderEnsureTimers();
+    ensureRenderHostVisible(source, opts);
+    const id = setTimeout(() => {
+      renderEnsureTimers = renderEnsureTimers.filter(t => t !== id);
+      ensureRenderHostVisible(`${source}_settle`, { raiseTopmost: false });
+    }, 95);
+    id.unref?.();
+    renderEnsureTimers.push(id);
+  }
+
+  function boundsNearlyEqual(a, b, tol = 6) {
+    if (!a || !b) return false;
+    return (
+      Math.abs(a.x - b.x) <= tol &&
+      Math.abs(a.y - b.y) <= tol &&
+      Math.abs(a.width - b.width) <= tol &&
+      Math.abs(a.height - b.height) <= tol
+    );
   }
 
   function isSecurityActive() {
@@ -128,15 +270,24 @@ function createWorkbenchWindow({
     return isWrittenCompact() || isSecurityActive();
   }
 
+  function isWindowMaximized(w = activeWin()) {
+    return Boolean(pseudoMaximized || w?.isMaximized?.());
+  }
+
+  function clearPseudoMaximize() {
+    pseudoMaximized = false;
+    restoreBounds = null;
+  }
+
   function getWindowState() {
     const w = activeWin();
     const p = prefs.getPublic();
     return {
       mode,
-      maximized: !!w?.isMaximized?.(),
+      maximized: isWindowMaximized(w),
       minimized: !!w?.isMinimized?.(),
       visible: !!w?.isVisible?.(),
-      alwaysOnTop: !!p.alwaysOnTop,
+      alwaysOnTop: isFloatingMode() ? (!!p.alwaysOnTop || isSecurityActive()) : !!p.alwaysOnTop,
       preventFocus: effectivePreventFocus(),
       rawPreventFocus: !!p.preventFocus,
       tempFocus,
@@ -158,47 +309,99 @@ function createWorkbenchWindow({
     try { onStateChange(getWindowState()); } catch {}
   }
 
-  function syncAlwaysOnTop() {
+  function syncAlwaysOnTop(force = false) {
     const w = activeWin();
     if (!w || isWrittenCompact()) return;
     const p = prefs.getPublic();
-    const topmost = isFloatingMode() ? !!p.alwaysOnTop : isSecurityActive();
+    // Security mode ALWAYS enforces topmost so a non-focusable + skipTaskbar window can never sink behind other apps and lock up.
+    const topmost = isFloatingMode() ? (!!p.alwaysOnTop || isSecurityActive()) : isSecurityActive();
+    const nativeTop = typeof w.isAlwaysOnTop === 'function' ? !!w.isAlwaysOnTop() : null;
+    if (!force && lastAlwaysOnTop === topmost && (nativeTop === null || nativeTop === topmost)) {
+      return;
+    }
     try {
       if (topmost) w.setAlwaysOnTop(true, 'screen-saver');
       else w.setAlwaysOnTop(false);
+      lastAlwaysOnTop = topmost;
+      traceEvent('sync_topmost', { targetTopmost: topmost, force });
     } catch {}
   }
 
-  function syncFocusAndTaskbar() {
+  function syncFocusAndTaskbar(force = false) {
     const w = activeWin();
-    if (!w || isWrittenCompact()) return;
-    // Home mode is ALWAYS focusable so restart/return never locks the main UI.
-    const focusable = !isFloatingMode()
-      ? true
-      : (tempFocus || (!effectivePreventFocus() && !clickThrough));
+    if (!w || isWrittenCompact() || syncingFocus) return;
+    syncingFocus = true;
     try {
-      const current = typeof w.isFocusable === 'function' ? w.isFocusable() : undefined;
-      if (current === undefined || current !== focusable) {
-        w.setFocusable(focusable);
+      const wasVisible = typeof w.isVisible === 'function' ? !!w.isVisible() : true;
+      const wasMinimized = typeof w.isMinimized === 'function' ? !!w.isMinimized() : false;
+      // Home mode is ALWAYS focusable so restart/return never locks the main UI.
+      const focusable = !isFloatingMode()
+        ? true
+        : (tempFocus || (!effectivePreventFocus() && !clickThrough));
+      let focusChanged = false;
+      try {
+        const current = typeof w.isFocusable === 'function' ? w.isFocusable() : undefined;
+        // CRITICAL Windows fix: Electron's setFocusable(false) calls Chromium HWNDMessageHandler::Deactivate(),
+        // which walks GW_HWNDNEXT and calls SetForegroundWindow(nextTopmostHwnd) — stealing foreground focus
+        // from the user's active editor! NEVER call setFocusable(false) when the window is already non-focusable.
+        const needFocusChange = current === undefined
+          ? (force || !focusable)
+          : (current !== focusable);
+        if (needFocusChange) {
+          // Release active Win32 focus cleanly once before switching WS_EX_NOACTIVATE, guarded by syncingFocus against blur re-entrancy.
+          if (!focusable && typeof w.blur === 'function' && (typeof w.isFocused !== 'function' || w.isFocused())) {
+            try { w.blur(); } catch {}
+          }
+          w.setFocusable(focusable);
+          focusChanged = true;
+          traceEvent('sync_focusable', { targetFocusable: focusable, prevFocusable: current });
+        }
+      } catch {}
+
+      const nextSkip = !!shouldSkipTaskbar();
+      if (force || lastSkipTaskbar !== nextSkip) {
+        try {
+          w.setSkipTaskbar(nextSkip);
+          lastSkipTaskbar = nextSkip;
+          traceEvent('sync_skip_taskbar', { targetSkipTaskbar: nextSkip });
+        } catch {}
       }
-    } catch {}
-    try { w.setSkipTaskbar(shouldSkipTaskbar()); } catch {}
-    // Critical Windows fix (matching SuiSi applyFocusPreference):
-    // setFocusable(false) drops z-order via Focus(false), so re-assert alwaysOnTop right after.
-    if (!focusable) {
-      syncAlwaysOnTop();
+
+      // Critical Windows fix:
+      // 1) setFocusable(false) drops z-order via Focus(false), so re-assert alwaysOnTop and mouse interactivity right after.
+      // 2) If Win32 style mutation (WS_EX_TOOLWINDOW / WS_EX_NOACTIVATE) unexpectedly hides an active non-minimized window, self-heal immediately.
+      if (focusChanged && !focusable) {
+        syncAlwaysOnTop(true);
+        syncMousePassthrough(true);
+      }
+      if (wasVisible && !wasMinimized && typeof w.isVisible === 'function' && !w.isVisible()) {
+        try {
+          if (focusable && typeof w.show === 'function') w.show();
+          else if (typeof w.showInactive === 'function') w.showInactive();
+          else if (typeof w.show === 'function') w.show();
+          syncAlwaysOnTop(true);
+          syncMousePassthrough(true);
+          scheduleEnsureRenderHostVisible('visibility_self_healed');
+          traceEvent('visibility_self_healed', { targetFocusable: focusable });
+        } catch {}
+      }
+    } finally {
+      syncingFocus = false;
     }
   }
 
   // Unified SuiSi-style mouse passthrough state machine:
   // ignores pointer when hidden by hover-reveal OR when clickThrough is ON outside interactive regions.
-  function syncMousePassthrough() {
+  function syncMousePassthrough(force = false) {
     const w = activeWin();
     if (!w || isWrittenCompact()) return;
     const shouldIgnore = isFloatingMode() && (hoverHidden || (clickThrough && !mouseInteractive));
+    if (!force && lastIgnoreMouse === shouldIgnore) return;
     try {
       if (shouldIgnore) w.setIgnoreMouseEvents(true, { forward: true });
       else w.setIgnoreMouseEvents(false);
+      lastIgnoreMouse = shouldIgnore;
+      traceEvent('sync_mouse_passthrough', { shouldIgnore, force });
     } catch {}
   }
 
@@ -225,8 +428,12 @@ function createWorkbenchWindow({
     const inside = pt.x >= b.x && pt.x < b.x + b.width && pt.y >= b.y && pt.y < b.y + b.height;
     const p = prefs.getPublic();
     if (inside !== hoverInside || forceEmit) {
+      const prevInside = hoverInside;
       hoverInside = inside;
       setHoverHiddenNative(!!p.hoverReveal && !inside && !hoverBlocked);
+      if (inside !== prevInside) {
+        traceEvent('hover_change', { inside, cursor: pt });
+      }
       try { onHoverChange(inside); } catch {}
     } else if (p.hoverReveal && !inside && !hoverBlocked && !hoverHidden) {
       setHoverHiddenNative(true);
@@ -297,7 +504,7 @@ function createWorkbenchWindow({
 
   function beginDrag(cursorX, cursorY) {
     const w = activeWin();
-    if (!w || clickThrough || w.isMaximized?.()) return false;
+    if (!w || clickThrough || isWindowMaximized(w)) return false;
     const pt = resolveDragPoint(cursorX, cursorY);
     if (!pt) return false;
     const b = w.getBounds();
@@ -335,6 +542,8 @@ function createWorkbenchWindow({
   function endDrag() {
     if (dragStart) {
       dragStart = null;
+      lastRestoredBounds = null;
+      lastRestoredPhysRect = null;
       scheduleBoundsSave();
     }
     return true;
@@ -347,25 +556,165 @@ function createWorkbenchWindow({
     return { key: 'workbenchBounds', def: WORKBENCH_DEFAULT, min: WORKBENCH_MIN };
   }
 
-  function saveCurrentModeBounds() {
+  function saveCurrentModeBounds({ explicit = false } = {}) {
     const w = activeWin();
-    if (!w || applyingBounds || isWrittenCompact() || w.isMinimized?.()) return;
+    if (!w || applyingBounds || (!explicit && Date.now() < boundsSaveSuppressUntil) || isWrittenCompact() || w.isMinimized?.() || isWindowMaximized(w)) return;
     const raw = w.getNormalBounds ? w.getNormalBounds() : w.getBounds();
     if (!raw || raw.width < 120 || raw.height < 80) return;
+    const clean = { x: Math.round(raw.x), y: Math.round(raw.y), width: Math.round(raw.width), height: Math.round(raw.height) };
+    const phys = typeof winNative?.getPhysicalRect === 'function' ? winNative.getPhysicalRect(w) : null;
+    if (phys) {
+      if (lastRestoredPhysRect && boundsNearlyEqual(phys, lastRestoredPhysRect, 1) && stableNormalPhysRect && boundsNearlyEqual(phys, stableNormalPhysRect, 1)) {
+        return;
+      }
+      lastRestoredPhysRect = null;
+      stableNormalPhysRect = { ...phys };
+      modePhysRects.set(mode, { ...phys });
+    } else if (lastRestoredBounds && boundsNearlyEqual(clean, lastRestoredBounds, 4) && stableNormalBounds && boundsNearlyEqual(clean, stableNormalBounds, 6)) {
+      // Ignore fractional-DPI post-unmaximize rounding jitter near the restored snapshot so it never overwrites the true normal baseline.
+      return;
+    }
+    lastRestoredBounds = null;
+    lastNormalBounds = { ...clean };
+    stableNormalBounds = { ...clean };
     const { key } = modeBoundsSpec(mode);
     try {
-      prefs.applyPatch({ [key]: { x: raw.x, y: raw.y, width: raw.width, height: raw.height } }, { silent: true });
+      prefs.applyPatch({ [key]: clean }, { silent: true });
     } catch {}
   }
 
   function scheduleBoundsSave() {
-    if (applyingBounds || isWrittenCompact()) return;
+    if (applyingBounds || Date.now() < boundsSaveSuppressUntil || isWrittenCompact()) return;
     clearTimeout(boundsTimer);
     boundsTimer = setTimeout(() => {
       boundsTimer = null;
       saveCurrentModeBounds();
     }, 180);
     boundsTimer.unref?.();
+  }
+
+  function boundsErrorScore(actual, target) {
+    if (!actual || !target) return Infinity;
+    return (
+      Math.abs(actual.x - target.x) +
+      Math.abs(actual.y - target.y) +
+      Math.abs(actual.width - target.width) +
+      Math.abs(actual.height - target.height)
+    );
+  }
+
+  function restoreExactBounds(target, label = 'restore_exact_bounds', targetPhys = null) {
+    const w = activeWin();
+    if (!w || (!target && !targetPhys)) return;
+    const { min: [minW, minH] } = modeBoundsSpec(mode);
+    const clean = target ? {
+      x: Math.round(target.x),
+      y: Math.round(target.y),
+      width: Math.max(minW, Math.round(target.width)),
+      height: Math.max(minH, Math.round(target.height))
+    } : null;
+    applyingBounds = true;
+    boundsSaveSuppressUntil = Date.now() + 650;
+    try {
+      let actual = null;
+      let bestCmd = clean;
+      let compensated = false;
+      if (clean) {
+        w.setBounds(clean, false);
+        actual = typeof w.getBounds === 'function' ? w.getBounds() : null;
+        let bestScore = boundsErrorScore(actual, clean);
+
+        // Windows fractional DPI (e.g. 125% / 150%) on frameless transparent BrowserWindow can round
+        // setBounds(W, H) upward by +1..+4 DIP on every cycle. Probe compensated DIP inputs to cancel
+        // the upward bias and keep the final physical size anchored to the original baseline.
+        if (actual && bestScore > 0) {
+          const errW = actual.width - clean.width;
+          const errH = actual.height - clean.height;
+          const probes = [];
+          if ((errW !== 0 && Math.abs(errW) <= 6) || (errH !== 0 && Math.abs(errH) <= 6)) {
+            probes.push({
+              x: clean.x,
+              y: clean.y,
+              width: Math.max(minW, clean.width - (Math.abs(errW) <= 6 ? errW : 0)),
+              height: Math.max(minH, clean.height - (Math.abs(errH) <= 6 ? errH : 0))
+            });
+            if (Math.abs(errW) >= 2 || Math.abs(errH) >= 2) {
+              probes.push({
+                x: clean.x,
+                y: clean.y,
+                width: Math.max(minW, clean.width - Math.trunc(errW / 2)),
+                height: Math.max(minH, clean.height - Math.trunc(errH / 2))
+              });
+            }
+          }
+          for (const candidate of probes) {
+            w.setBounds(candidate, false);
+            const got = typeof w.getBounds === 'function' ? w.getBounds() : null;
+            const score = boundsErrorScore(got, clean);
+            if (score < bestScore) {
+              bestScore = score;
+              bestCmd = candidate;
+              actual = got;
+              compensated = true;
+              if (score === 0) break;
+            }
+          }
+          if (compensated) {
+            const cur = typeof w.getBounds === 'function' ? w.getBounds() : null;
+            if (boundsErrorScore(cur, clean) > bestScore) {
+              w.setBounds(bestCmd, false);
+              actual = typeof w.getBounds === 'function' ? w.getBounds() : actual;
+            }
+          } else if (actual) {
+            const cur = typeof w.getBounds === 'function' ? w.getBounds() : null;
+            if (boundsErrorScore(cur, clean) > bestScore) {
+              w.setBounds(clean, false);
+              actual = typeof w.getBounds === 'function' ? w.getBounds() : actual;
+            }
+          }
+        }
+      }
+
+      // On Windows fractional DPI, physical pixel sizes like 1382x922 cannot be represented losslessly
+      // in integer DIPs; apply exact Win32 SetWindowPos physical rect when available.
+      const applyMode = mode;
+      const applyPhysResult = (actualPhys) => {
+        if (!actualPhys || mode !== applyMode) return;
+        lastRestoredPhysRect = { ...actualPhys };
+        stableNormalPhysRect = { ...targetPhys };
+        modePhysRects.set(applyMode, { ...targetPhys });
+        boundsSaveSuppressUntil = Math.max(boundsSaveSuppressUntil, Date.now() + 650);
+        const curDip = typeof activeWin()?.getBounds === 'function' ? activeWin().getBounds() : null;
+        if (curDip) lastRestoredBounds = { ...curDip };
+        traceEvent(`${label}_phys`, { targetPhys, actualPhys });
+      };
+
+      let actualPhys = null;
+      if (targetPhys && typeof winNative?.setPhysicalRect === 'function') {
+        const resPhys = winNative.setPhysicalRect(w, targetPhys);
+        if (resPhys && typeof resPhys.then === 'function') {
+          boundsSaveSuppressUntil = Date.now() + 900;
+          lastRestoredPhysRect = { ...targetPhys };
+          stableNormalPhysRect = { ...targetPhys };
+          modePhysRects.set(applyMode, { ...targetPhys });
+          resPhys.then((got) => {
+            if (got && mode === applyMode && activeWin() && !isWindowMaximized(activeWin()) && !activeWin().isMinimized?.()) {
+              applyPhysResult(got);
+            }
+          }).catch(() => {});
+        } else if (resPhys) {
+          actualPhys = resPhys;
+          applyPhysResult(resPhys);
+          actual = typeof w.getBounds === 'function' ? w.getBounds() : actual;
+        }
+      }
+
+      if (clean) lastNormalBounds = { ...clean };
+      lastRestoredBounds = actual ? { ...actual } : (clean ? { ...clean } : null);
+      traceEvent(label, { targetBounds: clean, appliedCmd: bestCmd, actualBounds: actual, compensated, targetPhys, actualPhys });
+    } catch {} finally {
+      applyingBounds = false;
+    }
   }
 
   function targetBoundsFor(targetMode) {
@@ -418,15 +767,24 @@ function createWorkbenchWindow({
     if (!w || isWrittenCompact()) return;
     const { min: [minW, minH] } = modeBoundsSpec(targetMode);
     const bounds = targetBoundsFor(targetMode);
+    const savedPhys = modePhysRects.get(targetMode) || null;
     applyingBounds = true;
     try {
       if (isFloatingMode(targetMode) && w.isMaximized?.()) {
         w.unmaximize();
       }
       w.setMinimumSize(minW, minH);
-      w.setBounds(bounds, false);
     } finally {
       applyingBounds = false;
+    }
+    restoreExactBounds(bounds, 'apply_mode_layout', savedPhys);
+    stableNormalBounds = { ...bounds };
+    if (!savedPhys && typeof winNative?.getPhysicalRect === 'function') {
+      const livePhys = winNative.getPhysicalRect(w);
+      if (livePhys) {
+        stableNormalPhysRect = { ...livePhys };
+        modePhysRects.set(targetMode, { ...livePhys });
+      }
     }
   }
 
@@ -434,35 +792,63 @@ function createWorkbenchWindow({
     if (!ALL_WINDOW_MODES.has(nextMode)) {
       throw new Error('未知窗口模式：' + nextMode);
     }
+    const prevMode = mode;
     const changed = mode !== nextMode;
-    if (changed) saveCurrentModeBounds();
+    if (changed) {
+      const w = activeWin();
+      if (w && !isWrittenCompact() && !w.isMinimized?.() && !isWindowMaximized(w) && typeof winNative?.getPhysicalRect === 'function') {
+        const livePhys = winNative.getPhysicalRect(w);
+        if (livePhys && (!lastRestoredPhysRect || !boundsNearlyEqual(livePhys, lastRestoredPhysRect, 1) || !modePhysRects.has(prevMode))) {
+          modePhysRects.set(prevMode, { ...livePhys });
+        }
+      }
+      saveCurrentModeBounds({ explicit: true });
+    }
     dragStart = null;
+    if (changed) {
+      clearPseudoMaximize();
+      clearUnmaximizeSettleTimers();
+      preMaximizeBounds = null;
+      preMaximizePhysRect = null;
+      stableNormalBounds = null;
+      stableNormalPhysRect = null;
+      lastRestoredBounds = null;
+      lastRestoredPhysRect = null;
+    }
     mode = nextMode;
+    hoverHidden = false;
     if (mode === 'home') {
       tempFocus = false;
       clickThrough = false;
       mouseInteractive = false;
-      hoverHidden = false;
       hoverBlocked = false;
       prefs.applyPatch({ clickThrough: false }, { silent: true, save: false });
+    } else if (changed) {
+      // Entering a floating window starts expanded & interactive until hover polling explicitly sees the cursor leave.
+      hoverInside = true;
+      try { onHoverChange(true); } catch {}
     }
     if (!isWrittenCompact()) {
       applyModeLayout(mode);
       syncAlwaysOnTop();
       syncFocusAndTaskbar();
-      syncMousePassthrough();
+      syncMousePassthrough(true);
       if (changed && mode === 'home') {
         const active = activeWin();
         try { active?.focus(); } catch {}
       }
     }
     syncHoverPolling();
+    traceEvent('set_mode', { prevMode, nextMode: mode, changed });
     emitState();
     return getWindowState();
   }
 
   function setAlwaysOnTop(on) {
     const next = !!on;
+    if (isSecurityActive() && !next) {
+      throw new Error('安全模式已开启，窗口置顶已锁定');
+    }
     prefs.applyPatch({ alwaysOnTop: next }, { silent: false });
     // Turning off always-on-top automatically turns off click-through (matches SuiSi)
     // so a click-through window cannot sink behind other apps permanently.
@@ -542,18 +928,173 @@ function createWorkbenchWindow({
     if (!w) return false;
     stopHoverPolling();
     setHoverHiddenNative(false);
+    // On Windows, transparent frameless windows with screen-saver topmost + skipTaskbar can silently ignore SW_MINIMIZE.
+    // Temporarily release topmost & skipTaskbar before minimizing; restore/show handlers re-sync them automatically.
+    try {
+      if (isSecurityActive() || shouldSkipTaskbar() || w.isAlwaysOnTop?.()) {
+        w.setAlwaysOnTop(false);
+        w.setSkipTaskbar(false);
+        lastAlwaysOnTop = false;
+        lastSkipTaskbar = false;
+      }
+    } catch {}
     w.minimize();
+    traceEvent('minimize');
     emitState();
     return true;
+  }
+
+  function scheduleUnmaximizeSettle(target, targetPhys = null) {
+    clearUnmaximizeSettleTimers();
+    if (!target && !targetPhys) return;
+    for (const delay of [120, 260]) {
+      const id = setTimeout(() => {
+        unmaximizeSettleTimers = unmaximizeSettleTimers.filter(t => t !== id);
+        const active = activeWin();
+        if (!active || isWindowMaximized(active) || active.isMinimized?.()) return;
+        if (targetPhys && typeof winNative?.getPhysicalRect === 'function') {
+          const nowPhys = winNative.getPhysicalRect(active);
+          if (nowPhys && (nowPhys.width !== targetPhys.width || nowPhys.height !== targetPhys.height || nowPhys.x !== targetPhys.x || nowPhys.y !== targetPhys.y)) {
+            restoreExactBounds(target, 'native_unmaximize_settle', targetPhys);
+          }
+          return;
+        }
+        const nowB = active.getBounds?.();
+        if (target && nowB && (nowB.width !== target.width || nowB.height !== target.height || nowB.x !== target.x || nowB.y !== target.y)) {
+          restoreExactBounds(target, 'native_unmaximize_settle', targetPhys);
+        }
+      }, delay);
+      id.unref?.();
+      unmaximizeSettleTimers.push(id);
+    }
   }
 
   function toggleMaximize() {
     const w = activeWin();
     if (!w) return false;
-    if (w.isMaximized?.()) w.unmaximize();
-    else w.maximize();
+    clearUnmaximizeSettleTimers();
+
+    if (pseudoMaximized) {
+      const target = restoreBounds || preMaximizeBounds || stableNormalBounds || lastNormalBounds || targetBoundsFor(mode);
+      const targetPhys = preMaximizePhysRect || stableNormalPhysRect || modePhysRects.get(mode) || null;
+      clearPseudoMaximize();
+      preMaximizeBounds = null;
+      preMaximizePhysRect = null;
+      restoreExactBounds(target, 'pseudo_unmaximize', targetPhys);
+      emitState();
+      return false;
+    }
+    if (w.isMaximized?.()) {
+      const target = preMaximizeBounds || stableNormalBounds || lastNormalBounds || targetBoundsFor(mode);
+      const targetPhys = preMaximizePhysRect || stableNormalPhysRect || modePhysRects.get(mode) || null;
+      applyingBounds = true;
+      boundsSaveSuppressUntil = Date.now() + 650;
+      try {
+        w.unmaximize();
+      } finally {
+        applyingBounds = false;
+      }
+      if (target || targetPhys) {
+        // Windows 125%/150% fractional DPI rounds native unmaximize bounds upward by 1–3px per cycle; clamp back to exact snapshot.
+        restoreExactBounds(target, 'native_unmaximize_clamp', targetPhys);
+        scheduleUnmaximizeSettle(target, targetPhys);
+      }
+      preMaximizeBounds = null;
+      preMaximizePhysRect = null;
+      emitState();
+      return false;
+    }
+    const rawPrev = typeof w.getNormalBounds === 'function' ? w.getNormalBounds() : w.getBounds();
+    const measuredPrev = rawPrev
+      ? { x: Math.round(rawPrev.x), y: Math.round(rawPrev.y), width: Math.round(rawPrev.width), height: Math.round(rawPrev.height) }
+      : (lastNormalBounds || targetBoundsFor(mode));
+    const livePhys = typeof winNative?.getPhysicalRect === 'function' ? winNative.getPhysicalRect(w) : null;
+    if (livePhys) {
+      const chosenPhys = (stableNormalPhysRect && lastRestoredPhysRect && boundsNearlyEqual(livePhys, lastRestoredPhysRect, 1))
+        ? { ...stableNormalPhysRect }
+        : { ...livePhys };
+      preMaximizePhysRect = { ...chosenPhys };
+      stableNormalPhysRect = { ...chosenPhys };
+      modePhysRects.set(mode, { ...chosenPhys });
+    } else {
+      preMaximizePhysRect = stableNormalPhysRect ? { ...stableNormalPhysRect } : null;
+    }
+    // Reuse the true normal-state anchor if the measured bounds only differ by fractional-DPI rounding from the last restore.
+    const prevBounds = (stableNormalBounds && lastRestoredBounds && boundsNearlyEqual(measuredPrev, lastRestoredBounds, 4) && (!livePhys || !stableNormalPhysRect || boundsNearlyEqual(livePhys, stableNormalPhysRect, 2)))
+      ? { ...stableNormalBounds }
+      : measuredPrev;
+    preMaximizeBounds = prevBounds ? { ...prevBounds } : null;
+    if (prevBounds) {
+      lastNormalBounds = { ...prevBounds };
+      stableNormalBounds = { ...prevBounds };
+    }
+
+    try { w.maximize(); } catch {}
+    // Fallback for Windows transparent frameless BrowserWindow where native maximize() is silently ignored.
+    if (!w.isMaximized?.()) {
+      const display = screen.getDisplayMatching ? screen.getDisplayMatching(prevBounds) : screen.getPrimaryDisplay();
+      const work = display?.workArea;
+      if (work && work.width >= 320 && work.height >= 240) {
+        restoreBounds = { ...prevBounds };
+        pseudoMaximized = true;
+        applyingBounds = true;
+        boundsSaveSuppressUntil = Date.now() + 300;
+        try {
+          w.setBounds({ x: work.x, y: work.y, width: work.width, height: work.height }, false);
+        } finally {
+          applyingBounds = false;
+        }
+      }
+    }
+    traceEvent('maximize', { preMaximizeBounds, preMaximizePhysRect, measuredPrev, pseudoMaximized });
     emitState();
-    return !!w.isMaximized?.();
+    return isWindowMaximized(w);
+  }
+
+  function recoverWindow({ exitSecurity = false, source = 'recover_window' } = {}) {
+    const w = activeWin();
+    if (!w) return getWindowState();
+    recordShowRequest(source);
+    if (exitSecurity && isSecurityActive()) {
+      disableSecurity({ scope: 'persistent', clearAutoLaunch: false });
+    }
+    clickThrough = false;
+    mouseInteractive = false;
+    hoverHidden = false;
+    hoverInside = true;
+    const focusable = !isFloatingMode() || (!effectivePreventFocus() && !clickThrough);
+    const wantTopmost = isFloatingMode() ? (!!prefs.getPublic().alwaysOnTop || isSecurityActive()) : isSecurityActive();
+    if (focusable) {
+      resetNativeStyleCache();
+    } else {
+      // Keep lastSkipTaskbar / lastAlwaysOnTop caches intact so non-focusable recover does NOT re-trigger
+      // redundant Win32 style mutations or Deactivate() that steal foreground focus from external editors.
+      lastIgnoreMouse = null;
+    }
+    inRecoverShow = true;
+    try {
+      if (w.isMinimized?.()) w.restore();
+      if (focusable) {
+        w.show?.();
+        w.focus?.();
+        w.moveTop?.();
+      } else if (typeof w.showInactive === 'function') {
+        w.showInactive();
+      } else {
+        w.show?.();
+      }
+    } catch {} finally {
+      inRecoverShow = false;
+    }
+    syncAlwaysOnTop(false);
+    syncFocusAndTaskbar(false);
+    syncMousePassthrough(false);
+    scheduleEnsureRenderHostVisible(source, { raiseTopmost: !focusable && wantTopmost });
+    syncHoverPolling();
+    try { onHoverChange(true); } catch {}
+    traceEvent('recover_window', { exitSecurity, source, focusable });
+    emitState();
+    return getWindowState();
   }
 
   function setAllowCapture(allow) {
@@ -567,9 +1108,11 @@ function createWorkbenchWindow({
   }
 
   function enableSecurity(options = {}) {
-    const scope = options.scope === 'persistent' ? 'persistent' : 'session';
+    const requestedScope = options.scope === 'persistent' ? 'persistent' : 'session';
     const current = prefs.getPublic();
     const wasEnabled = current.securityMode.enabled;
+    // Never downgrade an active persistent security scope when a session starts!
+    const scope = (wasEnabled && current.securityMode.scope === 'persistent') ? 'persistent' : requestedScope;
     const savedPreventFocus = wasEnabled ? current.securityMode.savedPreventFocus : !!current.preventFocus;
     const savedAllowCapture = wasEnabled ? current.securityMode.savedAllowCapture : !getStealth();
     const autoEnableOnLaunch = typeof options.autoEnableOnLaunch === 'boolean'
@@ -586,8 +1129,9 @@ function createWorkbenchWindow({
       }
     });
     setStealth(true);
-    syncAlwaysOnTop();
+    syncAlwaysOnTop(true);
     syncFocusAndTaskbar();
+    traceEvent('enable_security', { requestedScope, effectiveScope: scope, wasEnabled });
     emitState();
     return getWindowState();
   }
@@ -762,7 +1306,8 @@ function createWorkbenchWindow({
     }
     if (!isFloatingMode()) return;
     if (action === 'toggleAlwaysOnTop') {
-      setAlwaysOnTop(!prefs.getPublic().alwaysOnTop);
+      if (isSecurityActive()) { emitState(); return; }
+      try { setAlwaysOnTop(!prefs.getPublic().alwaysOnTop); } catch {}
       return;
     }
     if (action === 'toggleHoverReveal') {
@@ -882,6 +1427,7 @@ function createWorkbenchWindow({
   function attach(window) {
     win = window;
     if (!win) return;
+    resetNativeStyleCache();
 
     const recovered = prefs.consumeRecoveredSessionSecurity?.();
     if (recovered && typeof recovered.savedAllowCapture === 'boolean') {
@@ -892,16 +1438,87 @@ function createWorkbenchWindow({
 
     win.on('resize', scheduleBoundsSave);
     win.on('move', scheduleBoundsSave);
-    win.on('maximize', () => emitState());
-    win.on('unmaximize', () => emitState());
-    win.on('minimize', () => { stopHoverPolling(); setHoverHiddenNative(false); emitState(); });
-    win.on('restore', () => { syncAlwaysOnTop(); syncFocusAndTaskbar(); syncMousePassthrough(); syncHoverPolling(); emitState(); });
-    win.on('show', () => { syncAlwaysOnTop(); syncFocusAndTaskbar(); syncMousePassthrough(); syncHoverPolling(); emitState(); });
-    win.on('hide', () => { stopHoverPolling(); setHoverHiddenNative(false); emitState(); });
+    if (!win.isMaximized?.() && !win.isMinimized?.()) {
+      const initRaw = typeof win.getNormalBounds === 'function' ? win.getNormalBounds() : win.getBounds?.();
+      if (initRaw && initRaw.width >= 120 && initRaw.height >= 80) {
+        const initClean = {
+          x: Math.round(initRaw.x),
+          y: Math.round(initRaw.y),
+          width: Math.round(initRaw.width),
+          height: Math.round(initRaw.height)
+        };
+        lastNormalBounds = { ...initClean };
+        stableNormalBounds = { ...initClean };
+      }
+      const initPhys = typeof winNative?.getPhysicalRect === 'function' ? winNative.getPhysicalRect(win) : null;
+      if (initPhys) {
+        stableNormalPhysRect = { ...initPhys };
+        modePhysRects.set(mode, { ...initPhys });
+      }
+    }
+    win.on('maximize', () => {
+      if (!preMaximizeBounds && (stableNormalBounds || lastNormalBounds)) {
+        preMaximizeBounds = { ...(stableNormalBounds || lastNormalBounds) };
+      }
+      if (!preMaximizePhysRect && (stableNormalPhysRect || modePhysRects.get(mode))) {
+        preMaximizePhysRect = { ...(stableNormalPhysRect || modePhysRects.get(mode)) };
+      }
+      traceEvent('win_maximize');
+      emitState();
+    });
+    win.on('unmaximize', () => {
+      traceEvent('win_unmaximize');
+      const target = preMaximizeBounds || stableNormalBounds;
+      const targetPhys = preMaximizePhysRect || stableNormalPhysRect || modePhysRects.get(mode) || null;
+      if ((target || targetPhys) && !applyingBounds) {
+        preMaximizeBounds = null;
+        preMaximizePhysRect = null;
+        restoreExactBounds(target, 'win_unmaximize_clamp', targetPhys);
+        scheduleUnmaximizeSettle(target, targetPhys);
+      }
+      emitState();
+    });
+    win.on('minimize', () => { stopHoverPolling(); setHoverHiddenNative(false); traceEvent('win_minimize'); emitState(); });
+    win.on('restore', () => {
+      const focusable = !isFloatingMode() || (!effectivePreventFocus() && !clickThrough);
+      const wantTopmost = isFloatingMode() ? (!!prefs.getPublic().alwaysOnTop || isSecurityActive()) : isSecurityActive();
+      if (focusable) resetNativeStyleCache();
+      else lastIgnoreMouse = null;
+      syncAlwaysOnTop(false);
+      syncFocusAndTaskbar(false);
+      syncMousePassthrough(false);
+      if (!inRecoverShow) scheduleEnsureRenderHostVisible('win_restore', { raiseTopmost: !focusable && wantTopmost });
+      syncHoverPolling();
+      traceEvent('win_restore');
+      emitState();
+    });
+    win.on('show', () => {
+      const showSrc = consumePendingSource('show');
+      const focusable = !isFloatingMode() || (!effectivePreventFocus() && !clickThrough);
+      const wantTopmost = isFloatingMode() ? (!!prefs.getPublic().alwaysOnTop || isSecurityActive()) : isSecurityActive();
+      if (focusable) resetNativeStyleCache();
+      else lastIgnoreMouse = null;
+      syncAlwaysOnTop(false);
+      syncFocusAndTaskbar(false);
+      syncMousePassthrough(false);
+      if (!inRecoverShow) scheduleEnsureRenderHostVisible(showSrc, { raiseTopmost: !focusable && wantTopmost });
+      syncHoverPolling();
+      traceEvent('win_show', { source: showSrc });
+      emitState();
+    });
+    win.on('hide', () => {
+      clearRenderEnsureTimers();
+      stopHoverPolling();
+      setHoverHiddenNative(false);
+      traceEvent('win_hide', { source: consumePendingSource('hide') });
+      emitState();
+    });
     win.on('blur', () => {
+      if (syncingFocus) return;
       if (tempFocus) {
         tempFocus = false;
         syncFocusAndTaskbar();
+        traceEvent('win_blur_temp_focus');
         emitState();
       } else if (isFloatingMode()) {
         syncAlwaysOnTop();
@@ -911,16 +1528,20 @@ function createWorkbenchWindow({
       stopHoverPolling();
       clearTimeout(boundsTimer);
       boundsTimer = null;
+      clearUnmaximizeSettleTimers();
+      clearRenderEnsureTimers();
       dragStart = null;
+      resetNativeStyleCache();
       win = null;
     });
 
     if (!isWrittenCompact()) {
-      syncAlwaysOnTop();
-      syncFocusAndTaskbar();
-      syncMousePassthrough();
+      syncAlwaysOnTop(true);
+      syncFocusAndTaskbar(true);
+      syncMousePassthrough(true);
     }
     syncHoverPolling();
+    traceEvent('attach');
     emitState();
   }
 
@@ -943,6 +1564,8 @@ function createWorkbenchWindow({
     stopHoverPolling();
     clearTimeout(boundsTimer);
     boundsTimer = null;
+    clearUnmaximizeSettleTimers();
+    clearRenderEnsureTimers();
     dragStart = null;
     unregisterHotkeys();
     try { disableSecurity({ scope: 'session' }); } catch {}
@@ -981,6 +1604,11 @@ function createWorkbenchWindow({
     reapplyContentProtection,
     onWrittenCompactChanged,
     syncHoverPolling,
+    recoverWindow,
+    recordHideRequest,
+    recordShowRequest,
+    traceEvent,
+    getTrace,
     dispose
   };
 }

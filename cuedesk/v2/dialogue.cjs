@@ -6,7 +6,9 @@ const { generalKnowledge } = require('./query.cjs');
 const PERSONAL = /做过|用过|处理过|参与过|承担过|遇到过|实习过|生产经验|真实经历|线上事故|失败.{0,6}(?:经验|经历)|实践当中.{0,8}痛点|在哪.{0,5}学习|自己探索|你.{0,12}交易|当时.{0,15}(?:交易|做了|用了)|有.{0,24}(?:经验|经历|生产实践)|讲.{0,10}(?:真实|实际).{0,12}(?:事故|经历|案例)|\b(?:have\s+you\s+(?:ever\s+)?(?:used|built|worked|handled|debugged|tested|deployed)|tell\s+me\s+about\s+a\s+time|what\s+did\s+you\s+(?:do|build|fix|implement)|your\s+(?:role|contribution|responsibilities|production\s+experience)|production\s+(?:incident|outage))\b/i;
 const DESIGN = /如果|假设|你会|会怎么|会如何|重新设计|怎么设计|如何设计|万人|扩展|扩成|改成|收费|迭代|给你.{0,12}(?:周|天)|\b(?:how\s+would\s+you\s+design|design\s+a\b|suppose\s+(?:we|you)|what\s+if\s+(?:we|you)|if\s+you\s+(?:had|needed)\s+to\s+(?:design|scale|build)|system\s+design)\b/i;
 const FOLLOW = /这里面|这部分|这一步|这套|这两个|这个|那个|它|刚才|上面|前面|当时|其中|每一版|每次|都这样|都是这样|一直这样|这么|那样|一次次|^那|^所以|继续|具体|为什么|怎么|如何|哪个模块|什么模型|什么大模型|困难|难点|失败|痛点|限制|局限|效果|指标|权重|方差|准确率|问题解决|处理的|\b(?:this\s+part|that\s+part|in\s+this|in\s+that|how\s+did\s+you\s+(?:fix|solve|handle|verify)|what\s+happened|and\s+then|what\s+about|why\s+did\s+you|any\s+limitations?|challenges?|hardest\s+part)\b/i;
-const RESET = /不聊项目|不说项目|不谈项目|不聊这个|先不说|换个话题|换题|不聊了|基础知识|通用问题/;
+const RESET = /不聊项目|不说项目|不谈项目|不聊这个|先不说|换个话题|换题|不聊了|基础知识|通用问题|(?:我)?给你出一道?题|发在?聊天(?:框|里)|有一个(?:新)?需求需要你(?:去)?测试|看(?:一下)?(?:聊天|这道题|下面这道题)|接下来看这道题/;
+const INTRO_FOLLOWUP = /(?:缩短|精简|压缩|加长|拉长|细化|再说一遍|换个版本|30\s*(?:秒|s\b|sec|seconds?)|半分钟|(?:1|一|2|两|二)\s*(?:分钟|min(?:ute)?s?)|(?:用|换(?:成)?)(?:英文|英语|中文)|\b(?:shorter|brief|30[\s-]?sec(?:ond)?s?|1[\s-]?min(?:ute)?|2[\s-]?min(?:ute)?s?|in\s+english|english\s+version|chinese\s+version)\b)/i;
+const CODING_TASK = /(?:写一条|写一个|写段|写出|手写|编写|实现一个?).{0,24}(?:sql|查询|代码|算法|函数|脚本|用例|测试)|\b(?:select\b[\s\S]{0,60}\b(?:from|group\s+by|where)|group\s+by|order\s+by|write\s+(?:a|an)?\s*(?:sql|query|function|script|code))\b/i;
 const CONCEPTS = /spring\s*boot|websocket|python|http\/?[123]?|kafka|redis|mysql|cpu|gil|react|vue|线程|进程|异步|支付|退款|副本|灰度|多租户/ig;
 function cleanQuestion(q) { return q.replace(/(?:不聊|不说|不谈)项目(?:了)?[，,。]?/g, '').trim(); }
 function intent(question) {
@@ -56,14 +58,18 @@ function scenarioFrame(q, prior, active, reset, ids) {
 function step(question, prior, projects) {
   const q = cleanQuestion(question), explicit = mentioned(q, projects), turn = classifyTurn(q);
   if (turn.action === 'ignore' || turn.action === 'wait') return { ...prior, turn, pending_question: turn.action === 'wait' ? q : prior?.pending_question };
-  if (turn.action === 'update' && prior && !explicit.length && !DESIGN.test(q)) return { ...prior, turn };
+  const priorWasIntro = Boolean(prior?.intents?.includes('intro'));
+  const introFollowupCandidate = priorWasIntro && INTRO_FOLLOWUP.test(q) && !CODING_TASK.test(q);
+  if (turn.action === 'update' && prior && !explicit.length && !DESIGN.test(q) && !CODING_TASK.test(q) && (!priorWasIntro || introFollowupCandidate)) {
+    return { ...prior, turn };
+  }
   const concepts = [...q.matchAll(CONCEPTS)].map(m => m[0].toLowerCase());
   const anchorConcepts = String(prior?.anchor_question || '').toLowerCase();
   const explicitDesign = DESIGN.test(q)&&!/你本人|你.{0,6}已经|实际.{0,6}(?:做过|完成|做完)|你.{0,12}做完/.test(q)&&!(/呢[？?。]?$/.test(q)&&prior?.anchor_question&&!explicit.length&&!/设计|构建|改造|扩展/.test(q));
   const personal = PERSONAL.test(q) || /你本人.{0,20}(?:做完|完成|实现|上线)|你.{0,6}已经.{0,12}(?:做|完成|实现)/.test(q);
   const relative = /这里面|这部分|这一步|这套|这两个|这个|那个|它|刚才|上面|前面|当时|上题|接着|仍是|^那|^所以|继续/.test(q);
   const projectFeature = Boolean(prior?.project_ids?.length && /Wi[\s-]?Fi|\bAP\b|光照|强弱信号|信号.{0,8}数据|特征|协方差|标量/i.test(q));
-  const independentKnowledge = !projectFeature && (generalKnowledge(q) || (/是什么|区别|怎么选|如何选|怎样选|原理/.test(q) || /\b(?:what\s+is|what\s+are|difference\s+between|how\s+does|explain)\b/i.test(q)) && !relative && !/项目|角色|职责|做过|\b(?:your|you|project|did\s+you|role|experience)\b/i.test(q));
+  const independentKnowledge = !projectFeature && (CODING_TASK.test(q) || generalKnowledge(q) || (/是什么|区别|怎么选|如何选|怎样选|原理/.test(q) || /\b(?:what\s+is|what\s+are|difference\s+between|how\s+does|explain)\b/i.test(q)) && !relative && !/项目|角色|职责|做过|\b(?:your|you|project|did\s+you|role|experience)\b/i.test(q));
   const newConcept = concepts.some(c => !anchorConcepts.includes(c));
   const newScenario = explicitDesign && !relative && !explicit.length && /假设(?:做|一个|一次)|再换题|换题|做一个/.test(q);
   const newPlan = /岗位|职位|学习计划|职业规划/.test(q) && /安排|计划|学习|交付|三周|两周/.test(q);
@@ -73,7 +79,8 @@ function step(question, prior, projects) {
   let ids = explicit;
   if (!ids.length && !reset && prior?.project_ids?.length && (FOLLOW.test(q)||projectFeature||turn.correction)) ids = prior.project_ids;
   const inherited = !explicit.length && ids.length > 0;
-  const genericContinuation = !ids.length && !reset && prior?.anchor_question && (relative || FOLLOW.test(q) || /(?:呢|是吧)[？?。]?$/.test(q)&&!newConcept);
+  const introFollowup = Boolean(introFollowupCandidate && !reset);
+  const genericContinuation = introFollowup || (!ids.length && !reset && prior?.anchor_question && (relative || FOLLOW.test(q) || /(?:呢|是吧)[？?。]?$/.test(q)&&!newConcept));
   const continuing = Boolean(inherited || genericContinuation);
   const experience = personal && !explicitDesign;
   const design = explicitDesign || Boolean(continuing && prior?.design && !experience);
@@ -84,6 +91,7 @@ function step(question, prior, projects) {
   const subject=continuing&&!turn.correction?(substantive?q:prior.subject_question||prior.topic_question||anchor):q;
   const effective = inherited || genericContinuation ? [...new Set([anchor, subject, topic, q])].join('\n') : q;
   const labels = intent(q).filter(label=>label!=='design'||design);
+  if (introFollowup && !labels.includes('intro')) labels.push('intro');
   if(continuing&&/每一版|每次|都这样|都是这样|一直这样|一次次/.test(q)&&prior?.intents?.includes('method')&&!labels.includes('method'))labels.push('method');
   if (ids.length && !labels.includes('design') && !labels.includes('fact')) labels.push('fact');
   return {

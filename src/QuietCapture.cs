@@ -18,9 +18,19 @@ static class Program
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
     [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern bool IsWindow(IntPtr window);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window, int nCmdShow);
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out RECT lpRect);
+    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr window, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
+    delegate bool EnumChildProc(IntPtr hwnd, IntPtr lParam);
+    [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr hWndParent, EnumChildProc lpEnumFunc, IntPtr lParam);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr window, System.Text.StringBuilder lpClassName, int nMaxCount);
     [DllImport("user32.dll", SetLastError = true)] static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct RECT { public int Left, Top, Right, Bottom; }
 
     [STAThread]
     static int Main(string[] args)
@@ -58,6 +68,19 @@ static class Program
             {
                 MouseShortcutHost.SelfTest(Path.GetFullPath(args[1]));
                 return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--win-ensure-render")
+            {
+                bool raiseTopmost = args.Length >= 3 && args[2] == "--topmost";
+                return WinEnsureRenderVisible(args[1], raiseTopmost);
+            }
+            if (args.Length == 2 && args[0] == "--win-get-rect")
+            {
+                return WinGetPhysicalRect(args[1]);
+            }
+            if (args.Length == 3 && args[0] == "--win-set-rect")
+            {
+                return WinSetPhysicalRect(args[1], args[2]);
             }
             bool first;
             using (var mutex = new Mutex(true, "Local\\QuietCapture.FullScreen.Hotkey", out first))
@@ -120,6 +143,94 @@ static class Program
         try { File.AppendAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "error.log"), DateTime.Now.ToString("s") + " " + error + Environment.NewLine); }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
+    }
+
+    static IntPtr ParseHwnd(string raw)
+    {
+        long val = long.Parse((raw ?? "").Trim());
+        return new IntPtr(val);
+    }
+
+    // Re-show Chromium's Chrome_RenderWidgetHostHWND child window without activating or stealing focus.
+    // Optionally re-assert HWND_TOPMOST on the top-level window using pure SWP_NOACTIVATE (never BringWindowToTop).
+    static int WinEnsureRenderVisible(string hwndArg, bool raiseTopmost)
+    {
+        IntPtr hwnd = ParseHwnd(hwndArg);
+        if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return 2;
+        IntPtr fgBefore = GetForegroundWindow();
+        int found = 0;
+        int repaired = 0;
+        bool allVisible = true;
+        const int SW_SHOWNOACTIVATE = 4;
+        const uint SWP_NOSIZE = 0x0001;
+        const uint SWP_NOMOVE = 0x0002;
+        const uint SWP_NOACTIVATE = 0x0010;
+        const uint SWP_SHOWWINDOW = 0x0040;
+        if (raiseTopmost)
+        {
+            SetWindowPos(hwnd, new IntPtr(-1), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        }
+        EnumChildWindows(hwnd, delegate(IntPtr child, IntPtr _)
+        {
+            var sb = new System.Text.StringBuilder(128);
+            GetClassName(child, sb, sb.Capacity);
+            if (sb.ToString() == "Chrome_RenderWidgetHostHWND")
+            {
+                found++;
+                if (!IsWindowVisible(child))
+                {
+                    ShowWindow(child, SW_SHOWNOACTIVATE);
+                    SetWindowPos(child, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                    repaired++;
+                }
+                if (!IsWindowVisible(child)) allVisible = false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        IntPtr fgAfter = GetForegroundWindow();
+        Console.Write(
+            "{\"found\":" + found +
+            ",\"repaired\":" + repaired +
+            ",\"visible\":" + (allVisible && found > 0 ? "true" : "false") +
+            ",\"topmost\":" + (raiseTopmost ? "true" : "false") +
+            ",\"fgBefore\":" + fgBefore.ToInt64() +
+            ",\"fgAfter\":" + fgAfter.ToInt64() +
+            ",\"fgChanged\":" + (fgBefore != fgAfter ? "true" : "false") +
+            "}"
+        );
+        return 0;
+    }
+
+    static int WinGetPhysicalRect(string hwndArg)
+    {
+        IntPtr hwnd = ParseHwnd(hwndArg);
+        if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return 2;
+        RECT r;
+        if (!GetWindowRect(hwnd, out r)) return 3;
+        int w = r.Right - r.Left;
+        int h = r.Bottom - r.Top;
+        Console.Write("{\"x\":" + r.Left + ",\"y\":" + r.Top + ",\"width\":" + w + ",\"height\":" + h + "}");
+        return 0;
+    }
+
+    static int WinSetPhysicalRect(string hwndArg, string rectSpec)
+    {
+        IntPtr hwnd = ParseHwnd(hwndArg);
+        if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return 2;
+        string[] parts = (rectSpec ?? "").Split(',');
+        if (parts.Length != 4) return 4;
+        int x = int.Parse(parts[0]);
+        int y = int.Parse(parts[1]);
+        int w = int.Parse(parts[2]);
+        int h = int.Parse(parts[3]);
+        if (w < 120 || h < 80 || w > 16384 || h > 16384) return 5;
+        const uint SWP_NOZORDER = 0x0004;
+        const uint SWP_NOACTIVATE = 0x0010;
+        SetWindowPos(hwnd, IntPtr.Zero, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+        RECT r;
+        if (!GetWindowRect(hwnd, out r)) return 3;
+        Console.Write("{\"x\":" + r.Left + ",\"y\":" + r.Top + ",\"width\":" + (r.Right - r.Left) + ",\"height\":" + (r.Bottom - r.Top) + "}");
+        return 0;
     }
 
     static void WatchMouseSideButton(string pipeName, string button)

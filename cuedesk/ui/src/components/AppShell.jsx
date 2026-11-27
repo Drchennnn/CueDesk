@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import appIconUrl from '../assets/app-icon-64.png';
 import {
   IconBook,
+  IconHelp,
   IconHistory,
   IconHome,
   IconMaximize,
@@ -31,6 +32,7 @@ export function AppShell({
   onResumeWorkbench,
   onToggleSecurity,
   onOpenHealth,
+  onOpenGuide,
   onMinimize,
   onToggleMaximize,
   onQuit,
@@ -40,10 +42,52 @@ export function AppShell({
   const summary = health.taskSummary;
   const securityOn = Boolean(windowState?.securityMode?.enabled);
   const maximized = Boolean(windowState?.maximized);
+  const draggingRef = useRef(false);
+
+  useEffect(() => () => {
+    if (draggingRef.current) {
+      draggingRef.current = false;
+      window.mc?.dragEnd?.();
+    }
+  }, []);
+
+  // Pure JS window dragging (avoids Windows Chromium `-webkit-app-region: drag` swallowing clicks on minimize/maximize buttons)
+  const handleTitlebarPointerDown = (e) => {
+    if (e.button !== 0 || maximized) return;
+    if (e.target.closest?.('button, input, select, textarea, a, [role="button"], [role="switch"]')) return;
+    e.preventDefault();
+    const headerEl = e.currentTarget;
+    const pid = e.pointerId;
+    try { headerEl.setPointerCapture?.(pid); } catch {}
+    draggingRef.current = true;
+    window.mc?.dragStart?.();
+    const onMove = () => {
+      if (draggingRef.current) window.mc?.dragMove?.();
+    };
+    const onUp = () => {
+      if (!draggingRef.current) return;
+      draggingRef.current = false;
+      try { headerEl.releasePointerCapture?.(pid); } catch {}
+      window.mc?.dragEnd?.();
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('pointerup', onUp, true);
+      window.removeEventListener('pointercancel', onUp, true);
+      window.removeEventListener('blur', onUp);
+    };
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('pointerup', onUp, true);
+    window.addEventListener('pointercancel', onUp, true);
+    window.addEventListener('blur', onUp);
+  };
+
+  const handleTitlebarDoubleClick = (e) => {
+    if (e.target.closest?.('button, input, select, textarea, a, [role="button"], [role="switch"]')) return;
+    onToggleMaximize?.();
+  };
 
   return (
     <div className={`mc-shell${maximized ? ' is-maximized' : ''}`}>
-      <header className="mc-shell-titlebar">
+      <header className="mc-shell-titlebar" onPointerDown={handleTitlebarPointerDown} onDoubleClick={handleTitlebarDoubleClick}>
         <div className="mc-shell-brand">
           <img className="mc-brand-mark" src={appIconUrl} alt="" draggable={false} />
           <span>CueDesk</span>
@@ -60,6 +104,17 @@ export function AppShell({
           )}
         </div>
         <div className="mc-shell-wincontrols">
+          {onOpenGuide && (
+            <button
+              type="button"
+              className={`mc-icon-btn${route === 'guide' ? ' is-active' : ''}`}
+              title="使用教程"
+              aria-label="使用教程"
+              onClick={onOpenGuide}
+            >
+              <IconHelp size={14} />
+            </button>
+          )}
           <button type="button" className="mc-icon-btn" title="最小化" aria-label="最小化" onClick={onMinimize}>
             <IconMinus size={14} />
           </button>
@@ -107,7 +162,7 @@ export function AppShell({
           <div className="mc-sidebar-footer">
             <div
               className={`mc-security-pill${securityOn ? ' is-active' : ''}`}
-              title={securityOn ? '安全模式已开启：强制防截屏 + 不抢焦点' : '开启安全模式：防截屏隐藏窗口并屏蔽焦点'}
+              title={securityOn ? '安全模式已开启：防截屏 · 不抢焦点 · 隐藏任务栏与托盘（Ctrl+B 显隐）' : '开启安全模式：防截屏、不抢焦点并隐藏任务栏与托盘（Ctrl+B 显隐）'}
             >
               <span className="mc-security-pill-label">
                 <IconShield size={14} />

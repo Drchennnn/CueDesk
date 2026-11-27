@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   IconBookOpen,
   IconCheck,
+  IconChevronRight,
+  IconCopy,
   IconEdit,
   IconExternalLink,
   IconFileText,
@@ -207,126 +209,111 @@ function SimpleMarkdownPreview({ content }) {
   );
 }
 
-function NewRoleModal({ availableProjects = [], onClose, onCreated }) {
-  const [company, setCompany] = useState('');
-  const [roleName, setRoleName] = useState('');
-  const [location, setLocation] = useState('');
-  const [resumeRef, setResumeRef] = useState('简历.md');
-  const [priorityProjects, setPriorityProjects] = useState(''); // Empty by default — never inject imaginary projects (fixes M03)
+function NewRoleModal({ libraryRoot = '', hasRulebook = false, onClose, onCopied }) {
   const [jdText, setJdText] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [extraNote, setExtraNote] = useState('');
+  const [generatedPrompt, setGeneratedPrompt] = useState('');
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
 
-  const selectedList = useMemo(
-    () => priorityProjects.split(/[,，\s]+/).map(s => s.trim()).filter(Boolean),
-    [priorityProjects]
-  );
-
-  const toggleProjectChip = (name) => {
-    const exists = selectedList.includes(name);
-    const next = exists ? selectedList.filter(p => p !== name) : [...selectedList, name];
-    setPriorityProjects(next.join(', '));
+  const buildPrompt = () => {
+    const cleanJd = jdText.trim();
+    if (!cleanJd) {
+      setError('请先粘贴岗位 JD 内容');
+      return '';
+    }
+    const cleanNote = extraNote.trim();
+    const rulePath = libraryRoot ? `${libraryRoot}\\新增岗位与预测题规则.md` : '新增岗位与预测题规则.md';
+    const header = hasRulebook
+      ? `请严格按照 \`${rulePath}\` 为我新增一个面试岗位档案，并生成对应的岗位准备与预测题：`
+      : '请作为我的面试资料库维护 Agent，严格遵守防编造原则（仅依据我现有的真实简历、项目资料与候选人画像），为我新增这个岗位的标准档案与预测题：';
+    const lines = [
+      header,
+      '',
+      `- 资料库根目录：\`${libraryRoot || '（当前资料库目录）'}\``,
+      ...(cleanNote ? [`- 额外要求：${cleanNote}`] : []),
+      '',
+      '### 岗位 JD 原文',
+      '```text',
+      cleanJd,
+      '```',
+      '',
+      '### 请完成以下步骤',
+      '1. 从 JD 提取公司名、岗位名、工作地点，按标准命名创建 `岗位档案/<公司>-<岗位>/`（含 `JD.md`、`岗位准备/`、`面试记录/`）；',
+      '2. 对照我的真实简历、`候选人画像.md` 和 `项目资料/`，在 `JD.md` 顶部 YAML 填写 `priority_projects`、`status: preparing` 等字段；',
+      '3. 生成该岗位的自我介绍针对版（如需）和高频预测题，不夸大或编造未实践经历；完成后给我路径摘要，我在 CueDesk 点「刷新索引」即可生效。'
+    ];
+    return lines.join('\n');
   };
 
-  const submit = async (e) => {
+  const handleGenerateAndCopy = async (e) => {
     e.preventDefault();
-    if (!company.trim() || !roleName.trim()) {
-      setError('请填写公司名称和岗位名称');
-      return;
-    }
-    setBusy(true);
     setError('');
+    const prompt = buildPrompt();
+    if (!prompt) return;
+    setGeneratedPrompt(prompt);
     try {
-      const res = await window.mc.kbCreateRole({
-        company: company.trim(),
-        roleName: roleName.trim(),
-        location: location.trim(),
-        resumeRef: resumeRef.trim() || '简历.md',
-        priorityProjects: priorityProjects.split(/[,，\s]+/).filter(Boolean),
-        jdText
-      });
-      onCreated(res);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
+      await navigator.clipboard.writeText(prompt);
+      setCopied(true);
+      onCopied?.('已复制新增岗位指令，粘贴给 Agent 即可自动建档');
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      onCopied?.('已生成指令，请在下方手动复制');
     }
   };
 
   return (
     <div className="mc-modal-backdrop" onClick={onClose}>
-      <form className="mc-modal" onClick={e => e.stopPropagation()} onSubmit={submit} role="dialog" aria-modal="true" aria-label="新建标准岗位档案">
+      <form className="mc-modal" onClick={e => e.stopPropagation()} onSubmit={handleGenerateAndCopy} role="dialog" aria-modal="true" aria-label="新增岗位">
         <div className="mc-modal-header">
           <div>
-            <h3 className="mc-modal-title">新建标准岗位档案</h3>
-            <div className="mc-field-hint">严格按《新增岗位与预测题规则》自动生成 JD.md、预测题与标准子目录</div>
+            <h3 className="mc-modal-title">新增岗位（交由 Agent 建档）</h3>
+            <div className="mc-field-hint">只需贴入 JD，复制指令发给 Agent 自动生成目录、JD.md 与预测题</div>
           </div>
           <button type="button" className="mc-icon-btn" onClick={onClose}><IconX /></button>
         </div>
-        <div className="mc-modal-body">
-          <div className="mc-grid-2">
-            <div className="mc-field">
-              <label className="mc-field-label">公司名称 *</label>
-              <input className="mc-input" value={company} onChange={e => setCompany(e.target.value)} placeholder="如：字节跳动 / Paradoox AI" autoFocus />
-            </div>
-            <div className="mc-field">
-              <label className="mc-field-label">岗位名称 *（无需带状态后缀）</label>
-              <input className="mc-input" value={roleName} onChange={e => setRoleName(e.target.value)} placeholder="如：AI应用研发实习生" />
-            </div>
-            <div className="mc-field">
-              <label className="mc-field-label">工作地点</label>
-              <input className="mc-input" value={location} onChange={e => setLocation(e.target.value)} placeholder="深圳 / 香港" />
-            </div>
-            <div className="mc-field">
-              <label className="mc-field-label">投递简历版本</label>
-              <CustomSelect
-                className="mc-select"
-                ariaLabel="投递简历版本"
-                value={resumeRef}
-                onChange={setResumeRef}
-                options={[
-                  { value: '简历.md', label: '简历.md（中文主简历）' },
-                  { value: '英文简历.md', label: '英文简历.md（英文 CV）' }
-                ]}
-              />
-            </div>
+        <div className="mc-modal-body" style={{ gap: 10 }}>
+          <div className="mc-field">
+            <label className="mc-field-label">岗位 JD 原文 *</label>
+            <textarea
+              className="mc-textarea"
+              rows={7}
+              value={jdText}
+              onChange={e => setJdText(e.target.value)}
+              placeholder="直接粘贴招聘页面上的岗位名称、职责与任职要求…"
+              autoFocus
+            />
           </div>
           <div className="mc-field">
-            <label className="mc-field-label">重点关联项目（可选，未选则留空）</label>
+            <label className="mc-field-label">补充说明（可选）</label>
             <input
               className="mc-input"
-              value={priorityProjects}
-              onChange={e => setPriorityProjects(e.target.value)}
-              placeholder="可选：从下方当前资料库点选，或手填项目名（逗号分隔）"
+              value={extraNote}
+              onChange={e => setExtraNote(e.target.value)}
+              placeholder="例如：投递英文简历 / 重点突出 SRAG 项目 / 偏测试开发方向"
             />
-            {availableProjects.length > 0 && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 4 }}>
-                {availableProjects.map(p => {
-                  const picked = selectedList.includes(p);
-                  return (
-                    <button
-                      key={p}
-                      type="button"
-                      className={`mc-btn mc-btn-sm ${picked ? 'mc-btn-primary' : ''}`}
-                      onClick={() => toggleProjectChip(p)}
-                    >
-                      {picked ? `${p} ✓` : `+ ${p}`}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-          <div className="mc-field">
-            <label className="mc-field-label">岗位 JD 原文（可选，可稍后在线编辑）</label>
-            <textarea className="mc-textarea" rows={5} value={jdText} onChange={e => setJdText(e.target.value)} placeholder="粘贴招聘职责与任职要求…" />
           </div>
           {error && <div className="mc-alert mc-alert-err">{error}</div>}
+          {generatedPrompt && (
+            <div className="mc-field">
+              <label className="mc-field-label">
+                <span>已生成 Agent 指令</span>
+                <span className="mc-field-hint">完成后回到知识库点「刷新索引」</span>
+              </label>
+              <textarea
+                className="mc-textarea"
+                readOnly
+                rows={6}
+                style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, lineHeight: 1.5 }}
+                value={generatedPrompt}
+              />
+            </div>
+          )}
         </div>
         <div className="mc-modal-footer">
-          <button type="button" className="mc-btn" onClick={onClose}>取消</button>
-          <button type="submit" className="mc-btn mc-btn-primary" disabled={busy}>
-            <IconFolderPlus size={14} /> {busy ? '正在创建…' : '创建并选中岗位'}
+          <button type="button" className="mc-btn" onClick={onClose}>关闭</button>
+          <button type="submit" className="mc-btn mc-btn-primary">
+            {copied ? <><IconCheck size={13} /> 已复制指令</> : <><IconCopy size={13} /> 生成并复制指令（发给 Agent）</>}
           </button>
         </div>
       </form>
@@ -358,7 +345,7 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
   // Persona & Intro state
   const [personaData, setPersonaData] = useState(null);
   const [introData, setIntroData] = useState(null);
-  const [personaSaving, setPersonaSaving] = useState(false);
+  const [personaPromptCopied, setPersonaPromptCopied] = useState(false);
   const [promptDraft, setPromptDraft] = useState(settings?.modelPrompts?.interview || '');
   const [promptMsg, setPromptMsg] = useState('');
 
@@ -558,22 +545,24 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
     }
   };
 
-  const savePersonaForm = async () => {
-    if (!personaData?.profile) return;
-    setPersonaSaving(true);
-    setError('');
+  const copyPersonaAgentPrompt = async () => {
+    const rootPath = draft?.root || '';
+    const prompt = [
+      '请帮我更新面试资料库中的候选人画像（保持 `schema: 1` JSON 格式与保守能力边界，不编造未实践经历）：',
+      '',
+      `- 资料库根目录：\`${rootPath}\``,
+      `- 目标文件：\`${rootPath}\\候选人画像.md\``,
+      '',
+      '我想修改或补充的内容：',
+      '1. （在这里写你的新技能、项目进展、到岗时间或能力边界调整）'
+    ].join('\n');
     try {
-      const res = await window.mc.kbSavePersona({ profile: personaData.profile });
-      setPersonaData(prev => ({ ...prev, profile: res.profile }));
-      if (res?.library) {
-        setDraft(res.library);
-        onLibraryUpdated?.(res.library);
-      }
-      notify('候选人画像已保存并刷新 V2 约束');
-    } catch (e) {
-      setError('保存画像失败：' + e.message);
-    } finally {
-      setPersonaSaving(false);
+      await navigator.clipboard.writeText(prompt);
+      setPersonaPromptCopied(true);
+      notify('已复制画像更新指令，粘贴给 Agent 即可更新');
+      setTimeout(() => setPersonaPromptCopied(false), 2000);
+    } catch {
+      notify('复制失败，请手动打开原文件编辑');
     }
   };
 
@@ -659,12 +648,12 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <h1 className="mc-page-title">知识库</h1>
           <span className="mc-field-hint" role="status">
-            {toast || auto.error || (auto.status === 'saving' ? '自动保存中…' : '5 层隔离架构 · 实时同步')}
+            {toast || auto.error || (auto.status === 'saving' ? '自动保存中…' : '本地资料 · 实时同步')}
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <button type="button" className="mc-btn mc-btn-sm" onClick={() => setNewRoleOpen(true)} disabled={!draft?.root}>
-            <IconFolderPlus size={13} /> 新建标准岗位
+            <IconFolderPlus size={13} /> 新建岗位
           </button>
           <button type="button" className="mc-btn mc-btn-sm" onClick={() => void refreshLibrary()}>
             <IconRefresh size={13} /> 刷新索引
@@ -674,10 +663,10 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
 
       <div className="mc-tabs-row" role="tablist">
         {[
-          ['overview', '总览与 RAG 状态'],
-          ['workspace', '资料工作台'],
-          ['persona', '画像与口述稿'],
-          ['lab', '检索测试台']
+          ['overview', '总览'],
+          ['workspace', '资料文件'],
+          ['persona', '画像与自我介绍'],
+          ['lab', '检索测试']
         ].map(([id, label]) => (
           <button
             key={id}
@@ -715,9 +704,48 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
                     {draft.material_status.message}
                   </div>
                 )}
-                {draft?.warning && !/未配置/.test(draft.warning) && (
-                  <div className="mc-alert mc-alert-warn" style={{ whiteSpace: 'pre-wrap' }}>{draft.warning}</div>
-                )}
+                {draft?.warning && !/未配置/.test(draft.warning) && (() => {
+                  const warnLines = String(draft.warning).split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+                  const hasMissingDocs = (draft?.documents || []).some(d => d.status === 'missing') || warnLines.some(l => l.startsWith('来源已缺失'));
+                  return (
+                    <details className="mc-card mc-fold-card" style={{ borderColor: 'var(--warning)' }}>
+                      <summary className="mc-fold-summary" style={{ padding: '8px 12px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span className="mc-fold-chevron"><IconChevronRight size={13} /></span>
+                          <span style={{ fontSize: 12.5, color: 'var(--warning)' }}>
+                            资料库提示（{warnLines.length} 条，点此展开）
+                          </span>
+                        </div>
+                        {hasMissingDocs && (
+                          <button
+                            type="button"
+                            className="mc-btn mc-btn-sm"
+                            onClick={async (e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              try {
+                                const next = await window.mc.retireMissingSources?.();
+                                if (next) {
+                                  setDraft(next);
+                                  onLibraryUpdated?.(next);
+                                  window.dispatchEvent(new Event('mc-library-updated'));
+                                }
+                                notify('已确认清理缺失来源提示');
+                              } catch (err) {
+                                setError('清理失败：' + err.message);
+                              }
+                            }}
+                          >
+                            确认已删除，消除提示
+                          </button>
+                        )}
+                      </summary>
+                      <div className="mc-card-body" style={{ padding: '8px 12px', fontSize: 12, whiteSpace: 'pre-wrap', color: 'var(--text-secondary)' }}>
+                        {draft.warning}
+                      </div>
+                    </details>
+                  );
+                })()}
               </>
             )}
             {error && <div className="mc-alert mc-alert-err">{error}</div>}
@@ -810,25 +838,24 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
               </div>
             </section>
 
-            {/* Live Qdrant RAG Health & Rulebook shortcuts */}
-            <section className="mc-card">
-              <div className="mc-card-head">
-                <div>
-                  <h3 className="mc-card-title">本地向量 RAG 状态（可选增强）</h3>
-                  <p className="mc-card-desc">配置本机 Qdrant 向量服务后，技术参考库支持 Dense + Sparse 混合召回；未启用时自动使用本地词项检索。</p>
+            {/* Collapsible Local Vector RAG & Rulebook section */}
+            <details className="mc-card mc-fold-card">
+              <summary className="mc-fold-summary">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span className="mc-fold-chevron"><IconChevronRight size={14} /></span>
+                  <h3 className="mc-card-title">本地向量检索与规则文档</h3>
+                  <span className="mc-badge">参考条目 {ragStatus?.entries ?? techRefCount}</span>
                 </div>
                 <span className={`mc-badge ${ragStatus?.online ? 'mc-badge-ok' : draft?.vector_rag?.enabled ? 'mc-badge-warn' : ''}`}>
                   {ragStatus?.online ? '在线就绪' : draft?.vector_rag?.enabled ? '待唤醒 / 离线' : '未启用'}
                 </span>
-              </div>
+              </summary>
               <div className="mc-card-body" style={{ gap: 8 }}>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  <span className="mc-badge">向量条目：{ragStatus?.entries ?? techRefCount}</span>
-                  {ragStatus?.model && <span className="mc-badge">向量模型：{ragStatus.model}</span>}
-                  {ragStatus?.endpoint && <span className="mc-badge">本地服务：{ragStatus.endpoint}</span>}
-                  <span className="mc-badge">归档/练习隔离：{ls.archived_or_drill ?? 0} 份</span>
+                  {ragStatus?.model && <span className="mc-badge">模型：{ragStatus.model}</span>}
+                  {ragStatus?.endpoint && <span className="mc-badge">地址：{ragStatus.endpoint}</span>}
+                  {!ragStatus?.online && <span className="mc-field-hint">未启动时自动回退本地词项检索，首次提问会自动唤醒。</span>}
                 </div>
-                {ragStatus?.error && <div className="mc-field-hint">说明：{ragStatus.error}（首次提问时会自动拉起本地服务）</div>}
                 {draft?.root && (
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, paddingTop: 4 }}>
                     {(draft?.documents || []).some(d => d.file_path === '复盘与更新规则.md') && (
@@ -837,7 +864,7 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
                         className="mc-btn mc-btn-sm"
                         onClick={() => { setSubTab('workspace'); void openDocumentInPane('复盘与更新规则.md', 'preview'); }}
                       >
-                        <IconFileText size={13} /> 查看《复盘与更新规则》
+                        <IconFileText size={13} /> 复盘与更新规则
                       </button>
                     )}
                     {(draft?.documents || []).some(d => d.file_path === '新增岗位与预测题规则.md') && (
@@ -846,26 +873,24 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
                         className="mc-btn mc-btn-sm"
                         onClick={() => { setSubTab('workspace'); void openDocumentInPane('新增岗位与预测题规则.md', 'preview'); }}
                       >
-                        <IconFileText size={13} /> 查看《新增岗位与预测题规则》
+                        <IconFileText size={13} /> 新增岗位规则
                       </button>
                     )}
                   </div>
                 )}
               </div>
-            </section>
+            </details>
 
-            {/* Role Cards Grid */}
+            {/* Collapsible Role Cards Grid */}
             {rolesMeta.length > 0 && (
-              <section className="mc-card">
-                <div className="mc-card-head">
-                  <div>
-                    <h3 className="mc-card-title">岗位档案一览 ({rolesMeta.length})</h3>
-                    <p className="mc-card-desc">状态由各岗位 JD.md 头部 YAML 管理，切换状态不改变目录路径。</p>
+              <details className="mc-card mc-fold-card" open>
+                <summary className="mc-fold-summary">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span className="mc-fold-chevron"><IconChevronRight size={14} /></span>
+                    <h3 className="mc-card-title">岗位档案 ({rolesMeta.length})</h3>
                   </div>
-                  <button type="button" className="mc-btn mc-btn-sm mc-btn-primary" onClick={() => setNewRoleOpen(true)}>
-                    <IconPlus size={12} /> 新建岗位
-                  </button>
-                </div>
+                  <span className="mc-field-hint">当前：{draft?.role || '通用'}</span>
+                </summary>
                 <div className="mc-card-body">
                   <div className="mc-role-grid">
                     {rolesMeta.map(r => {
@@ -913,7 +938,7 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
                     })}
                   </div>
                 </div>
-              </section>
+              </details>
             )}
           </div>
         </div>
@@ -1092,7 +1117,7 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
                           className={`mc-btn mc-btn-sm ${showDiff ? 'mc-btn-primary' : ''}`}
                           onClick={() => setShowDiff(v => !v)}
                         >
-                          <IconEdit size={12} /> {showDiff ? '返回编辑' : '预览 Diff 变更'}
+                          <IconEdit size={12} /> {showDiff ? '返回编辑' : '对比更改'}
                         </button>
                         {docDirty && (
                           <button type="button" className="mc-btn mc-btn-sm" onClick={() => setDocContent(docOriginal)}>
@@ -1170,7 +1195,7 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
         </div>
       )}
 
-      {/* TAB 3: PERSONA & INTRO SCRIPT */}
+      {/* TAB 3: PERSONA & INTRO OVERVIEW (Agent-first lightweight view) */}
       {subTab === 'persona' && (
         <div className="mc-page-scroll">
           <div className="mc-page-inner">
@@ -1179,10 +1204,10 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
             <section className="mc-card">
               <div className="mc-card-head">
                 <div>
-                  <h3 className="mc-card-title">候选人能力画像（候选人画像.md）</h3>
-                  <p className="mc-card-desc">每轮面试常驻生效，用于限定个人能力边界，防止大模型过度吹嘘或编造未实践经历。</p>
+                  <h3 className="mc-card-title">候选人能力画像</h3>
+                  <p className="mc-card-desc">限定个人经历与能力边界，防止回答夸大或编造。详细增改建议交由 Agent 维护 Markdown。</p>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
                   <Switch
                     checked={Boolean(draft?.persona_profile?.enabled)}
                     onChange={v => {
@@ -1194,119 +1219,72 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
                     }}
                     aria-label="启用固定候选人画像"
                   />
-                  <button type="button" className="mc-btn mc-btn-sm mc-btn-primary" disabled={personaSaving || !personaData?.profile} onClick={() => void savePersonaForm()}>
-                    <IconCheck size={12} /> {personaSaving ? '保存中…' : '保存画像'}
+                  {(() => {
+                    const profileDoc = (draft?.documents || []).find(d => d.document_type === 'candidate_profile');
+                    return profileDoc ? (
+                      <button
+                        type="button"
+                        className="mc-btn mc-btn-sm"
+                        onClick={() => void window.mc.openInterviewDocument(profileDoc.document_id).catch(e => setError(e.message))}
+                      >
+                        <IconExternalLink size={12} /> 打开原文件
+                      </button>
+                    ) : null;
+                  })()}
+                  <button type="button" className="mc-btn mc-btn-sm mc-btn-primary" onClick={() => void copyPersonaAgentPrompt()}>
+                    {personaPromptCopied ? <><IconCheck size={12} /> 已复制指令</> : <><IconCopy size={12} /> 复制更新指令给 Agent</>}
                   </button>
                 </div>
               </div>
 
               {personaData?.profile ? (
-                <div className="mc-card-body" style={{ gap: 14 }}>
-                  <div className="mc-grid-2">
-                    <div className="mc-field">
-                      <label className="mc-field-label">姓名</label>
-                      <input
-                        className="mc-input"
-                        value={personaData.profile.identity?.name || ''}
-                        onChange={e => setPersonaData(p => ({ ...p, profile: { ...p.profile, identity: { ...p.profile.identity, name: e.target.value } } }))}
-                      />
-                    </div>
-                    <div className="mc-field">
-                      <label className="mc-field-label">确认日期</label>
-                      <input
-                        className="mc-input"
-                        value={personaData.profile.confirmed_at || ''}
-                        onChange={e => setPersonaData(p => ({ ...p, profile: { ...p.profile, confirmed_at: e.target.value } }))}
-                      />
-                    </div>
-                  </div>
-                  <div className="mc-field">
-                    <label className="mc-field-label">学历背景</label>
-                    <input
-                      className="mc-input"
-                      value={personaData.profile.identity?.education || ''}
-                      onChange={e => setPersonaData(p => ({ ...p, profile: { ...p.profile, identity: { ...p.profile.identity, education: e.target.value } } }))}
-                    />
-                  </div>
-                  <div className="mc-field">
-                    <label className="mc-field-label">整体定位与边界</label>
-                    <input
-                      className="mc-input"
-                      value={personaData.profile.identity?.positioning || ''}
-                      onChange={e => setPersonaData(p => ({ ...p, profile: { ...p.profile, identity: { ...p.profile.identity, positioning: e.target.value } } }))}
-                    />
+                <div className="mc-card-body" style={{ gap: 12 }}>
+                  <div className="mc-guide-kv">
+                    <span className="mc-guide-kv-label">基本信息</span>
+                    <span className="mc-guide-kv-val">
+                      <strong>{personaData.profile.identity?.name || '未填写'}</strong>
+                      {personaData.profile.identity?.education ? ` · ${personaData.profile.identity.education}` : ''}
+                      {personaData.profile.confirmed_at ? <span className="mc-field-hint" style={{ marginLeft: 8 }}>更新于 {personaData.profile.confirmed_at}</span> : null}
+                    </span>
+                    {personaData.profile.identity?.availability && (
+                      <>
+                        <span className="mc-guide-kv-label">到岗安排</span>
+                        <span className="mc-guide-kv-val">{personaData.profile.identity.availability}</span>
+                      </>
+                    )}
+                    {personaData.profile.identity?.positioning && (
+                      <>
+                        <span className="mc-guide-kv-label">定位与边界</span>
+                        <span className="mc-guide-kv-val">{personaData.profile.identity.positioning}</span>
+                      </>
+                    )}
                   </div>
 
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <strong style={{ fontSize: 13 }}>分项技能能力上限 ({(personaData.profile.skills || []).length})</strong>
-                    <button
-                      type="button"
-                      className="mc-btn mc-btn-sm"
-                      onClick={() => setPersonaData(p => ({
-                        ...p,
-                        profile: {
-                          ...p.profile,
-                          skills: [...(p.profile.skills || []), { area: '', level: 'ai_assisted_verified', scope: '' }]
-                        }
-                      }))}
-                    >
-                      <IconPlus size={12} /> 添加技能边界
-                    </button>
-                  </div>
-
-                  {(personaData.profile.skills || []).map((sk, idx) => (
-                    <div key={idx} className="mc-card" style={{ background: 'var(--bg-subtle)' }}>
-                      <div className="mc-card-body" style={{ padding: 10, gap: 8 }}>
-                        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                          <input
-                            className="mc-input"
-                            style={{ flex: 1 }}
-                            placeholder="技术域，如：SQL及MySQL/Redis"
-                            value={sk.area || ''}
-                            onChange={e => setPersonaData(p => ({
-                              ...p,
-                              profile: { ...p.profile, skills: p.profile.skills.map((x, i) => i === idx ? { ...x, area: e.target.value } : x) }
-                            }))}
-                          />
-                          <CustomSelect
-                            className="mc-select"
-                            style={{ width: 200 }}
-                            ariaLabel="技能熟练度"
-                            value={sk.level || 'ai_assisted_verified'}
-                            onChange={val => setPersonaData(p => ({
-                              ...p,
-                              profile: { ...p.profile, skills: p.profile.skills.map((x, i) => i === idx ? { ...x, level: val } : x) }
-                            }))}
-                            options={SKILL_LEVELS.map(lv => ({ value: lv.id, label: lv.label }))}
-                          />
-                          <button
-                            type="button"
-                            className="mc-icon-btn is-danger"
-                            title="移除此技能项"
-                            onClick={() => setPersonaData(p => ({
-                              ...p,
-                              profile: { ...p.profile, skills: p.profile.skills.filter((_, i) => i !== idx) }
-                            }))}
-                          >
-                            <IconTrash size={13} />
-                          </button>
-                        </div>
-                        <input
-                          className="mc-input"
-                          placeholder="边界说明（如：借助 AI 可落地验证，不声称独立生产运维）"
-                          value={sk.scope || ''}
-                          onChange={e => setPersonaData(p => ({
-                            ...p,
-                            profile: { ...p.profile, skills: p.profile.skills.map((x, i) => i === idx ? { ...x, scope: e.target.value } : x) }
-                          }))}
-                        />
+                  {(personaData.profile.skills || []).length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 6, borderTop: '1px solid var(--border)' }}>
+                      <div className="mc-field-hint">技能边界概览（共 {personaData.profile.skills.length} 项）</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {personaData.profile.skills.map((sk, idx) => {
+                          const lv = SKILL_LEVELS.find(x => x.id === sk.level);
+                          const badgeCls = sk.level === 'independent' ? 'mc-badge-ok' : sk.level === 'unfamiliar' ? 'mc-badge-warn' : '';
+                          return (
+                            <span
+                              key={idx}
+                              className={`mc-badge ${badgeCls}`}
+                              title={`${lv?.label || sk.level}${sk.scope ? `：${sk.scope}` : ''}`}
+                              style={{ padding: '3px 8px' }}
+                            >
+                              {sk.area || '未命名'} · {sk.level === 'independent' ? '熟练' : sk.level === 'ai_assisted_verified' ? 'AI 辅助可落地' : sk.level === 'conceptual_no_practice' ? '了解原理' : '仅基础概念'}
+                            </span>
+                          );
+                        })}
                       </div>
                     </div>
-                  ))}
+                  )}
                 </div>
               ) : (
                 <div className="mc-card-body">
-                  <div className="mc-field-hint">当前资料库未检测到 <code>候选人画像.md</code>（可在资料工作台新建）。</div>
+                  <div className="mc-field-hint">当前资料库未检测到 <code>候选人画像.md</code>。</div>
                 </div>
               )}
             </section>
@@ -1315,24 +1293,38 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
             <section className="mc-card">
               <div className="mc-card-head">
                 <div>
-                  <h3 className="mc-card-title">固定自我介绍口述稿（通用问答/自我介绍.md）</h3>
-                  <p className="mc-card-desc">启用后，面试官要求“自我介绍”时将直接零延迟返回选定章节原稿，不经模型自由发挥。</p>
+                  <h3 className="mc-card-title">默认自我介绍口述稿</h3>
+                  <p className="mc-card-desc">命中自我介绍时直接返回选定章节；开面试前也可按场次临时切换岗位专用稿。</p>
                 </div>
-                <Switch
-                  checked={Boolean(draft?.intro_script?.enabled)}
-                  onChange={v => {
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                  {(() => {
                     const introDoc = (draft?.documents || []).find(d => (d.file_path || '').endsWith('自我介绍.md'));
-                    setDraft(prev => ({
-                      ...(prev || {}),
-                      intro_script: {
-                        enabled: v,
-                        document_id: prev?.intro_script?.document_id || introDoc?.document_id || '',
-                        heading: prev?.intro_script?.heading || '约2分钟'
-                      }
-                    }));
-                  }}
-                  aria-label="启用固定自我介绍原稿"
-                />
+                    return introDoc ? (
+                      <button
+                        type="button"
+                        className="mc-btn mc-btn-sm"
+                        onClick={() => void window.mc.openInterviewDocument(introDoc.document_id).catch(e => setError(e.message))}
+                      >
+                        <IconExternalLink size={12} /> 打开原文件
+                      </button>
+                    ) : null;
+                  })()}
+                  <Switch
+                    checked={Boolean(draft?.intro_script?.enabled)}
+                    onChange={v => {
+                      const introDoc = (draft?.documents || []).find(d => (d.file_path || '').endsWith('自我介绍.md'));
+                      setDraft(prev => ({
+                        ...(prev || {}),
+                        intro_script: {
+                          enabled: v,
+                          document_id: prev?.intro_script?.document_id || introDoc?.document_id || '',
+                          heading: prev?.intro_script?.heading || '约2分钟'
+                        }
+                      }));
+                    }}
+                    aria-label="启用固定自我介绍原稿"
+                  />
+                </div>
               </div>
               {introData?.exists ? (
                 <div className="mc-card-body" style={{ gap: 10 }}>
@@ -1355,7 +1347,7 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
                     })}
                   </div>
                   {(introData.headings || []).filter(h => h.heading === (draft?.intro_script?.heading || '约2分钟')).map(h => (
-                    <pre key={h.heading} className="mc-evidence-excerpt" style={{ maxHeight: 220 }}>{h.text}</pre>
+                    <pre key={h.heading} className="mc-evidence-excerpt" style={{ maxHeight: 200 }}>{h.text}</pre>
                   ))}
                 </div>
               ) : (
@@ -1370,7 +1362,7 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
               <div className="mc-card-body" style={{ borderTop: '1px solid var(--border)' }}>
                 <textarea
                   className="mc-textarea"
-                  rows={7}
+                  rows={6}
                   maxLength={64000}
                   value={promptDraft}
                   onChange={e => setPromptDraft(e.target.value)}
@@ -1390,7 +1382,7 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
         </div>
       )}
 
-      {/* TAB 4: 5-LAYER RETRIEVAL LAB */}
+      {/* TAB 4: RETRIEVAL LAB */}
       {subTab === 'lab' && (
         <div className="mc-page-scroll">
           <div className="mc-page-inner">
@@ -1398,10 +1390,8 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
             <section className="mc-card">
               <div className="mc-card-head">
                 <div>
-                  <h3 className="mc-card-title">问答检索测试台（已索引 {totalIndexedDocs} 篇）</h3>
-                  <p className="mc-card-desc">
-                    用于测试<strong>面试问答时的分层召回与防幻觉门禁</strong>（区别于「资料工作台」的按文件名/路径查找）。
-                  </p>
+                  <h3 className="mc-card-title">问答检索测试（已索引 {totalIndexedDocs} 篇）</h3>
+                  <p className="mc-card-desc">输入面试问题，预览当前岗位会命中哪些资料片段。</p>
                 </div>
                 <span className={`mc-badge ${draft?.enabled && draft?.root ? 'mc-badge-ok' : 'mc-badge-warn'}`}>
                   {draft?.enabled && draft?.root ? `当前检索范围：${draft?.role || '通用'} · ${totalIndexedDocs} 篇` : '请先启用资料库'}
@@ -1484,18 +1474,10 @@ export function KnowledgeView({ library, onLibraryUpdated, settings, onSettingsU
 
       {newRoleOpen && (
         <NewRoleModal
-          availableProjects={availableProjects}
+          libraryRoot={draft?.root || ''}
+          hasRulebook={(draft?.documents || []).some(d => d.file_path === '新增岗位与预测题规则.md')}
           onClose={() => setNewRoleOpen(false)}
-          onCreated={(res) => {
-            setNewRoleOpen(false);
-            if (res?.library) {
-              setDraft({ ...res.library, role: res.directory });
-              onLibraryUpdated?.(res.library);
-            }
-            setSubTab('workspace');
-            void openDocumentInPane(res.jdPath, 'edit');
-            notify(`已创建标准岗位档案：${res.directory}`);
-          }}
+          onCopied={(msg) => notify(msg)}
         />
       )}
     </div>

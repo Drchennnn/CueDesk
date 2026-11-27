@@ -172,7 +172,9 @@ export function WrittenCompactView({
   const [lightboxImage, setLightboxImage] = useState(null);
   const [copiedId, setCopiedId] = useState('');
   const [localMsg, setLocalMsg] = useState('');
+  const [localHoverInside, setLocalHoverInside] = useState(true);
 
+  const shellRef = useRef(null);
   const gearBtnRef = useRef(null);
   const shotBtnRef = useRef(null);
   const codingBtnRef = useRef(null);
@@ -220,6 +222,7 @@ export function WrittenCompactView({
   const autoCollapseChrome = Boolean(workbenchPrefs?.autoCollapseChrome);
   const preventFocus = Boolean(windowState?.preventFocus);
   const clickThrough = Boolean(windowState?.clickThrough);
+  const securityLocked = Boolean(windowState?.securityMode?.enabled);
   const alwaysOnTop = windowState?.alwaysOnTop !== false;
   const virtualCursorActive = Boolean(windowState?.securityMode?.enabled && windowState?.securityMode?.hideCursor !== false);
   const clickThroughKeyLabel = (windowState?.workbenchHotkeys?.toggleClickThrough || windowState?.hotkeys?.toggleClickThrough || 'Control+Shift+9')
@@ -427,7 +430,7 @@ export function WrittenCompactView({
   const iconAlpha = Math.max(0.05, Math.min(1, (workbenchPrefs?.iconTextOpacity ?? 100) / 100));
   const answerAlpha = Math.max(0.05, Math.min(1, (workbenchPrefs?.answerTextOpacity ?? 100) / 100));
   const hoverOpacityVal = Math.max(0.02, Math.min(0.5, (workbenchPrefs?.hoverOpacity ?? 8) / 100));
-  const effectiveHoverInside = hoverInside || isAnimationSuppressed;
+  const effectiveHoverInside = hoverInside || localHoverInside || isAnimationSuppressed;
   const shellOpacity = hoverReveal && !effectiveHoverInside ? hoverOpacityVal : 1;
   const shouldCollapseChrome = autoCollapseChrome && !effectiveHoverInside && !isAnimationSuppressed;
 
@@ -702,9 +705,29 @@ export function WrittenCompactView({
   return (
     <>
       <section
+        ref={shellRef}
         className={`mc-wf-shell${effectiveHoverInside ? ' is-hover-in' : ''}${shouldCollapseChrome ? ' is-chrome-collapsed' : ''}${windowState?.maximized ? ' is-maximized' : ''}`}
         style={shellStyle}
         aria-label="笔试助手浮窗"
+        onPointerEnter={() => {
+          shellRef.current?.classList.remove('is-chrome-collapsed');
+          setLocalHoverInside(true);
+          if (!hoverInside) void window.mc?.setHoverTracking?.(true)?.catch?.(() => {});
+        }}
+        onMouseEnter={() => {
+          shellRef.current?.classList.remove('is-chrome-collapsed');
+          setLocalHoverInside(true);
+          if (!hoverInside) void window.mc?.setHoverTracking?.(true)?.catch?.(() => {});
+        }}
+        onPointerMove={() => {
+          shellRef.current?.classList.remove('is-chrome-collapsed');
+          if (!localHoverInside) setLocalHoverInside(true);
+        }}
+        onPointerDownCapture={() => {
+          shellRef.current?.classList.remove('is-chrome-collapsed');
+          if (!localHoverInside) setLocalHoverInside(true);
+        }}
+        onMouseLeave={() => setLocalHoverInside(false)}
       >
         {/* 1. TOP CHROME (SuiSi style, JS pointer drag, auto-collapses when enabled) */}
         <header className="mc-wf-topbar" data-interactive="true" onPointerDown={handleTopbarPointerDown}>
@@ -827,10 +850,24 @@ export function WrittenCompactView({
             <button
               type="button"
               className={`mc-icon-btn${alwaysOnTop ? ' is-active' : ''}`}
-              title={alwaysOnTop ? '窗口已置顶（点击取消）' : '窗口置顶'}
+              title={securityLocked
+                ? '安全模式已锁定窗口置顶（防止不抢焦点浮窗沉底，退出安全模式后可取消）'
+                : (alwaysOnTop ? '窗口已置顶（点击取消）' : '窗口置顶')}
               aria-label="窗口置顶"
               aria-pressed={alwaysOnTop}
-              onClick={() => void onSetAlwaysOnTop?.(!alwaysOnTop)}
+              aria-disabled={securityLocked || undefined}
+              style={securityLocked ? { opacity: 0.62, cursor: 'not-allowed' } : undefined}
+              onClick={() => {
+                if (securityLocked) {
+                  setLocalMsg('安全模式已锁定窗口置顶，退出安全模式后可取消');
+                  setTimeout(() => setLocalMsg(''), 2400);
+                  return;
+                }
+                void Promise.resolve(onSetAlwaysOnTop?.(!alwaysOnTop)).catch((err) => {
+                  setLocalMsg(err?.message || '无法切换窗口置顶');
+                  setTimeout(() => setLocalMsg(''), 2400);
+                });
+              }}
             >
               <IconPin size={14} filled={alwaysOnTop} />
             </button>

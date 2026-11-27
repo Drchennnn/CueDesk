@@ -3,6 +3,7 @@ import { getActiveAttempt, projectLegacyTurns, summarizeWrittenCounts } from '..
 import {
   IconArrowLeft,
   IconCheck,
+  IconChevronRight,
   IconCopy,
   IconDownload,
   IconEdit,
@@ -250,10 +251,8 @@ function AgentArchiveReviewTab({ session, library }) {
       <section className="mc-card">
         <div className="mc-card-head">
           <div>
-            <h3 className="mc-card-title">归档本场记录并交由外部 Agent（Codex / Antigravity）复盘</h3>
-            <p className="mc-card-desc">
-              分两步完成：① 本软件先把原始转录、AI 草稿与双轨 WAV 指针落盘到岗位档案（不拷贝大音频进 Git）；② 复制指令到外部 Agent 执行复盘并回写记忆库。
-            </p>
+            <h3 className="mc-card-title">归档并交由 Agent 复盘</h3>
+            <p className="mc-card-desc">落盘原始转录与截图后，复制指令交给 Agent 生成复盘并更新记忆。</p>
           </div>
         </div>
         <div className="mc-card-body" style={{ gap: 12 }}>
@@ -322,8 +321,18 @@ function AgentArchiveReviewTab({ session, library }) {
         <section className="mc-card">
           <div className="mc-card-head">
             <div>
-              <h3 className="mc-card-title">① 已归档至本机：{result.relArchive}</h3>
-              <p className="mc-card-desc">以下原始文件已写入本机目录，可直接打开核对。</p>
+              <h3 className="mc-card-title">
+                {result.updated
+                  ? `① 已更新原有归档：${result.relArchive}`
+                  : result.collisionResolved
+                    ? `① 同日同轮次已有其他场次，已独立归档：${result.relArchive}`
+                    : `① 已归档至本机：${result.relArchive}`}
+              </h3>
+              <p className="mc-card-desc">
+                {result.updated
+                  ? '检测到本场次此前已归档，已原地更新原文件。'
+                  : '原始转录与元数据已写入本机目录。'}
+              </p>
             </div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               <button type="button" className="mc-btn mc-btn-sm" onClick={() => void window.mc.memoryOpenPath?.(result.archiveDir)}>
@@ -395,11 +404,12 @@ export function RecordsView({
   library,
   workbenchPrefs,
   onUpdateWorkbenchPrefs,
+  onOpenMemorySettings,
   onResumeFromRecord,
   onRenameSession,
   onDeleteSession
 }) {
-  // Unified 2-level nav: 'my-memory' | 'memory-activity' | 'memory-settings' | 'interview-records' | 'written-records'
+  // Clean 2-level nav: 'my-memory' | 'memory-activity' | 'interview-records' | 'written-records' (memory settings moved to Settings → 通用偏好)
   const [navSection, setNavSection] = useState('interview-records');
   const [memState, setMemState] = useState(null);
   const [memLoading, setMemLoading] = useState(false);
@@ -411,10 +421,16 @@ export function RecordsView({
   const [editingRaw, setEditingRaw] = useState(false);
   const [rawDraft, setRawDraft] = useState('');
 
-  // Snapshot diff state
+  // Snapshot diff, fold & tidy-nudge + pending gate state
   const [selectedVersion, setSelectedVersion] = useState(null);
   const [snapDiff, setSnapDiff] = useState(null);
+  const [showAllSnapshots, setShowAllSnapshots] = useState(false);
+  const [tidyCopied, setTidyCopied] = useState(false);
   const [approveTarget, setApproveTarget] = useState('weakness_pitfall');
+  const [pendingDrafts, setPendingDrafts] = useState({});
+  const [pendingAgentPrompt, setPendingAgentPrompt] = useState('');
+  const [pendingCopied, setPendingCopied] = useState(false);
+  const [pendingBatchBusy, setPendingBatchBusy] = useState(false);
 
   // Records state
   const [search, setSearch] = useState('');
@@ -427,6 +443,7 @@ export function RecordsView({
   const [exportMsg, setExportMsg] = useState('');
   const [copiedId, setCopiedId] = useState(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [expandedDateGroups, setExpandedDateGroups] = useState({});
 
   const notifyMem = useCallback((msg) => {
     setMemToast(msg);
@@ -498,17 +515,110 @@ export function RecordsView({
     }
   };
 
-  const handleResolvePending = async (lineIndex, decision) => {
-    try {
-      const st = await window.mc.memoryResolvePending({
-        lineIndex,
-        decision,
-        targetBucket: approveTarget
+  const defaultPendingAction = (text) => (
+    /target:\s*(?:候选人画像|项目资料|简历)/i.test(String(text || '')) ? 'agent_truth' : 'memory_pitfall'
+  );
+
+  const getPendingDraft = (it) => pendingDrafts[it.lineIndex] || {
+    action: defaultPendingAction(it.text),
+    note: ''
+  };
+
+  const updatePendingDraft = (lineIndex, patch, fallbackText = '') => {
+    setPendingDrafts(prev => ({
+      ...prev,
+      [lineIndex]: {
+        action: prev[lineIndex]?.action || defaultPendingAction(fallbackText),
+        note: prev[lineIndex]?.note || '',
+        ...patch
+      }
+    }));
+  };
+
+  const handleGeneratePendingPrompt = async () => {
+    if (!pendingItems.length) return;
+    const truthItems = [];
+    const memoryItems = [];
+    const rejectItems = [];
+    for (const it of pendingItems) {
+      const d = getPendingDraft(it);
+      const entry = { text: it.text, note: (d.note || '').trim() };
+      if (d.action === 'agent_truth') truthItems.push(entry);
+      else if (d.action === 'memory_pitfall') memoryItems.push(entry);
+      else rejectItems.push(entry);
+    }
+    const rootPath = memState?.root || library?.root || '';
+    const lines = [
+      '请作为我的面试资料库维护 Agent，按以下本人已确认的审核意见和补充细节，精准更新对应真源文件与面试记忆，并清理 `面试记忆/待审核新事实.md`：',
+      '',
+      `- 资料库根目录：\`${rootPath}\``,
+      `- 待审核队列文件：\`${rootPath}\\面试记忆\\待审核新事实.md\``,
+      ''
+    ];
+    if (truthItems.length) {
+      lines.push('### 1. 需要更新 ① 层真源（候选人画像 / 项目资料 / 简历）的条目');
+      truthItems.forEach((x, idx) => {
+        lines.push(`${idx + 1}. 原待审核条目：${x.text}`);
+        lines.push(`   - 本人补充与边界说明：${x.note || '（按原条目事实确认，请保持保守边界，不夸大实战经历）'}`);
       });
+      lines.push('');
+    }
+    if (memoryItems.length) {
+      lines.push(`### 2. 仅精炼转入 ② 层面试记忆（${approveTarget === 'speaking_style' ? '表达与偏好.md' : approveTarget === 'company_insight' ? '公司与岗位洞察.md' : '薄弱项与踩坑.md'}）的条目`);
+      memoryItems.forEach((x, idx) => {
+        lines.push(`${idx + 1}. 原条目：${x.text}${x.note ? ` | 本人补充：${x.note}` : ''}`);
+      });
+      lines.push('');
+    }
+    if (rejectItems.length) {
+      lines.push('### 3. 驳回/不采用的条目（请从待审核队列移除，保持现有保守口径）');
+      rejectItems.forEach((x, idx) => {
+        lines.push(`${idx + 1}. ${x.text}${x.note ? `（原因/补充：${x.note}）` : ''}`);
+      });
+      lines.push('');
+    }
+    lines.push('### 执行要求');
+    lines.push('1. 涉及 `候选人画像.md` 时严格保持 `schema: 1` JSON 格式，不编造未确认的实战或线上经验；');
+    lines.push('2. ② 层 `面试记忆/` 总有效字数尽量控制在注入预算内，精炼合并避免重复工单文案；');
+    lines.push('3. 完成后把已处理条目在 `待审核新事实.md` 标记 `[x]` 或移除，并给我一份变更摘要。');
+    const prompt = lines.join('\n');
+    setPendingAgentPrompt(prompt);
+    try {
+      await navigator.clipboard.writeText(prompt);
+      setPendingCopied(true);
+      notifyMem('已复制待审核处理指令，可直接粘贴给 Agent 执行');
+      setTimeout(() => setPendingCopied(false), 2000);
+    } catch {
+      notifyMem('已生成待审核处理指令，请在下方复制');
+    }
+  };
+
+  const handleApplyLocalPendingBatch = async () => {
+    const actions = [];
+    for (const it of pendingItems) {
+      const d = getPendingDraft(it);
+      if (d.action === 'memory_pitfall') {
+        actions.push({ lineIndex: it.lineIndex, decision: 'approve', targetBucket: approveTarget, note: d.note });
+      } else if (d.action === 'reject') {
+        actions.push({ lineIndex: it.lineIndex, decision: 'reject', note: d.note });
+      }
+    }
+    if (!actions.length) {
+      notifyMem('当前均为「更新①层真源」条目，请点击上方按钮复制指令交由 Agent 处理');
+      return;
+    }
+    setPendingBatchBusy(true);
+    try {
+      const st = window.mc.memoryResolvePendingBatch
+        ? await window.mc.memoryResolvePendingBatch({ actions })
+        : await window.mc.memoryResolvePending(actions[0]);
       setMemState(st);
-      notifyMem(decision === 'approve' ? '已审核通过并并入记忆' : '已驳回待审核事实');
+      setPendingDrafts({});
+      notifyMem(`已一次合并处理 ${actions.length} 条本机操作 · 快照 v${st.latestVersion}`);
     } catch (err) {
       setMemError(err.message);
+    } finally {
+      setPendingBatchBusy(false);
     }
   };
 
@@ -574,6 +684,29 @@ export function RecordsView({
     return (pb?.items || []).filter(i => i.pending);
   }, [memState]);
 
+  const memoryBudgetStats = useMemo(() => {
+    const maxChars = Number(workbenchPrefs?.memoryMaxChars) || 1600;
+    const buckets = memState?.buckets || [];
+    const activeRoleCompany = String(library?.role || '').split('-')[0].trim().toLowerCase();
+    const countBucket = (id) => {
+      const b = buckets.find(x => x.id === id);
+      if (!b) return 0;
+      const lines = (b.items || []).map(i => i.text).filter(Boolean);
+      const effective = id === 'company_insight' && activeRoleCompany
+        ? lines.filter(l => l.toLowerCase().includes(activeRoleCompany))
+        : id === 'company_insight'
+          ? lines.slice(0, 2)
+          : lines;
+      return effective.reduce((sum, l) => sum + l.length + 2, 0);
+    };
+    const styleChars = countBucket('speaking_style');
+    const pitfallChars = countBucket('weakness_pitfall');
+    const insightChars = countBucket('company_insight');
+    const totalChars = styleChars + pitfallChars + insightChars;
+    const ratio = maxChars > 0 ? totalChars / maxChars : 0;
+    return { maxChars, styleChars, pitfallChars, insightChars, totalChars, ratio };
+  }, [memState, workbenchPrefs?.memoryMaxChars, library?.role]);
+
   // If inspecting a specific session detail, render full-width 4-tab detail view
   if (selected) {
     const questions = selected.questions || [];
@@ -617,11 +750,8 @@ export function RecordsView({
             <button type="button" className="mc-btn mc-btn-sm mc-btn-primary" onClick={() => onResumeFromRecord(selected.id)}>
               <IconPlay size={11} /> {isLive ? '回到工作台' : '从记录继续'}
             </button>
-            <button type="button" className="mc-btn mc-btn-sm" onClick={() => setDetailTab('review')}>
-              <IconSparkles size={12} /> 归档 & Agent 复盘
-            </button>
             <button type="button" className="mc-btn mc-btn-sm" disabled={exportBusy} onClick={() => void handleExport(selected, 'raw')}>
-              <IconDownload size={12} /> 原始文本
+              <IconDownload size={12} /> 导出文本
             </button>
             <button type="button" className="mc-btn mc-btn-sm" disabled={exportBusy} onClick={() => void handleExport(selected, 'json')}>
               JSON
@@ -726,13 +856,44 @@ export function RecordsView({
     );
   }
 
+  const stripPendingToken = (text) => String(text || '').replace(/^\s*(?:-\s+\[\s\]\s+)?\*\*\[pending\]\*\*\s*/i, '').trim();
+
+  const latestVersion = Number(memState?.latestVersion) || 0;
+  const tidyBaseVersion = Number(workbenchPrefs?.memoryTidyBaseVersion) || 0;
+  const tidyDismissedVersion = Number(workbenchPrefs?.memoryTidyDismissedVersion) || 0;
+  const versionsSinceTidy = Math.max(0, latestVersion - tidyBaseVersion);
+  const showTidyNudge = latestVersion >= 10 && versionsSinceTidy >= 10 && latestVersion >= tidyDismissedVersion + 10;
+
+  const handleCopyTidyPrompt = async () => {
+    const rootPath = memState?.root || library?.root || '';
+    const prompt = [
+      '请帮我整理并精炼面试记忆目录，合并重复条目并控制总字数在注入预算内：',
+      '',
+      `- 资料库根目录：\`${rootPath}\``,
+      `- 记忆目录：\`${rootPath}\\面试记忆\``,
+      `- 当前注入字数上限：${memoryBudgetStats.maxChars} 字（当前已用 ${memoryBudgetStats.totalChars} 字）`,
+      '',
+      '整理要求：',
+      '1. 合并 `表达与偏好.md`、`薄弱项与踩坑.md`、`公司与岗位洞察.md` 中的重复项，保留高价值可执行要点；',
+      '2. 不擅自改动 `待审核新事实.md` 中未确认的条目，不编造个人经历；',
+      '3. 完成后给我一份精简前后字数对比与变更摘要。'
+    ].join('\n');
+    try {
+      await navigator.clipboard.writeText(prompt);
+      setTidyCopied(true);
+      notifyMem('已复制整理指令，交给 Agent 整理完成后可点击重置计数');
+    } catch {
+      notifyMem('复制失败，请手动打开记忆目录交由 Agent 整理');
+    }
+  };
+
   return (
     <div className="mc-settings-root">
       <header className="mc-settings-topbar">
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <h1 className="mc-page-title" style={{ fontSize: 18 }}>记忆与记录</h1>
           <span className="mc-field-hint" role="status">
-            {memToast || (memState ? `记忆快照 v${memState.latestVersion}${memState.pendingCount > 0 ? ` · ${memState.pendingCount} 条待审核` : ''}` : '面试进化闭环')}
+            {memToast || (memState ? `快照 v${memState.latestVersion}${memState.pendingCount > 0 ? ` · ${memState.pendingCount} 条待确认` : ''}` : '')}
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -742,7 +903,7 @@ export function RecordsView({
                 <IconFolder size={13} /> 打开记忆目录
               </button>
               <button type="button" className="mc-btn mc-btn-sm" onClick={() => void refreshMemory()}>
-                <IconRefresh size={13} /> 同步外部变更
+                <IconRefresh size={13} /> 同步变更
               </button>
             </>
           )}
@@ -750,38 +911,7 @@ export function RecordsView({
       </header>
 
       <div className="mc-settings-body">
-        {/* SuiSi-style 2-level vertical navigation */}
         <nav className="mc-settings-nav" aria-label="记忆与记录导航">
-          <div className="mc-settings-nav-group">
-            <div className="mc-settings-nav-label">面试记忆库</div>
-            <button
-              type="button"
-              className="mc-settings-tab"
-              aria-selected={navSection === 'my-memory'}
-              onClick={() => setNavSection('my-memory')}
-            >
-              我的记忆
-            </button>
-            <button
-              type="button"
-              className="mc-settings-tab"
-              aria-selected={navSection === 'memory-activity'}
-              onClick={() => setNavSection('memory-activity')}
-              style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-            >
-              <span>记忆动态与版本</span>
-              {pendingItems.length > 0 && <span className="mc-badge mc-badge-warn">{pendingItems.length}</span>}
-            </button>
-            <button
-              type="button"
-              className="mc-settings-tab"
-              aria-selected={navSection === 'memory-settings'}
-              onClick={() => setNavSection('memory-settings')}
-            >
-              记忆设置
-            </button>
-          </div>
-
           <div className="mc-settings-nav-group">
             <div className="mc-settings-nav-label">最近记录</div>
             <button
@@ -801,6 +931,28 @@ export function RecordsView({
               笔试记录 ({(sessions || []).filter(s => s.scene === 'written').length})
             </button>
           </div>
+
+          <div className="mc-settings-nav-group">
+            <div className="mc-settings-nav-label">面试记忆</div>
+            <button
+              type="button"
+              className="mc-settings-tab"
+              aria-selected={navSection === 'my-memory'}
+              onClick={() => setNavSection('my-memory')}
+            >
+              我的记忆
+            </button>
+            <button
+              type="button"
+              className="mc-settings-tab"
+              aria-selected={navSection === 'memory-activity'}
+              onClick={() => setNavSection('memory-activity')}
+              style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+            >
+              <span>动态与版本</span>
+              {pendingItems.length > 0 && <span className="mc-badge mc-badge-warn">{pendingItems.length}</span>}
+            </button>
+          </div>
         </nav>
 
         <div className="mc-settings-scroll">
@@ -812,10 +964,8 @@ export function RecordsView({
               <>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 10 }}>
                   <div>
-                    <h2 className="mc-settings-cat-title">我的面试记忆（文件协议 · Agent 协同）</h2>
-                    <p className="mc-settings-cat-desc">
-                      直连 <code>面试记忆/</code> 目录，Codex / Antigravity 复盘写入后自动检测变更并打版本快照，实时面试按字数预算轻量注入。
-                    </p>
+                    <h2 className="mc-settings-cat-title">我的记忆</h2>
+                    <p className="mc-settings-cat-desc">面试复盘沉淀的表达偏好、避坑清单与公司洞察，实时面试按字数上限自动引入。</p>
                   </div>
                   <div className="mc-search-wrap" style={{ width: 200 }}>
                     <span className="mc-search-icon"><IconSearch size={13} /></span>
@@ -829,6 +979,58 @@ export function RecordsView({
                   <div className="mc-field-hint">正在读取面试记忆库…</div>
                 ) : (
                   <>
+                    {/* Layer 2 Memory Injection Budget Bar — separates remaining chars from truncation state */}
+                    <section className="mc-card">
+                      <div className="mc-card-body" style={{ padding: '10px 14px', gap: 8 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, fontSize: 12 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+                            <span>
+                              <strong>每次使用的记忆：</strong>
+                              <span style={{ color: memoryBudgetStats.ratio > 1 ? 'var(--danger)' : 'var(--text)', fontWeight: 600 }}>
+                                {memoryBudgetStats.totalChars} / {memoryBudgetStats.maxChars} 字
+                              </span>
+                            </span>
+                            <span className="mc-field-hint">
+                              {memoryBudgetStats.totalChars > memoryBudgetStats.maxChars
+                                ? `超出 ${memoryBudgetStats.totalChars - memoryBudgetStats.maxChars} 字`
+                                : `剩余 ${memoryBudgetStats.maxChars - memoryBudgetStats.totalChars} 字`}
+                              （表达 {memoryBudgetStats.styleChars} + 避坑 {memoryBudgetStats.pitfallChars} + 洞察 {memoryBudgetStats.insightChars}）
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span className={`mc-badge ${memoryBudgetStats.ratio > 1 ? 'mc-badge-err' : 'mc-badge-ok'}`}>
+                              {memoryBudgetStats.ratio > 1 ? '已超限 · 按相关性裁切' : '未裁切 · 全量生效'}
+                            </span>
+                            {memoryBudgetStats.maxChars < 1600 && memoryBudgetStats.totalChars > memoryBudgetStats.maxChars && (
+                              <button
+                                type="button"
+                                className="mc-btn mc-btn-sm"
+                                style={{ height: 22, padding: '0 8px', fontSize: 11 }}
+                                onClick={() => void onUpdateWorkbenchPrefs?.({ memoryMaxChars: 1600 })}
+                              >
+                                调为推荐 1600 字
+                              </button>
+                            )}
+                            {onOpenMemorySettings && (
+                              <button type="button" className="mc-link-subtle" style={{ fontSize: 11.5 }} onClick={onOpenMemorySettings}>
+                                调整字数
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <div style={{ height: 6, borderRadius: 99, background: 'var(--bg-subtle)', overflow: 'hidden' }}>
+                          <div
+                            style={{
+                              height: '100%',
+                              width: `${Math.min(100, Math.round(memoryBudgetStats.ratio * 100))}%`,
+                              background: memoryBudgetStats.ratio > 1 ? 'var(--danger)' : memoryBudgetStats.ratio > 0.9 ? 'var(--warning)' : 'var(--success)',
+                              transition: 'width 200ms ease'
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </section>
+
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                       {(memState?.buckets || []).map(b => (
                         <button
@@ -855,7 +1057,7 @@ export function RecordsView({
                               className={`mc-btn mc-btn-sm ${editingRaw ? 'mc-btn-primary' : ''}`}
                               onClick={() => { setRawDraft(activeBucket.content); setEditingRaw(v => !v); }}
                             >
-                              <IconEdit size={12} /> {editingRaw ? '取消源码编辑' : '编辑 Markdown'}
+                              <IconEdit size={12} /> {editingRaw ? '取消编辑' : '编辑原文'}
                             </button>
                           </div>
                         </div>
@@ -873,7 +1075,7 @@ export function RecordsView({
                             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                               <button type="button" className="mc-btn mc-btn-sm" onClick={() => setEditingRaw(false)}>取消</button>
                               <button type="button" className="mc-btn mc-btn-sm mc-btn-primary" onClick={() => void handleSaveRawBucket()}>
-                                <IconCheck size={12} /> 保存并生成快照
+                                <IconCheck size={12} /> 保存并留存快照
                               </button>
                             </div>
                           </div>
@@ -884,7 +1086,7 @@ export function RecordsView({
                                 className="mc-input"
                                 value={newItemText}
                                 onChange={e => setNewItemText(e.target.value)}
-                                placeholder={`向「${activeBucket.title}」手动追加 1 条记忆…`}
+                                placeholder={`向「${activeBucket.title}」追加一条记忆…`}
                               />
                               <button type="submit" className="mc-btn mc-btn-sm mc-btn-primary" disabled={!newItemText.trim()}>
                                 <IconPlus size={12} /> 追加
@@ -895,12 +1097,14 @@ export function RecordsView({
                               .filter(it => !memSearch.trim() || it.text.toLowerCase().includes(memSearch.trim().toLowerCase()))
                               .map((it, idx) => (
                                 <div key={`${it.lineIndex}-${idx}`} className="mc-evidence-item">
-                                  <div style={{ fontSize: 13, lineHeight: 1.65, userSelect: 'text' }}>{renderInlineMd(it.text)}</div>
+                                  <div style={{ fontSize: 13, lineHeight: 1.65, userSelect: 'text' }}>
+                                    {renderInlineMd(stripPendingToken(it.text))}
+                                  </div>
                                 </div>
                               ))}
                             {activeBucket.items.length === 0 && (
                               <div className="mc-field-hint" style={{ padding: '12px 0' }}>
-                                当前分区暂无条目。可在上方手动追加，或在复盘时让 Codex / Antigravity 按《复盘与更新规则》写入。
+                                暂无内容。可在上方手动补充，或在面试复盘后由 Agent 写入。
                               </div>
                             )}
                           </div>
@@ -912,105 +1116,219 @@ export function RecordsView({
               </>
             )}
 
-            {/* SECTION 2: MEMORY ACTIVITY, PENDING FACT GATE & VERSION SNAPSHOTS */}
+            {/* SECTION 2: PENDING CONFIRMATIONS & VERSION SNAPSHOTS */}
             {navSection === 'memory-activity' && (
               <>
                 <div>
-                  <h2 className="mc-settings-cat-title">记忆动态、事实审核门禁与版本回滚</h2>
-                  <p className="mc-settings-cat-desc">
-                    每次你或外部 Agent 修改 <code>面试记忆/</code> 时，应用自动留存版本快照；个人新事实必须经下方门禁确认才进入正式记忆。
-                  </p>
+                  <h2 className="mc-settings-cat-title">动态与版本</h2>
+                  <p className="mc-settings-cat-desc">确认新增的个人事实，或对比历史更改并一键回滚。</p>
                 </div>
 
-                {/* Pending Fact Approval Gate */}
+                {/* Pending Confirmations */}
                 <section className="mc-card">
                   <div className="mc-card-head">
                     <div>
                       <h3 className="mc-card-title">
-                        <IconShield size={14} /> 待审核新事实门禁 ({pendingItems.length})
+                        <IconShield size={14} /> 待确认的记忆 ({pendingItems.length})
                       </h3>
-                      <p className="mc-card-desc">确认前严格不进入实时面试提示，彻底防止外部复盘误写引发事实幻觉。</p>
+                      {pendingItems.length > 0 && (
+                        <p className="mc-card-desc">确认后才会用于面试回答；涉及画像或项目资料建议复制指令交由 Agent 更新。</p>
+                      )}
                     </div>
-                    <CustomSelect
-                      className="mc-filter-select"
-                      style={{ width: 196, height: 28, fontSize: 12 }}
-                      value={approveTarget}
-                      onChange={setApproveTarget}
-                      ariaLabel="审核通过目标分区"
-                      options={[
-                        { value: 'weakness_pitfall', label: '通过后并入：薄弱项与踩坑' },
-                        { value: 'speaking_style', label: '通过后并入：表达与偏好' },
-                        { value: 'company_insight', label: '通过后并入：公司与岗位洞察' }
-                      ]}
-                    />
+                    {pendingItems.length > 0 && (
+                      <CustomSelect
+                        className="mc-filter-select"
+                        style={{ width: 176, height: 28, fontSize: 12 }}
+                        value={approveTarget}
+                        onChange={setApproveTarget}
+                        ariaLabel="收入记忆的目标分类"
+                        options={[
+                          { value: 'weakness_pitfall', label: '收入：薄弱项与踩坑' },
+                          { value: 'speaking_style', label: '收入：表达与偏好' },
+                          { value: 'company_insight', label: '收入：公司与岗位洞察' }
+                        ]}
+                      />
+                    )}
                   </div>
-                  <div className="mc-card-body" style={{ gap: 8 }}>
-                    {pendingItems.length > 0 ? pendingItems.map((it) => (
-                      <div key={it.lineIndex} className="mc-evidence-item">
-                        <div style={{ fontSize: 13, lineHeight: 1.6 }}>{it.text}</div>
-                        <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                          <button type="button" className="mc-btn mc-btn-sm mc-btn-danger" onClick={() => void handleResolvePending(it.lineIndex, 'reject')}>
-                            <IconX size={12} /> 驳回
-                          </button>
-                          <button type="button" className="mc-btn mc-btn-sm mc-btn-primary" onClick={() => void handleResolvePending(it.lineIndex, 'approve')}>
-                            <IconCheck size={12} /> 确认真实并并入
-                          </button>
+                  <div className="mc-card-body" style={{ gap: 10 }}>
+                    {pendingItems.length > 0 ? (
+                      <>
+                        {pendingItems.map((it) => {
+                          const draft = getPendingDraft(it);
+                          const displayBody = stripPendingToken(it.text);
+                          return (
+                            <div key={it.lineIndex} className="mc-evidence-item" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                              <div style={{ fontSize: 13, lineHeight: 1.6, userSelect: 'text' }}>{renderInlineMd(displayBody)}</div>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                                <button
+                                  type="button"
+                                  className={`mc-btn mc-btn-sm ${draft.action === 'agent_truth' ? 'mc-btn-primary' : ''}`}
+                                  onClick={() => updatePendingDraft(it.lineIndex, { action: 'agent_truth' }, it.text)}
+                                >
+                                  更新资料库（交由 Agent）
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`mc-btn mc-btn-sm ${draft.action === 'memory_pitfall' ? 'mc-btn-primary' : ''}`}
+                                  onClick={() => updatePendingDraft(it.lineIndex, { action: 'memory_pitfall' }, it.text)}
+                                >
+                                  仅收入记忆
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`mc-btn mc-btn-sm ${draft.action === 'reject' ? 'mc-btn-danger' : ''}`}
+                                  onClick={() => updatePendingDraft(it.lineIndex, { action: 'reject' }, it.text)}
+                                >
+                                  <IconX size={11} /> 驳回
+                                </button>
+                              </div>
+                              <input
+                                className="mc-input"
+                                style={{ fontSize: 12, padding: '6px 9px' }}
+                                value={draft.note}
+                                onChange={e => updatePendingDraft(it.lineIndex, { note: e.target.value }, it.text)}
+                                placeholder="可选补充真实边界（例如：仅课程实践无生产经验、懂原理没搭过集群…）"
+                              />
+                            </div>
+                          );
+                        })}
+
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'space-between', alignItems: 'center', paddingTop: 4, borderTop: '1px solid var(--border)' }}>
+                          <span className="mc-field-hint">
+                            本机批量处理只生成 1 个快照。
+                          </span>
+                          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                            <button
+                              type="button"
+                              className="mc-btn mc-btn-sm"
+                              disabled={pendingBatchBusy}
+                              onClick={() => void handleApplyLocalPendingBatch()}
+                            >
+                              <IconCheck size={12} /> {pendingBatchBusy ? '处理中…' : '应用本机驳回/收入'}
+                            </button>
+                            <button
+                              type="button"
+                              className="mc-btn mc-btn-sm mc-btn-primary"
+                              onClick={() => void handleGeneratePendingPrompt()}
+                            >
+                              {pendingCopied ? <><IconCheck size={12} /> 已复制指令</> : <><IconCopy size={12} /> 复制指令给 Agent</>}
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    )) : (
-                      <div className="mc-field-hint">当前无待审核新事实。当 Codex / Antigravity 在复盘中提出新项目细节时会自动出现在这里。</div>
+
+                        {pendingAgentPrompt && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            <div className="mc-field-hint">已生成的 Agent 处理指令：</div>
+                            <textarea
+                              className="mc-textarea"
+                              readOnly
+                              rows={8}
+                              style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, lineHeight: 1.55 }}
+                              value={pendingAgentPrompt}
+                            />
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="mc-field-hint">没有待确认的记忆</div>
                     )}
                   </div>
                 </section>
 
-                {/* Snapshot Timeline & Diff */}
-                <section className="mc-card">
-                  <div className="mc-card-head">
-                    <div>
-                      <h3 className="mc-card-title">版本快照历史 ({(memState?.snapshots || []).length})</h3>
-                      <p className="mc-card-desc">点击任意版本查看前后 Diff 对比，支持一键无损回滚。</p>
+                {/* Gentle 10-version tidy nudge */}
+                {showTidyNudge && (
+                  <div className="mc-alert mc-alert-warn" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                    <span>近期有 {versionsSinceTidy} 个新版本，要整理面试记忆吗？</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                      <button type="button" className="mc-btn mc-btn-sm mc-btn-primary" onClick={() => void handleCopyTidyPrompt()}>
+                        <IconCopy size={12} /> {tidyCopied ? '已复制整理指令' : '复制整理指令'}
+                      </button>
+                      {tidyCopied && (
+                        <button
+                          type="button"
+                          className="mc-btn mc-btn-sm"
+                          onClick={() => {
+                            setTidyCopied(false);
+                            void onUpdateWorkbenchPrefs?.({ memoryTidyBaseVersion: latestVersion, memoryTidyDismissedVersion: 0 });
+                            notifyMem('已记录本次整理，后续新增 10 个版本时再提醒');
+                          }}
+                        >
+                          <IconCheck size={12} /> 已整理，重新计数
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="mc-btn mc-btn-sm mc-btn-ghost"
+                        onClick={() => {
+                          setTidyCopied(false);
+                          void onUpdateWorkbenchPrefs?.({ memoryTidyDismissedVersion: latestVersion });
+                        }}
+                      >
+                        稍后
+                      </button>
                     </div>
                   </div>
-                  <div className="mc-card-body" style={{ gap: 8 }}>
-                    {(memState?.snapshots || []).map(snap => (
-                      <div
-                        key={snap.version}
-                        className="mc-record-card"
-                        style={{
-                          padding: '10px 12px',
-                          cursor: 'pointer',
-                          borderColor: selectedVersion === snap.version ? 'var(--primary)' : undefined
-                        }}
-                        onClick={() => void inspectSnapshot(snap.version)}
-                      >
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <strong style={{ fontSize: 13 }}>v{snap.version}</strong>
-                            <span className="mc-badge">{SOURCE_LABELS[snap.source] || snap.source}</span>
-                            <span style={{ fontSize: 12.5 }}>{snap.summary}</span>
-                          </div>
-                          <div className="mc-field-hint">{formatDateTime(snap.createdAt)}</div>
+                )}
+
+                {/* Snapshot Timeline & Diff (shows latest 5 by default, expandable) */}
+                {(() => {
+                  const allSnaps = memState?.snapshots || [];
+                  const visibleSnaps = showAllSnapshots ? allSnaps : allSnaps.slice(0, 5);
+                  return (
+                    <section className="mc-card">
+                      <div className="mc-card-head">
+                        <div>
+                          <h3 className="mc-card-title">版本历史 ({allSnaps.length})</h3>
+                          <p className="mc-card-desc">点击任意版本对比更改，支持一键回滚。</p>
                         </div>
-                        <div style={{ display: 'flex', gap: 6 }} onClick={e => e.stopPropagation()}>
-                          <button type="button" className="mc-btn mc-btn-sm" onClick={() => void inspectSnapshot(snap.version)}>
-                            查看 Diff
+                        {allSnaps.length > 5 && (
+                          <button type="button" className="mc-btn mc-btn-sm mc-btn-ghost" onClick={() => setShowAllSnapshots(v => !v)}>
+                            {showAllSnapshots ? '仅看最近 5 个' : `展开全部 (${allSnaps.length})`}
                           </button>
-                          {snap.version !== memState?.latestVersion && (
-                            <button type="button" className="mc-btn mc-btn-sm" onClick={() => void handleRollback(snap.version)}>
-                              回滚到此版
-                            </button>
-                          )}
-                        </div>
+                        )}
                       </div>
-                    ))}
-                  </div>
-                </section>
+                      <div className="mc-card-body" style={{ gap: 8 }}>
+                        {visibleSnaps.map(snap => (
+                          <div
+                            key={snap.version}
+                            className="mc-record-card"
+                            style={{
+                              padding: '10px 12px',
+                              cursor: 'pointer',
+                              borderColor: selectedVersion === snap.version ? 'var(--primary)' : undefined
+                            }}
+                            onClick={() => void inspectSnapshot(snap.version)}
+                          >
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <strong style={{ fontSize: 13 }}>v{snap.version}</strong>
+                                <span className="mc-badge">{SOURCE_LABELS[snap.source] || snap.source}</span>
+                                <span style={{ fontSize: 12.5 }}>{snap.summary}</span>
+                              </div>
+                              <div className="mc-field-hint">{formatDateTime(snap.createdAt)}</div>
+                            </div>
+                            <div style={{ display: 'flex', gap: 6 }} onClick={e => e.stopPropagation()}>
+                              <button type="button" className="mc-btn mc-btn-sm" onClick={() => void inspectSnapshot(snap.version)}>
+                                对比更改
+                              </button>
+                              {snap.version !== memState?.latestVersion && (
+                                <button type="button" className="mc-btn mc-btn-sm" onClick={() => void handleRollback(snap.version)}>
+                                  回滚到此版
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  );
+                })()}
 
                 {snapDiff && (
                   <section className="mc-card">
                     <div className="mc-card-head">
                       <div>
-                        <h3 className="mc-card-title">快照 Diff：v{snapDiff.prevVersion} → v{snapDiff.version}</h3>
+                        <h3 className="mc-card-title">对比更改：v{snapDiff.prevVersion} → v{snapDiff.version}</h3>
                         <p className="mc-card-desc">{snapDiff.summary}</p>
                       </div>
                       <button type="button" className="mc-icon-btn" onClick={() => setSnapDiff(null)}><IconX size={14} /></button>
@@ -1044,68 +1362,13 @@ export function RecordsView({
               </>
             )}
 
-            {/* SECTION 3: MEMORY SETTINGS */}
-            {navSection === 'memory-settings' && (
-              <>
-                <div>
-                  <h2 className="mc-settings-cat-title">记忆注入与复盘协同设置</h2>
-                  <p className="mc-settings-cat-desc">控制实时面试时是否注入 ② 层记忆，以及单次注入的字符预算上限。</p>
-                </div>
-
-                <section className="mc-card">
-                  <div className="mc-srow mc-srow-compact">
-                    <div>
-                      <div className="mc-srow-label">实时面试自动召回 ② 层面试记忆</div>
-                      <div className="mc-srow-desc">将「表达偏好 / 薄弱避坑 / 当前公司洞察」注入系统提示，强制排除「待审核新事实」</div>
-                    </div>
-                    <div className="mc-srow-control is-inline">
-                      <Switch
-                        checked={workbenchPrefs?.memoryRecallEnabled !== false}
-                        onChange={(v) => void onUpdateWorkbenchPrefs?.({ memoryRecallEnabled: v })}
-                        aria-label="开启实时面试记忆召回"
-                      />
-                    </div>
-                  </div>
-                  <div className="mc-srow mc-srow-compact">
-                    <div>
-                      <div className="mc-srow-label">单次注入字符预算上限 ({workbenchPrefs?.memoryMaxChars ?? 900} 字)</div>
-                      <div className="mc-srow-desc">严格限额以保证低首字延迟，同时防止挤占核心项目证据上下文</div>
-                    </div>
-                    <div className="mc-srow-control is-inline">
-                      <input
-                        type="range"
-                        min={200}
-                        max={2000}
-                        step={100}
-                        value={workbenchPrefs?.memoryMaxChars ?? 900}
-                        onChange={e => void onUpdateWorkbenchPrefs?.({ memoryMaxChars: Number(e.target.value) })}
-                      />
-                      <span style={{ minWidth: 52, textAlign: 'right', fontSize: 12 }}>{workbenchPrefs?.memoryMaxChars ?? 900} 字</span>
-                    </div>
-                  </div>
-                  <div className="mc-srow mc-srow-compact">
-                    <div>
-                      <div className="mc-srow-label">外部复盘变更自动提醒同步候选人画像</div>
-                      <div className="mc-srow-desc">当检测到外部 Agent 写入新的待审核事实时，在导航栏显示角标提醒核对</div>
-                    </div>
-                    <div className="mc-srow-control is-inline">
-                      <Switch
-                        checked={workbenchPrefs?.memoryAutoRemind !== false}
-                        onChange={(v) => void onUpdateWorkbenchPrefs?.({ memoryAutoRemind: v })}
-                      />
-                    </div>
-                  </div>
-                </section>
-              </>
-            )}
-
-            {/* SECTION 4 & 5: INTERVIEW / WRITTEN RECORDS LIST */}
+            {/* SECTION 3 & 4: INTERVIEW / WRITTEN RECORDS LIST */}
             {(navSection === 'interview-records' || navSection === 'written-records') && (
               <>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                   <div>
                     <h2 className="mc-settings-cat-title">{navSection === 'written-records' ? '笔试记录' : '面试记录'}</h2>
-                    <p className="mc-settings-cat-desc">点开任意场次即可回看问答、实时转写、双轨 WAV 录音，并一键归档发送给 Codex / 反重力复盘。</p>
+                    <p className="mc-settings-cat-desc">点开场次回看问答、转写与双轨录音，或归档交给 Agent 复盘。</p>
                   </div>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <CustomSelect
@@ -1127,51 +1390,98 @@ export function RecordsView({
                   </div>
                 </div>
 
-                {filteredSessions.length > 0 ? (
-                  <div className="mc-record-list">
-                    {filteredSessions.map((s) => {
-                      const isLive = s.id === activeSessionId;
-                      return (
-                        <div key={s.id} className="mc-record-card" onClick={() => { setSelectedId(s.id); setDetailTab('qa'); }} style={{ cursor: 'pointer' }}>
-                          <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <strong style={{ fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</strong>
-                              {isLive && <span className="mc-badge mc-badge-ok">进行中</span>}
-                              {s.role && <span className="mc-badge mc-badge-info">{s.role}</span>}
-                            </div>
-                            <div className="mc-field-hint">
-                              {formatDateTime(s.updatedAt || s.createdAt)} · {s.scene === 'written' ? summarizeWrittenCounts(s).compactText : `${(s.questions || []).length} 个问题 · ${(s.segments || []).length} 条转写 · ${s.audioSource === 'mic' ? '麦克风' : '系统音频'}`}
-                            </div>
-                          </div>
+                {filteredSessions.length > 0 ? (() => {
+                  const todayKey = new Date().toLocaleDateString('sv-SE');
+                  const yesterdayKey = new Date(Date.now() - 86400 * 1000).toLocaleDateString('sv-SE');
+                  const grouped = [];
+                  const byKey = new Map();
+                  for (const s of filteredSessions) {
+                    const ts = s.updatedAt || s.createdAt || Date.now();
+                    const d = new Date(ts);
+                    const key = Number.isNaN(d.getTime()) ? '更早' : d.toLocaleDateString('sv-SE');
+                    const label = key === todayKey ? '今天' : key === yesterdayKey ? '昨天' : key;
+                    if (!byKey.has(key)) {
+                      const entry = { key, label, items: [] };
+                      byKey.set(key, entry);
+                      grouped.push(entry);
+                    }
+                    byKey.get(key).items.push(s);
+                  }
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {grouped.map((grp, gIdx) => {
+                        const groupStateKey = `${navSection}:${grp.key}`;
+                        const showAll = Boolean(expandedDateGroups[groupStateKey]);
+                        const visibleItems = showAll ? grp.items : grp.items.slice(0, 5);
+                        return (
+                          <details key={groupStateKey} className="mc-card mc-fold-card" open={gIdx === 0}>
+                            <summary className="mc-fold-summary">
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span className="mc-fold-chevron"><IconChevronRight size={14} /></span>
+                                <strong style={{ fontSize: 13 }}>{grp.label}</strong>
+                                <span className="mc-badge">{grp.items.length} 条</span>
+                              </div>
+                              <span className="mc-field-hint">展开 / 收起</span>
+                            </summary>
+                            <div className="mc-card-body" style={{ gap: 8 }}>
+                              {visibleItems.map((s) => {
+                                const isLive = s.id === activeSessionId;
+                                return (
+                                  <div key={s.id} className="mc-record-card" onClick={() => { setSelectedId(s.id); setDetailTab('qa'); }} style={{ cursor: 'pointer' }}>
+                                    <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                        <strong style={{ fontSize: 13.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</strong>
+                                        {isLive && <span className="mc-badge mc-badge-ok">进行中</span>}
+                                        {s.role && <span className="mc-badge mc-badge-info">{s.role}</span>}
+                                      </div>
+                                      <div className="mc-field-hint">
+                                        {formatDateTime(s.updatedAt || s.createdAt)} · {s.scene === 'written' ? summarizeWrittenCounts(s).compactText : `${(s.questions || []).length} 个问题 · ${(s.segments || []).length} 条转写 · ${s.audioSource === 'mic' ? '麦克风' : '系统音频'}`}
+                                      </div>
+                                    </div>
 
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
-                            <button type="button" className="mc-btn mc-btn-sm" onClick={() => { setSelectedId(s.id); setDetailTab('qa'); }}>
-                              查看记录
-                            </button>
-                            <button type="button" className="mc-btn mc-btn-sm" onClick={() => { setSelectedId(s.id); setDetailTab('review'); }}>
-                              <IconSparkles size={11} /> 复盘归档
-                            </button>
-                            <button type="button" className="mc-btn mc-btn-sm mc-btn-ghost" onClick={() => onResumeFromRecord(s.id)}>
-                              <IconPlay size={11} /> {isLive ? '继续会话' : '从记录继续'}
-                            </button>
-                            {confirmDeleteId === s.id ? (
-                              <>
-                                <button type="button" className="mc-btn mc-btn-sm mc-btn-danger" onClick={() => { onDeleteSession(s.id); setConfirmDeleteId(null); }}>
-                                  确认删除
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+                                      <button type="button" className="mc-btn mc-btn-sm" onClick={() => { setSelectedId(s.id); setDetailTab('qa'); }}>
+                                        查看
+                                      </button>
+                                      <button type="button" className="mc-btn mc-btn-sm" onClick={() => { setSelectedId(s.id); setDetailTab('review'); }}>
+                                        <IconSparkles size={11} /> 复盘归档
+                                      </button>
+                                      <button type="button" className="mc-btn mc-btn-sm mc-btn-ghost" onClick={() => onResumeFromRecord(s.id)}>
+                                        <IconPlay size={11} /> {isLive ? '继续' : '续聊'}
+                                      </button>
+                                      {confirmDeleteId === s.id ? (
+                                        <>
+                                          <button type="button" className="mc-btn mc-btn-sm mc-btn-danger" onClick={() => { onDeleteSession(s.id); setConfirmDeleteId(null); }}>
+                                            确认
+                                          </button>
+                                          <button type="button" className="mc-btn mc-btn-sm" onClick={() => setConfirmDeleteId(null)}>取消</button>
+                                        </>
+                                      ) : (
+                                        <button type="button" className="mc-icon-btn is-danger" title="删除记录及对应录音" disabled={isLive} onClick={() => setConfirmDeleteId(s.id)}>
+                                          <IconTrash size={14} />
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                              {grp.items.length > 5 && (
+                                <button
+                                  type="button"
+                                  className="mc-btn mc-btn-sm mc-btn-ghost"
+                                  style={{ alignSelf: 'center' }}
+                                  onClick={() => setExpandedDateGroups(prev => ({ ...prev, [groupStateKey]: !prev[groupStateKey] }))}
+                                >
+                                  {showAll ? '收起至最近 5 条' : `展开其余 ${grp.items.length - 5} 条（共 ${grp.items.length} 条）`}
                                 </button>
-                                <button type="button" className="mc-btn mc-btn-sm" onClick={() => setConfirmDeleteId(null)}>取消</button>
-                              </>
-                            ) : (
-                              <button type="button" className="mc-icon-btn is-danger" title="删除记录及对应录音" disabled={isLive} onClick={() => setConfirmDeleteId(s.id)}>
-                                <IconTrash size={14} />
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
+                              )}
+                            </div>
+                          </details>
+                        );
+                      })}
+                    </div>
+                  );
+                })() : (
                   <div style={{ padding: '48px 16px', textAlign: 'center' }} className="mc-field-hint">
                     {search ? '没有匹配的记录' : '暂无本地记录。从首页启动一场面试后，问答、转写与双轨录音会自动保存在这里。'}
                   </div>

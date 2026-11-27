@@ -99,6 +99,7 @@ class Store{
  }
  for(const d of previous)if(!reserved.has(d.document_id)){
   if(excludedSource(d.file_path)){newDocs.push({...d,status:'archived',retrieval_excluded:true,exclusion_reason:'dependency_or_local_asset'});continue;}
+  if(d.document_type==='archived'){newDocs.push({...d,status:'retired',retirement_reason:'archived_source_removed'});continue;}
   const accepted=retirements.find(r=>r.document_id===d.document_id&&r.file_path===d.file_path&&r.content_hash===d.content_hash&&r.reason==='user_requested_cleanup');
   if(accepted)newDocs.push({...d,status:'retired',retirement_reason:accepted.reason});
   else{newDocs.push({...d,status:'missing'});diagnostics.push('来源已缺失，保留历史身份：'+d.file_path);}
@@ -110,6 +111,25 @@ class Store{
  this.manifest={...this.manifest,documents:newDocs,roles};this.index=newIndex;this.diagnostics=diagnostics;
  const mf=path.join(this.dir,'manifest.json'),ix=path.join(this.dir,'index.json');const serialized=JSON.stringify(this.manifest);if(this.savedManifest!==serialized){atomic(mf,this.manifest);this.savedManifest=serialized;}
  const indexed=JSON.stringify(newIndex);if(this.savedIndex!==indexed){atomic(ix,newIndex);this.savedIndex=indexed;}return this;
+ }
+ async retireMissing(filePaths=null){
+  const filterSet=Array.isArray(filePaths)&&filePaths.length?new Set(filePaths.map(p=>String(p).replace(/\\/g,'/'))):null;
+  const targets=(this.manifest.documents||[]).filter(d=>d.status==='missing'&&(!filterSet||filterSet.has(d.file_path)));
+  if(!targets.length)return {retired:0};
+  const rf=path.join(this.dir,'retired-sources.json');
+  const existing=load(rf,{schema:1,sources:[]},[]);
+  const sources=existing.schema===1&&Array.isArray(existing.sources)?[...existing.sources]:[];
+  let added=0;
+  for(const d of targets){
+   const dup=sources.some(r=>r.document_id===d.document_id&&r.file_path===d.file_path&&r.content_hash===d.content_hash&&r.reason==='user_requested_cleanup');
+   if(!dup){
+    sources.push({document_id:d.document_id,file_path:d.file_path,content_hash:d.content_hash,reason:'user_requested_cleanup',retired_at:new Date().toISOString()});
+    added+=1;
+   }
+  }
+  atomic(rf,{schema:1,sources});
+  await this.refresh();
+  return {retired:added||targets.length};
  }
  locate(documentId,chunkId,contentHash){const d=this.manifest.documents.find(d=>d.document_id===documentId&&d.status==='active');if(!d)throw Error('来源已删除、归档或不可用；历史卡片保留当时摘录');const c=this.index[documentId]?.find(c=>c.chunk_id===chunkId&&c.content_hash===contentHash);if(!c)throw Error('来源内容已更新；请以卡片中的历史摘录为准');const f=inside(this.root,path.join(this.root,d.file_path));if(hash(fs.readFileSync(f))!==d.content_hash)throw Error('原文刚有变化，请刷新来源后重试');return {file:f,document:d,chunk:c};}
 }

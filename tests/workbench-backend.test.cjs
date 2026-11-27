@@ -405,4 +405,58 @@ Path(r"${preloadOut.replace(/\\/g, '\\\\')}").write_bytes(pb.patch_preload(asar_
   assert.match(preloadText, /saveSessionsSync/);
   assert.match(preloadText, /setMouseInteractive/);
   assert.match(preloadText, /checkSecurityEnvironment/);
+  assert.match(preloadText, /memoryResolvePendingBatch/);
+  assert.match(mainText, /skipped: Boolean\(messages\.skipGeneration\)/);
+});
+
+test('workbench-window security mode keeps topmost, pseudo-maximizes transparent windows, and safely minimizes', t => {
+  const dir = tmpDir(t);
+  const file = path.join(dir, 'workbench-prefs.json');
+  const prefs = createWorkbenchPrefs({ file });
+  // Simulate user previously turning off alwaysOnTop before enabling security mode
+  prefs.applyPatch({ alwaysOnTop: false });
+  const displays = [
+    { id: 101, scaleFactor: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 } }
+  ];
+  const cursor = { current: { x: 200, y: 200 } };
+  const scr = fakeScreen(displays, cursor);
+  const win = fakeWindow();
+  // Simulate Windows transparent frameless BrowserWindow where native maximize() is a no-op
+  win.maximize = () => {};
+  win.blur = () => { win.calls.blur = (win.calls.blur || 0) + 1; };
+  let stealth = false;
+  const wb = createWorkbenchWindow({
+    prefs,
+    screen: scr,
+    shortcuts: fakeShortcuts(),
+    getStealth: () => stealth,
+    setStealth: (on) => { stealth = !!on; win.setContentProtection(stealth); }
+  });
+  wb.attach(win);
+
+  // 1. Pseudo-maximize fallback & restore on Home
+  const before = win.getBounds();
+  assert.equal(wb.toggleMaximize(), true);
+  assert.equal(wb.getWindowState().maximized, true);
+  assert.deepEqual(win.getBounds(), displays[0].workArea);
+  assert.equal(wb.toggleMaximize(), false);
+  assert.equal(wb.getWindowState().maximized, false);
+  assert.deepEqual(win.getBounds(), before);
+
+  // 2. Security mode on Home -> Workbench keeps alwaysOnTop=true even when raw pref alwaysOnTop=false, and blurs before setFocusable(false)
+  wb.enableSecurity({ scope: 'persistent' });
+  wb.setMode('workbench');
+  assert.equal(win.isAlwaysOnTop(), true, 'security mode must force topmost so non-focusable window cannot sink');
+  assert.equal(win.isFocusable(), false);
+  assert.ok((win.calls.blur || 0) >= 1, 'blur should be invoked before setFocusable(false)');
+
+  // 3. Minimize releases topmost & skipTaskbar so Windows honors SW_MINIMIZE, then restore re-applies security
+  assert.equal(wb.minimize(), true);
+  assert.equal(win.isMinimized(), true);
+  assert.equal(win.isAlwaysOnTop(), false);
+  assert.equal(win.getSkipTaskbar(), false);
+  win.show();
+  assert.equal(win.isAlwaysOnTop(), true);
+  assert.equal(win.getSkipTaskbar(), true);
+  wb.dispose();
 });

@@ -317,3 +317,115 @@ test('English answerLang recalls English intro scripts, forces English system ou
   assert(sug.oral_answer.startsWith('In general, '));
   assert(!sug.oral_answer.includes('如果只谈一般思路'));
 });
+
+test('SQL identifier preservation, topic reset, per-session introDocumentId, availability, batch pending & screenshot archive', async (t) => {
+  const { parseAnswer } = require('../cuedesk/v2/evidence.cjs');
+  const { createMemoryStore } = require('../cuedesk/tools/memory-store.cjs');
+  const { lib, root } = makeFixture(t);
+
+  // 1. SQL identifiers preserved when preserveIdentifiers=true (screenshot/SQL queries)
+  const sqlRes = parseAnswer("改写成 created_at >= '2025-01-01' 且 created_at < '2025-01-02'。", [], true, { preserveIdentifiers: true });
+  assert(sqlRes.oral_answer.includes('created_at'), 'SQL column names must not be replaced with 这个字段');
+  assert(!sqlRes.oral_answer.includes('这个字段'));
+
+  // 2. Per-session introDocumentId override + candidate_profile.identity.availability + topic reset
+  writeFile(root, '通用问答/自我介绍.md', '# 通用自我介绍\n\n## 约2分钟\n我是通用两分钟稿。\n');
+  writeFile(root, '岗位档案/公司甲-评测实习/岗位准备/英文自我介绍与常见问答.md', '# 岗位专属自我介绍\n\n## 约1分钟中文介绍\n我是公司甲专属中文介绍。\n\n## 约1分钟英文介绍\nI am the Role A English intro.\n');
+  writeFile(root, '候选人画像.md', [
+    '---',
+    'knowledge_kind: candidate_profile',
+    '---',
+    '# 候选人画像',
+    '```json',
+    JSON.stringify({
+      schema: 1,
+      confirmed_at: '2026-11-27',
+      identity: { name: '甲', education: '硕士', positioning: 'AI候选人', availability: '最早2026-12-21到岗，每周5天，可实习6个月' },
+      skills: [{ area: 'MySQL/PostgreSQL', level: 'conceptual_no_practice', scope: 'MySQL仅课程实践' }]
+    }),
+    '```'
+  ].join('\n'));
+  await lib.save({ enabled: true, root, role: '公司甲-评测实习' });
+  const pub = await lib.getPublic();
+  const genericIntro = pub.documents.find(d => d.file_path === '通用问答/自我介绍.md');
+  const roleIntro = pub.documents.find(d => d.file_path.includes('英文自我介绍与常见问答.md'));
+  const personaDoc = pub.documents.find(d => d.document_type === 'candidate_profile');
+  await lib.save({
+    enabled: true,
+    root,
+    role: '公司甲-评测实习',
+    persona_profile: { enabled: true, document_id: personaDoc.document_id },
+    intro_script: { enabled: true, document_id: genericIntro.document_id, heading: '约2分钟' }
+  });
+
+  // Default uses generic intro; per-session override uses role-specific intro (both ZH and EN)
+  const defIntro = await lib.build({ freeQuestion: '自我介绍' }, []);
+  assert(defIntro.directAnswer.includes('我是通用两分钟稿'));
+  const customZh = await lib.build({ freeQuestion: '自我介绍', libraryOverride: { introDocumentId: roleIntro.document_id } }, []);
+  assert(customZh.directAnswer.includes('我是公司甲专属中文介绍'));
+  const customEn = await lib.build({ freeQuestion: 'please introduce yourself', answerLang: 'english', libraryOverride: { introDocumentId: roleIntro.document_id } }, []);
+  assert(customEn.directAnswer.includes('I am the Role A English intro.'));
+
+  // Availability passed through candidate_profile & supportsAbility
+  const availMsgs = await lib.build({ freeQuestion: '你最早什么时候能到岗，一周能来几天？' }, []);
+  const availPayload = JSON.parse(availMsgs[1].content);
+  assert.equal(availPayload.candidate_profile.identity.availability, '最早2026-12-21到岗，每周5天，可实习6个月');
+  assert.equal(availPayload.profile_supports_ability, true);
+
+  // New-question reset clears stale project topic
+  const t1 = await lib.build({ sessionId: 's1', freeQuestion: '介绍一下 StarSea' }, []);
+  assert.equal(t1.dialogueState.project_ids.length, 1);
+  const t2 = await lib.build({ sessionId: 's1', freeQuestion: '有一个需求需要你去测试，你会从哪些方面测？', dialogueState: t1.dialogueState }, []);
+  assert.equal(t2.dialogueState.project_ids.length, 0, 'explicit new requirement cue must clear prior project focus');
+
+  // 3. Batch pending resolution creates 1 snapshot + archive saves screenshots to disk
+  writeFile(root, '面试记忆/待审核新事实.md', [
+    '---',
+    'knowledge_kind: interview_memory',
+    'memory_bucket: pending_fact',
+    '---',
+    '# 待审核新事实',
+    '- [ ] **[pending]** 条目一待驳回',
+    '- [ ] **[pending]** 条目二转入避坑'
+  ].join('\n'));
+  const snapDir = path.join(path.dirname(root), 'snaps');
+  const ms = createMemoryStore({ getRoot: () => root, snapshotDir: snapDir });
+  const initSt = ms.getState();
+  const pending = initSt.buckets.find(b => b.id === 'pending_fact').items.filter(i => i.pending);
+  assert.equal(pending.length, 2);
+  const afterBatch = ms.resolvePendingBatch({
+    actions: [
+      { lineIndex: pending[0].lineIndex, decision: 'reject' },
+      { lineIndex: pending[1].lineIndex, decision: 'approve', targetBucket: 'weakness_pitfall', note: '仅基础场景' }
+    ]
+  });
+  assert.equal(afterBatch.latestVersion, initSt.latestVersion + 1, 'batch resolve must create exactly 1 snapshot');
+  assert.equal(afterBatch.pendingCount, 0);
+  const pitfall = afterBatch.buckets.find(b => b.id === 'weakness_pitfall').content;
+  assert(pitfall.includes('条目二转入避坑（本人补充：仅基础场景）'));
+
+  // Screenshot archive writes PNG & embeds markdown link
+  const tinyPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+  const arch = ms.archiveSessionToRole({
+    roleDirectory: '公司甲-评测实习',
+    roundLabel: '一面',
+    session: {
+      id: 'sess-shot-1',
+      name: '截图归档测试',
+      audioSource: 'system',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      segments: [],
+      questions: [{
+        id: 'q1',
+        prompt: '截图提问',
+        activeAttemptId: 'a1',
+        attempts: [{ id: 'a1', text: '测试回答', images: [tinyPng] }]
+      }]
+    }
+  });
+  const shotFile = path.join(arch.archiveDir, 'screenshots', 'Q01-1.png');
+  assert(fs.existsSync(shotFile), 'archived screenshot PNG must exist');
+  const rawMd = fs.readFileSync(arch.rawMdPath, 'utf8');
+  assert(rawMd.includes('![Q01 截图 1](screenshots/Q01-1.png)'));
+});

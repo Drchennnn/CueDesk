@@ -40,15 +40,17 @@ export function VirtualCursor({ active }) {
 
     window.addEventListener('mousemove', onMove, { passive: true });
     window.addEventListener('pointermove', onMove, { passive: true });
+    window.addEventListener('pointerdown', onMove, { passive: true });
+    document.addEventListener('mouseenter', onMove, { passive: true });
     document.addEventListener('mouseleave', onLeave);
-    window.addEventListener('blur', onLeave);
 
     return () => {
       root.classList.remove('mc-hide-real-cursor');
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerdown', onMove);
+      document.removeEventListener('mouseenter', onMove);
       document.removeEventListener('mouseleave', onLeave);
-      window.removeEventListener('blur', onLeave);
     };
   }, [active]);
 
