@@ -218,3 +218,23 @@ test('Layer 2 memory reserves fair per-bucket shares, prioritizes query-relevant
   assert(buckets.company_insight && buckets.company_insight.includes('公司甲'), 'matched company insight must not be starved');
   assert(!buckets.company_insight.includes('公司乙'), 'unrelated company insight must be excluded when role is selected');
 });
+
+test('Skill-anchored resume follow-up retrieves matching project_fact evidence without naming a project', async (t) => {
+  const { lib, root } = makeFixture(t);
+  writeFile(root, '项目资料/星海数据平台.md', [
+    '---',
+    'knowledge_kind: project_fact',
+    'aliases:',
+    '  - StarSea',
+    '---',
+    '# 星海数据平台（个人主责）',
+    '## SQLite 存储与表设计',
+    '使用 SQLite 存储 `ingestion_jobs` 与 `audit_logs` 两张表，记录文件哈希和幂等状态。'
+  ].join('\n'));
+  await lib.save({ enabled: true, root, role: '公司甲-评测实习' });
+  const msgs = await lib.build({ question: '你简历上写了 SQLite，能讲讲你在项目里用 SQLite 存了什么表吗？' }, []);
+  assert(!msgs.blockedUnknown, 'skill-anchored resume query must not block when project evidence exists');
+  const hit = msgs.evidence.find(e => e.document_type === 'project_fact' && e.excerpt.includes('ingestion_jobs'));
+  assert(hit, 'matching project_fact chunk must be retrieved for skill-anchored resume follow-up');
+  assert.equal(hit.may_support_personal_action, true);
+});

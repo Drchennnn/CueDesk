@@ -145,9 +145,10 @@ function createInterviewLibrary({file,parsePdf}){
  const semanticFacets=facets(q).length?facets(q):dialogue.continuation?facets(dialogue.subject_question||''):[];
  const refs=allowed.filter(d=>d.document_type==='technical_reference').flatMap(d=>s.index[d.document_id]||[]);
  const idf=new Map(referenceTerms.map(t=>[t,1+Math.log(1+refs.length/(1+refs.filter(c=>c.content.toLowerCase().includes(t)).length))]));
- const scored=[];for(const d of allowed){if(['candidate_profile','draft','archived','guideline','interview_memory','practice_drill'].includes(d.document_type)||(!['technical_reference','interview_asked_qa','role_prep'].includes(d.document_type)&&/面经|面试题|参考回答|口语问答|复习导学|备考建议|复习计划|练习记录/.test(d.title+' '+d.file_path)))continue;for(const c of s.index[d.document_id]||[]){
  const projectList=/哪些项目|项目有哪些|几个项目|介绍.{0,6}项目经历|介绍.{0,4}你的项目/.test(q);
- const unbound=!projects.length&&(dialogue.design||dialogue.project_reference_unresolved&&!projectList);
+ const skillLookup=!projects.length&&!dialogue.design&&!/(?:这个|那个|该)项目/.test(q)&&/(?:简历|项目里|项目.{0,6}(?:用|存|写|做)|用过|平时怎么用|怎么用.{0,12}做)/.test(q)&&/(?:flask|fastapi|rest|api|sqlite|sql|pandas|python|pytest|codex|claude|cursor|qdrant|echarts|xgboost|optuna|git|docker)/i.test(q);
+ const unbound=!projects.length&&(dialogue.design||dialogue.project_reference_unresolved&&!projectList&&!skillLookup);
+ const scored=[];for(const d of allowed){if(['candidate_profile','draft','archived','guideline','interview_memory','practice_drill'].includes(d.document_type)||(!['technical_reference','interview_asked_qa','role_prep'].includes(d.document_type)&&/面经|面试题|参考回答|口语问答|复习导学|备考建议|复习计划|练习记录/.test(d.title+' '+d.file_path)))continue;for(const c of s.index[d.document_id]||[]){
  if(unbound&&(d.project_id||!['technical_reference','technical_note','design_proposal','interview_asked_qa','role_prep'].includes(c.document_type)))continue;
  if(['draft','guideline','archived','interview_memory','practice_drill'].includes(c.document_type))continue;
  if(/^(?:源码位置|来源|依据|出处)[：:]\s*$/.test(c.content.trim()))continue;
@@ -160,10 +161,10 @@ function createInterviewLibrary({file,parsePdf}){
  if(c.document_type==='technical_reference'&&!vectorHit&&referenceAnchors.length&&!referenceAnchors.some(t=>c.content.toLowerCase().includes(t.toLowerCase())))continue;
  if(c.document_type==='technical_reference'&&!vectorHit&&semanticFacets.length&&!semanticFacets.some(f=>matchesFacet(f,(c.question_title||'')+' '+d.title)))continue;
  const secondaryProject=generic&&!projects.length&&plan.allow_project_example&&d.project_id&&['project_fact','experiment','personal_experience'].includes(c.document_type);
- if(generic&&!secondaryProject&&!['technical_note','technical_reference','design_proposal','interview_asked_qa','role_prep'].includes(c.document_type))continue;
+ if(generic&&!secondaryProject&&!skillLookup&&!['technical_note','technical_reference','design_proposal','interview_asked_qa','role_prep'].includes(c.document_type))continue;
  if(c.content.length>6000)continue; // Preserve whole semantic blocks; report omission instead of slicing a table/code block.
- if(generic&&d.project_id&&!secondaryProject)continue;
- if(generic&&!secondaryProject&&['project_fact','experiment','personal_experience'].includes(c.document_type))continue;
+ if(generic&&d.project_id&&!secondaryProject&&!skillLookup)continue;
+ if(generic&&!secondaryProject&&!skillLookup&&['project_fact','experiment','personal_experience'].includes(c.document_type))continue;
  if(projects.length&&d.project_id&&!projects.includes(d.project_id))continue;
  if(projects.length&&!d.project_id&&!['technical_note','technical_reference','interview_asked_qa','role_prep'].includes(c.document_type)&&!intents.includes('intro'))continue;
  if(projects.length&&c.document_type==='resume'&&!intents.includes('intro'))continue;
@@ -178,7 +179,7 @@ function createInterviewLibrary({file,parsePdf}){
  if(c.document_type==='interview_asked_qa'){const match=referenceMatch(referenceTerms,searchText(c.heading+' '+d.title),body);if(!match.usable)continue;score+=16+match.title_hits*6;if(match.title_hits>=2||match.coverage>=0.6)score=Math.max(score,51.5);}
  if(c.document_type==='role_prep'){const match=referenceMatch(referenceTerms.length?referenceTerms:searchTerms,searchText(c.heading),body);if(!match.usable)continue;score+=6+match.title_hits*3;}
  if(c.document_type==='technical_note'&&!referenceMatch(referenceTerms,searchText(c.heading),body).usable)continue;
- if(secondaryProject){const match=referenceMatch(searchTerms,c.heading.toLowerCase(),body);if(match.body_hits<2||match.coverage<0.35)continue;}
+ if(secondaryProject&&!skillLookup){const match=referenceMatch(searchTerms,c.heading.toLowerCase(),body);if(match.body_hits<2||match.coverage<0.35)continue;}
 
  if(projects.includes(d.project_id)){const subjectTerms=terms(dialogue.subject_question||'').filter(t=>!['srag','rag','iod','项目','困难','难点'].includes(t));score+=Math.min(8,subjectTerms.reduce((n,t)=>n+(body.includes(t)?1.5:0),0));if(/本人补充|个人主责/.test(c.heading)&&/困难|难点|怎么处理|如何处理|自己|职责|做了什么|AI/.test(q))score+=3;}
  if(projects.includes(d.project_id))score=score>0?score+8:0.5;
@@ -203,6 +204,7 @@ function createInterviewLibrary({file,parsePdf}){
   if(candidate&&!seeds.includes(candidate))seeds.push(candidate);
  }
  if(projects.length&&!intro)seeds.push(...scored.filter(x=>projects.includes(x.d.project_id)&&['project_fact','experiment','personal_experience'].includes(x.c.document_type)).slice(0,plan.reference_first?3:4));
+ if(skillLookup&&!intro){const skCands=scored.filter(x=>x.d.project_id&&['project_fact','experiment','personal_experience'].includes(x.c.document_type));const ownFirst=[...skCands.filter(x=>/个人主责|本人补充|个人职责|已有材料支持|职责与归属/.test(x.c.heading)&&!/团队|他人|证据边界|待确认/.test(x.c.heading)),...skCands];const seenDoc=new Set();for(const x of ownFirst){if(seenDoc.has(x.d.document_id))continue;seenDoc.add(x.d.document_id);seeds.push(x);if(seenDoc.size>=2)break;}}
  if(!intro&&topAsked&&!seeds.includes(topAsked))seeds.push(topAsked);
  if(!intro&&topReference&&!seeds.includes(topReference))seeds.push(topReference);
  if(!intro&&topRolePrep&&!seeds.includes(topRolePrep))seeds.push(topRolePrep);
