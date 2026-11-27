@@ -175,3 +175,46 @@ test('V3 5-layer isolation: aliases, memory gate, role_prep scoping, asked_qa, a
   assert(askedHit, 'real-asked Q&A supplement should be retrieved');
   assert.equal(askedHit.may_support_personal_action, false);
 });
+
+test('Layer 2 memory reserves fair per-bucket shares, prioritizes query-relevant pitfalls, and filters company_insight by role', async (t) => {
+  const { lib, root } = makeFixture(t);
+  writeFile(root, '面试记忆/表达与偏好.md', [
+    '---',
+    'knowledge_kind: interview_memory',
+    'memory_bucket: speaking_style',
+    '---',
+    '# 表达偏好',
+    '- ' + '风格规则一：先给一句话结论，再展开做法和例子。'.repeat(12),
+    '- ' + '风格规则二：篇幅克制，不要背诵模板术语。'.repeat(12)
+  ].join('\n'));
+  writeFile(root, '面试记忆/薄弱项与踩坑.md', [
+    '---',
+    'knowledge_kind: interview_memory',
+    'memory_bucket: weakness_pitfall',
+    '---',
+    '# 避坑清单',
+    '- [避坑A] 普通占位避坑项，用于测试靠前条目不会挤掉命中当前问题的关键避坑项。' + '补充说明。'.repeat(25),
+    '- [避坑B] 另一条无关占位避坑项，测试排序优先级。' + '补充说明。'.repeat(25),
+    '- [纠偏 · 九寨沟回归预测] 切勿说成二分类，应说明未来三天客流回归预测加旺淡季阈值预警。'
+  ].join('\n'));
+  writeFile(root, '面试记忆/公司与岗位洞察.md', [
+    '---',
+    'knowledge_kind: interview_memory',
+    'memory_bucket: company_insight',
+    '---',
+    '# 公司洞察',
+    '- **公司甲**：重点考察 Agent Trace 与 Evaluator 基础设施。',
+    '- **公司乙**：重点考察链上钱包对账与幂等。'
+  ].join('\n'));
+
+  await lib.save({ enabled: true, root, role: '公司甲-评测实习' });
+  // Tight 700-char budget: speaking_style alone exceeds 700 chars, yet pitfalls + matched company insight must still appear
+  const msgs = await lib.build({ question: '九寨沟客流预测是不是二分类模型？', memoryMaxChars: 700 }, []);
+  const mem = JSON.parse(msgs[1].content).interview_memory;
+  assert(mem, 'memory context must be present');
+  const buckets = Object.fromEntries(mem.sections.map(s => [s.bucket, s.items.join('\n')]));
+  assert(buckets.speaking_style, 'speaking_style should receive guaranteed share');
+  assert(buckets.weakness_pitfall && buckets.weakness_pitfall.includes('九寨沟回归预测'), 'query-relevant pitfall must be prioritized and preserved');
+  assert(buckets.company_insight && buckets.company_insight.includes('公司甲'), 'matched company insight must not be starved');
+  assert(!buckets.company_insight.includes('公司乙'), 'unrelated company insight must be excluded when role is selected');
+});

@@ -25,27 +25,57 @@ const SYSTEM=`你生成候选人当场能说出的中文回答。按response_pro
 function searchText(s){return s.toLowerCase().replace(/最难|难点|挑战/g,'困难');}
 function terms(s){const related=expansions(s);s=searchText(s);s=s.replace(/你觉得|你认为|你看来|工程上|在实际落地中|假设|如果|做一个|一个|应该|通常|需要|进行|处理/g,' ');s=s.replace(/为什么|是什么|什么是|有什么|怎么|如何|怎样|哪些|什么|是不是|有没有|会不会|的话|一般|这个|那个|一下|已经|没有|自己|本人|是否|究竟|两个/g,' ');const out=(s.toLowerCase().match(/[a-z][a-z0-9.+-]*|\d+/g)||[]);for(const run of s.match(/[\u4e00-\u9fff]+/g)||[])for(let i=0;i<run.length-1;i++)out.push(run.slice(i,i+2));return [...new Set([...out,...related])].filter(s=>!['什么','怎么','这个','那个','一下','我们','你们','可以','就是','然后','如何','怎样','哪些','是否','一般','有什么','有什','么区','区别','时候','的话','以及','情况','具体','设计','需要','进行','问题','介绍','一下','不会','不能','什么'].includes(s));}
 function normRole(s){return s.replace(/[（(](?:已面|未面试|待面|已结束)[）)]/g,'').trim();}
-function buildMemoryContext(allowed,index,role,maxChars=900){
+function buildMemoryContext(allowed,index,role,maxChars=1600,queryText=''){
  const docs=allowed.filter(d=>d.document_type==='interview_memory'&&d.memory_bucket!=='pending_fact'&&!/待审核/.test(d.file_path));
  if(!docs.length)return null;
  const order={speaking_style:0,weakness_pitfall:1,company_insight:2};
  docs.sort((a,b)=>(order[a.memory_bucket]??9)-(order[b.memory_bucket]??9));
  const company=String(role?.company||role?.directory||'').split('-')[0].trim().toLowerCase();
- const sections=[];let used=0;
+ const qTerms=queryText?terms(queryText):[];
+ const prepared=[];
  for(const d of docs){
   const chunks=(index[d.document_id]||[]).map(c=>c.content).join('\n');
   let lines=chunks.split(/\r?\n/).map(l=>l.trim()).filter(l=>l&&!l.startsWith('>')&&!l.startsWith('<!--'));
-  if(d.memory_bucket==='company_insight'&&company){
-   const matched=lines.filter(l=>l.toLowerCase().includes(company));
-   lines=matched.length?matched:lines.slice(0,2);
+  if(d.memory_bucket==='company_insight'){
+   if(company){
+    lines=lines.filter(l=>l.toLowerCase().includes(company));
+   }else{
+    lines=lines.slice(0,2);
+   }
+  }else if(d.memory_bucket==='weakness_pitfall'&&qTerms.length){
+   lines=lines.map((l,idx)=>{
+    const low=l.toLowerCase();
+    const hits=qTerms.reduce((n,t)=>n+(low.includes(t)?1:0),0);
+    return {l,idx,hits};
+   }).sort((a,b)=>b.hits-a.hits||a.idx-b.idx).map(x=>x.l);
   }
-  const picked=[];
-  for(const l of lines){
-   if(used+l.length+2>maxChars)break;
-   picked.push(l);used+=l.length+2;
-  }
-  if(picked.length)sections.push({bucket:d.memory_bucket||'general',title:d.title,items:picked});
+  if(lines.length)prepared.push({doc:d,bucket:d.memory_bucket||'general',lines,picked:[]});
  }
+ if(!prepared.length)return null;
+ // Two-pass fair allocation so no single bucket starves speaking_style, weakness_pitfall, or matched company_insight.
+ const weights={speaking_style:0.35,weakness_pitfall:0.45,company_insight:0.20};
+ const totalW=prepared.reduce((s,p)=>s+(weights[p.bucket]??0.2),0)||1;
+ let used=0;
+ for(const p of prepared){
+  const share=Math.floor(maxChars*((weights[p.bucket]??0.2)/totalW));
+  let bucketUsed=0;
+  for(const l of p.lines){
+   const cost=l.length+2;
+   if(used+cost>maxChars)break;
+   if(p.picked.length>0&&bucketUsed+cost>share)break;
+   p.picked.push(l);bucketUsed+=cost;used+=cost;
+  }
+ }
+ // Pass 2: distribute any leftover spare budget prioritizing pitfalls, then company insight, then style.
+ const pass2Order={weakness_pitfall:0,company_insight:1,speaking_style:2};
+ for(const p of [...prepared].sort((a,b)=>(pass2Order[a.bucket]??9)-(pass2Order[b.bucket]??9))){
+  for(const l of p.lines.slice(p.picked.length)){
+   const cost=l.length+2;
+   if(used+cost>maxChars)break;
+   p.picked.push(l);used+=cost;
+  }
+ }
+ const sections=prepared.filter(p=>p.picked.length).map(p=>({bucket:p.bucket,title:p.doc.title,items:p.picked}));
  return sections.length?{usage:'仅控制口风、避坑提醒与公司关注点，绝不能证明本人做过或补造经历',sections}:null;
 }
 function safeText(s){return s.replace(/!\[[^\]]*\]\([^)]+\)/g,'[原图可在来源面板查看]').replace(/<!--[\s\S]*?-->/g,'').replace(/<a\s[^>]*><\/a>/g,'').replace(/https?:\/\/[^\s)]+/g,'[参考链接]').replace(/\[([^\]]+)\]\([^)]+\)/g,'$1').replace(/(?:[A-Za-z]:[\\/]|\/Users\/)[^\s\n]+/g,'[来源定位已隐藏]');}
@@ -210,8 +240,8 @@ function createInterviewLibrary({file,parsePdf}){
  const roleContext=intro?[]:allowed.filter(d=>d.role_id===role?.role_id&&/(?:^|\/)JD\.md$/i.test(d.file_path)).slice(0,1).map(d=>({title:d.title,usage:'仅用于岗位关注点和回答深度，不证明本人能力或经历',text:(s.index[d.document_id]||[]).map(c=>c.content).join('\n').slice(0,1200)}));
  const memoryEnabled=input.memoryEnabled!==false&&config.memory_recall_enabled!==false;
  const rawBudget=Number(input.memoryMaxChars ?? config.memory_max_chars);
- const memoryBudget=rawBudget>=100?Math.min(2000,rawBudget):900;
- const interviewMemory=!intro&&memoryEnabled?buildMemoryContext(allowed,s.index,role,memoryBudget):null;
+ const memoryBudget=rawBudget>=100?Math.min(3000,rawBudget):1600;
+ const interviewMemory=!intro&&memoryEnabled?buildMemoryContext(allowed,s.index,role,memoryBudget,q):null;
  const tools=['Redis','Kafka','MySQL','Spring Boot','Go','React','Vue','Java','JavaScript','TypeScript','Docker','Kubernetes','AWS','Python','Flask','SQLite','FastAPI','Qdrant','XGBoost'];
  const own=evidence.filter(e=>e.may_support_personal_action&&!/待确认|不说|没有.{0,8}证据/.test(e.excerpt));
  const confirmed=tools.filter(tool=>own.some(e=>new RegExp('(?:^|[^a-z])'+tool.replace(' ','\\s*')+'(?![a-z])','i').test(e.excerpt)));
