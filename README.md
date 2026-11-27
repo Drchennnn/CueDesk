@@ -7,7 +7,7 @@
 <p align="center">Windows 上的本地优先面试与笔试工作台，使用你自己的模型 API。</p>
 
 <p align="center">
-  <img alt="版本 v1.0.0 · 2026-11-26" src="https://img.shields.io/badge/Version-v1.0.0%20%C2%B7%202026--11--26-3E5B76?style=flat-square">
+  <img alt="版本 v1.0.1 · 2026-11-28" src="https://img.shields.io/badge/Version-v1.0.1%20%C2%B7%202026--11--28-3E5B76?style=flat-square">
   <img alt="Windows 10/11 x64" src="https://img.shields.io/badge/Windows-10%2F11%20x64-536775?style=flat-square">
   <img alt="BYOK 本地加密" src="https://img.shields.io/badge/BYOK-本地加密-47655C?style=flat-square">
   <img alt="6 种实时语音协议" src="https://img.shields.io/badge/实时语音-6%20种协议-536775?style=flat-square">
@@ -28,7 +28,7 @@
 
 ## 快速上手
 
-1. 解压 `CueDesk-v1.0.0-20261126.zip`，双击包内带应用图标的 **`CueDesk.exe`**，也可以使用 `启动.cmd`。
+1. 解压 `CueDesk-v1.0.1-20261128.zip`，双击包内带应用图标的 **`CueDesk.exe`**，也可以使用 `启动.cmd`。
 2. 打开 **高级设置 → 模型接口 → 文本大模型**，填写服务商提供的 OpenAI 兼容 Base URL 和 API Key。
    点击 **获取模型列表** 选择模型，或手动填写模型 ID，再点 **测试连接**。
 3. 回到 **首页 → 面试助手**，选择模板并点击 **开始**。第一次只想打字时，可在会前关闭自动音频采集。
@@ -170,7 +170,7 @@ Base URL 填写服务商提供的接口根地址，例如 `https://api.example.c
 ```powershell
 npm --prefix cuedesk/ui run build
 node --test tests/*.test.cjs
-python cuedesk/release/build_portable_next.py --output releases/CueDesk-v1.0.0-20261126 --overwrite
+python cuedesk/release/build_portable_next.py --output releases/CueDesk-v1.0.1-20261128 --overwrite
 ```
 
 打包后双击输出目录中的 `CueDesk.exe` 即可运行。

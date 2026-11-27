@@ -31,8 +31,8 @@ iu = importlib.util.module_from_spec(spec_iu)
 spec_iu.loader.exec_module(iu)
 
 APP_NAME = "CueDesk"
-APP_VERSION = "1.0.0"
-RELEASE_DATE = "2026-11-26"
+APP_VERSION = "1.0.1"
+RELEASE_DATE = "2026-11-28"
 
 MAIN = "out/main/index.js"
 ASR_WORKER = "out/main/asrWorker.js"
