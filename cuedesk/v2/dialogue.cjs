@@ -3,19 +3,19 @@
 const path = require('node:path');
 const { classifyTurn } = require('./turn-policy.cjs');
 const { generalKnowledge } = require('./query.cjs');
-const PERSONAL = /做过|用过|处理过|参与过|承担过|遇到过|实习过|生产经验|真实经历|线上事故|失败.{0,6}(?:经验|经历)|实践当中.{0,8}痛点|在哪.{0,5}学习|自己探索|你.{0,12}交易|当时.{0,15}(?:交易|做了|用了)|有.{0,24}(?:经验|经历|生产实践)|讲.{0,10}(?:真实|实际).{0,12}(?:事故|经历|案例)/;
-const DESIGN = /如果|假设|你会|会怎么|会如何|重新设计|怎么设计|如何设计|万人|扩展|扩成|改成|收费|迭代|给你.{0,12}(?:周|天)/;
-const FOLLOW = /这里面|这部分|这一步|这套|这两个|这个|那个|它|刚才|上面|前面|当时|其中|每一版|每次|都这样|都是这样|一直这样|这么|那样|一次次|^那|^所以|继续|具体|为什么|怎么|如何|哪个模块|什么模型|什么大模型|困难|难点|失败|痛点|限制|局限|效果|指标|权重|方差|准确率|问题解决|处理的/;
+const PERSONAL = /做过|用过|处理过|参与过|承担过|遇到过|实习过|生产经验|真实经历|线上事故|失败.{0,6}(?:经验|经历)|实践当中.{0,8}痛点|在哪.{0,5}学习|自己探索|你.{0,12}交易|当时.{0,15}(?:交易|做了|用了)|有.{0,24}(?:经验|经历|生产实践)|讲.{0,10}(?:真实|实际).{0,12}(?:事故|经历|案例)|\b(?:have\s+you\s+(?:ever\s+)?(?:used|built|worked|handled|debugged|tested|deployed)|tell\s+me\s+about\s+a\s+time|what\s+did\s+you\s+(?:do|build|fix|implement)|your\s+(?:role|contribution|responsibilities|production\s+experience)|production\s+(?:incident|outage))\b/i;
+const DESIGN = /如果|假设|你会|会怎么|会如何|重新设计|怎么设计|如何设计|万人|扩展|扩成|改成|收费|迭代|给你.{0,12}(?:周|天)|\b(?:how\s+would\s+you\s+design|design\s+a\b|suppose\s+(?:we|you)|what\s+if\s+(?:we|you)|if\s+you\s+(?:had|needed)\s+to\s+(?:design|scale|build)|system\s+design)\b/i;
+const FOLLOW = /这里面|这部分|这一步|这套|这两个|这个|那个|它|刚才|上面|前面|当时|其中|每一版|每次|都这样|都是这样|一直这样|这么|那样|一次次|^那|^所以|继续|具体|为什么|怎么|如何|哪个模块|什么模型|什么大模型|困难|难点|失败|痛点|限制|局限|效果|指标|权重|方差|准确率|问题解决|处理的|\b(?:this\s+part|that\s+part|in\s+this|in\s+that|how\s+did\s+you\s+(?:fix|solve|handle|verify)|what\s+happened|and\s+then|what\s+about|why\s+did\s+you|any\s+limitations?|challenges?|hardest\s+part)\b/i;
 const RESET = /不聊项目|不说项目|不谈项目|不聊这个|先不说|换个话题|换题|不聊了|基础知识|通用问题/;
 const CONCEPTS = /spring\s*boot|websocket|python|http\/?[123]?|kafka|redis|mysql|cpu|gil|react|vue|线程|进程|异步|支付|退款|副本|灰度|多租户/ig;
 function cleanQuestion(q) { return q.replace(/(?:不聊|不说|不谈)项目(?:了)?[，,。]?/g, '').trim(); }
 function intent(question) {
   const q = cleanQuestion(question), labels = [];
   if (DESIGN.test(q)) labels.push('design');
-  if (PERSONAL.test(q) || /负责|职责|项目|当时|困难|难点/.test(q)) labels.push('fact');
-  if (/原理|区别|为什么选|参数|模型|算法|怎么实现|线程|进程|异步|HTTP|WebSocket/i.test(q)) labels.push('technical');
-  if (/平时|流程|方法|排查|新项目|工具|怎么用|如何用|验证|测试|检查|回归/.test(q)) labels.push('method');
-  if (/介绍自己|自我介绍/.test(q)) labels.push('intro');
+  if (PERSONAL.test(q) || /负责|职责|项目|当时|困难|难点|\b(?:project|challenge|hardest|difficult|bug|fix|contribution|my\s+role|your\s+role)\b/i.test(q)) labels.push('fact');
+  if (/原理|区别|为什么选|参数|模型|算法|怎么实现|线程|进程|异步|HTTP|WebSocket|\b(?:what\s+is|what\s+are|difference\s+between|how\s+does|why\s+(?:use|choose)|explain|compare|thread|process|async)\b/i.test(q)) labels.push('technical');
+  if (/平时|流程|方法|排查|新项目|工具|怎么用|如何用|验证|测试|检查|回归|\b(?:how\s+do\s+you\s+(?:test|verify|validate|debug|check|handle|use)|testing\s+(?:strategy|approach|process)|workflow|verify|validate|regression)\b/i.test(q)) labels.push('method');
+  if (/介绍自己|自我介绍|\b(?:introduce\s+yourself|intro(?:duction)?\s+(?:of|about)\s+yourself|self[\s-]?intro(?:duction)?|tell\s+me\s+about\s+yourself|walk\s+me\s+through\s+your\s+(?:background|resume|cv|experience)|give\s+(?:me\s+)?a\s+(?:quick|brief|short)?\s*intro(?:duction)?|(?:30[\s-]?sec(?:ond)?s?|1[\s-]?min(?:ute)?|2[\s-]?min(?:ute)?s?|short|brief|quick|english)\s+intro(?:duction)?)\b/i.test(q)) labels.push('intro');
   return labels.length ? labels : ['general'];
 }
 function catalog(documents) {
@@ -63,7 +63,7 @@ function step(question, prior, projects) {
   const personal = PERSONAL.test(q) || /你本人.{0,20}(?:做完|完成|实现|上线)|你.{0,6}已经.{0,12}(?:做|完成|实现)/.test(q);
   const relative = /这里面|这部分|这一步|这套|这两个|这个|那个|它|刚才|上面|前面|当时|上题|接着|仍是|^那|^所以|继续/.test(q);
   const projectFeature = Boolean(prior?.project_ids?.length && /Wi[\s-]?Fi|\bAP\b|光照|强弱信号|信号.{0,8}数据|特征|协方差|标量/i.test(q));
-  const independentKnowledge = !projectFeature && (generalKnowledge(q) || /是什么|区别|怎么选|如何选|怎样选|原理/.test(q) && !relative && !/项目|角色|职责|做过/.test(q));
+  const independentKnowledge = !projectFeature && (generalKnowledge(q) || (/是什么|区别|怎么选|如何选|怎样选|原理/.test(q) || /\b(?:what\s+is|what\s+are|difference\s+between|how\s+does|explain)\b/i.test(q)) && !relative && !/项目|角色|职责|做过|\b(?:your|you|project|did\s+you|role|experience)\b/i.test(q));
   const newConcept = concepts.some(c => !anchorConcepts.includes(c));
   const newScenario = explicitDesign && !relative && !explicit.length && /假设(?:做|一个|一次)|再换题|换题|做一个/.test(q);
   const newPlan = /岗位|职位|学习计划|职业规划/.test(q) && /安排|计划|学习|交付|三周|两周/.test(q);
@@ -78,9 +78,9 @@ function step(question, prior, projects) {
   const experience = personal && !explicitDesign;
   const design = explicitDesign || Boolean(continuing && prior?.design && !experience);
   const anchor = continuing && !turn.correction ? prior.anchor_question : q;
-  const specific = /切块|切割|chunk|分块|重叠|父子|图片|公式|困难|难点|问题出在|视觉|读图|RRF|稀疏|Dense|Sparse|解析|索引|前端|后端|数据库|光照|Wi-Fi|平滑|F1|RMSE|权重|方差|CPU|线程|进程|异步/i.test(q);
+  const specific = /切块|切割|chunk|分块|重叠|父子|图片|公式|困难|难点|问题出在|视觉|读图|RRF|稀疏|Dense|Sparse|解析|索引|前端|后端|数据库|光照|Wi-Fi|平滑|F1|RMSE|权重|方差|CPU|线程|进程|异步|challenge|hardest|difficult|bug|test(?:ing)?|regression|verif\w*|validat\w*|eval(?:uation)?|citation|api|rest|sqlite|database|cache|auth|thread|process|async|latency|accuracy|open\s*source|\bpr\b/i.test(q);
   const topic = inherited || genericContinuation ? (specific ? q : prior.topic_question || anchor) : q;
-  const substantive=/切块|切割|chunk|分块|重叠|父子|图片|公式|解析|索引|前端|后端|数据库|光照|Wi-Fi|CPU|线程|进程|异步|Redis|MySQL|Kafka|HTTP|模型|算法/i.test(q);
+  const substantive=/切块|切割|chunk|分块|重叠|父子|图片|公式|解析|索引|前端|后端|数据库|光照|Wi-Fi|CPU|线程|进程|异步|Redis|MySQL|Kafka|HTTP|模型|算法|test(?:ing)?|regression|verif\w*|eval(?:uation)?|api|rest|sqlite|database|cache|thread|process|async|open\s*source|\bpr\b/i.test(q);
   const subject=continuing&&!turn.correction?(substantive?q:prior.subject_question||prior.topic_question||anchor):q;
   const effective = inherited || genericContinuation ? [...new Set([anchor, subject, topic, q])].join('\n') : q;
   const labels = intent(q).filter(label=>label!=='design'||design);
@@ -95,8 +95,8 @@ function step(question, prior, projects) {
     anchor_question: anchor.slice(0, 300), topic_question: topic.slice(0, 300), last_question: q.slice(0, 300), inherited, continuation:Boolean(inherited||genericContinuation),
     effective_question: effective, intents: labels, design, experience,
     confirm_prior_design: Boolean(prior?.design && experience && /这些|这个|完成|做完|实现|上线/.test(q)||!ids.length&&experience&&/这套|这种方案|上述|以上方案/.test(q)),
-    generic: !ids.length && !experience && !labels.includes('intro') && !(/项目|职责/.test(q)),
-    clarify: (!prior?.anchor_question && !explicit.length && /^(为什么|怎么做|具体怎么做|然后呢|比如呢)[？?。]?$/.test(q)) || (ids.length>1&&!explicit.length&&/它(?!们)|这个项目|那个项目/.test(q)) || (!ids.length && !design && /(?:这个|那个|该)项目/.test(q) && /多久|当时|难点|困难/.test(q))
+    generic: !ids.length && !experience && !labels.includes('intro') && !(/项目|职责|\b(?:your\s+project|my\s+project|your\s+role)\b/i.test(q)),
+    clarify: (!prior?.anchor_question && !explicit.length && (/^(为什么|怎么做|具体怎么做|然后呢|比如呢)[？?。]?$/.test(q) || /^(?:why|how|how\s+so|what\s+else|and\s+then|for\s+example)[?.\s]*$/i.test(q))) || (ids.length>1&&!explicit.length&&/它(?!们)|这个项目|那个项目/.test(q)) || (!ids.length && !design && /(?:这个|那个|该)项目/.test(q) && /多久|当时|难点|困难/.test(q))
   };
 }
 function resolve(input, documents, namespace) {

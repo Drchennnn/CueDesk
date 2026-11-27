@@ -238,3 +238,82 @@ test('Skill-anchored resume follow-up retrieves matching project_fact evidence w
   assert(hit, 'matching project_fact chunk must be retrieved for skill-anchored resume follow-up');
   assert.equal(hit.may_support_personal_action, true);
 });
+
+test('English answerLang recalls English intro scripts, forces English system output, and keeps evidence streaming clean', async (t) => {
+  const { parseAnswer, createAnswerStream } = require('../cuedesk/v2/evidence.cjs');
+  const { classifyTurn } = require('../cuedesk/v2/turn-policy.cjs');
+  const { lib, root } = makeFixture(t);
+  writeFile(root, '通用问答/自我介绍.md', [
+    '---',
+    '类型: AI参考回答',
+    '---',
+    '# 自我介绍',
+    '',
+    '## 约30秒',
+    '我是中文30秒版本。',
+    '',
+    '## 约2分钟',
+    '我是中文2分钟版本。',
+    '',
+    '## English introduction — about 30 seconds',
+    'Hi, I am the 30-second English intro.',
+    '',
+    '## English introduction — about 1 minute',
+    'Hi, I am the 1-minute English intro.',
+    '',
+    '## English introduction — about 2 minutes',
+    'Hi, I am the 2-minute English intro.'
+  ].join('\n'));
+  await lib.save({ enabled: true, root, role: '公司甲-评测实习' });
+  const pub = await lib.getPublic();
+  const introDoc = pub.documents.find(d => d.file_path === '通用问答/自我介绍.md');
+  await lib.save({
+    enabled: true,
+    root,
+    role: '公司甲-评测实习',
+    intro_script: { enabled: true, document_id: introDoc.document_id, heading: '约2分钟' }
+  });
+
+  // 1. Live voice turn-policy accepts English intro/request statements without '?'
+  assert.equal(classifyTurn('Please introduce yourself.').action, 'answer');
+  assert.equal(classifyTurn('Tell me about your StarSea project.').action, 'answer');
+
+  // 2. English self-intro queries recall matching English script sections (default 2m, 1m, 30s)
+  const en2m = await lib.build({ freeQuestion: 'please introduce yourself', answerLang: 'english' }, []);
+  assert(en2m.dialogueState.intents.includes('intro'));
+  assert.equal(parseAnswer(en2m.directAnswer, en2m.evidence, true, en2m.answerPolicy).oral_answer, 'Hi, I am the 2-minute English intro.');
+  assert.equal(en2m.answerPolicy.lang, 'english');
+
+  const en1m = await lib.build({ freeQuestion: 'tell me about yourself in 1 minute', answerLang: 'english' }, []);
+  assert.equal(parseAnswer(en1m.directAnswer, en1m.evidence, true, en1m.answerPolicy).oral_answer, 'Hi, I am the 1-minute English intro.');
+
+  const en30s = await lib.build({ freeQuestion: '30 second intro please', answerLang: 'english' }, []);
+  assert.equal(parseAnswer(en30s.directAnswer, en30s.evidence, true, en30s.answerPolicy).oral_answer, 'Hi, I am the 30-second English intro.');
+
+  // Even a Chinese prompt respects the EN toggle
+  const zhAskEnToggle = await lib.build({ freeQuestion: '自我介绍', answerLang: 'english' }, []);
+  assert.equal(parseAnswer(zhAskEnToggle.directAnswer, zhAskEnToggle.evidence, true, zhAskEnToggle.answerPolicy).oral_answer, 'Hi, I am the 2-minute English intro.');
+
+  // Chinese mode still recalls Chinese 2-minute script cleanly
+  const zh2m = await lib.build({ freeQuestion: '自我介绍', answerLang: 'chinese' }, []);
+  assert.equal(parseAnswer(zh2m.directAnswer, zh2m.evidence, true, zh2m.answerPolicy).oral_answer, '我是中文2分钟版本。');
+
+  // 3. Non-intro LLM prompt enforces English output and does NOT leave Chinese-only opening
+  const enProj = await lib.build({ freeQuestion: 'Tell me about StarSea', answerLang: 'english' }, []);
+  assert(enProj[0].content.includes('[OUTPUT LANGUAGE: ENGLISH]'));
+  assert(!enProj[0].content.includes('你生成候选人当场能说出的中文回答'));
+  assert.equal(enProj.answerPolicy.lang, 'english');
+  assert.equal(JSON.parse(enProj[1].content).output_language, 'English');
+
+  // 4. English streaming evidence parser emits smoothly without Chinese injection
+  const frames = [];
+  const stream = createAnswerStream([{ evidence_id: 'E1' }], r => frames.push(r.oral_answer), { lang: 'english', projectReference: true });
+  stream.push('I checked trial 27 in StarSea. [[E1]] ');
+  assert(frames.at(-1).includes('trial 27'), 'English sentence should stream before final without Chinese replacement');
+  assert(!frames.at(-1).includes('第27次试验'));
+  const fin = stream.finish();
+  assert.equal(fin.oral_answer.trim(), 'I checked trial 27 in StarSea.');
+  const sug = parseAnswer('Check the logs first.', [], true, { lang: 'english', suggestionOnly: true, absenceUnknown: true });
+  assert(sug.oral_answer.startsWith('In general, '));
+  assert(!sug.oral_answer.includes('如果只谈一般思路'));
+});

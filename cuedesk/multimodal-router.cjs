@@ -238,9 +238,13 @@ function createRouter({ directory, defaultsDirectory, safeStorage, transport }) 
     const customWritten = mode === 'written' ? String(input.writtenPrompt || '').trim().slice(0, 2000) : '';
     const system = customWritten ? `${baseSystem}\n\n【用户自定义笔试要求】\n${customWritten}` : baseSystem;
     if (mode === 'interview' && Array.isArray(input.originalMessages)) {
+      const enSuffix = input.answerLang === 'english' ? '\n\n本次请用英文作答（Respond ONLY in natural spoken English）。' : '';
       return input.originalMessages.map((message, index) => {
-        if (index === 0 && message.role === 'system' && typeof message.content === 'string' && input.originalPersona && message.content.startsWith(input.originalPersona)) {
-          return { ...message, content: system + message.content.slice(input.originalPersona.length) };
+        if (index === 0 && message.role === 'system' && typeof message.content === 'string') {
+          const base = input.originalPersona && message.content.startsWith(input.originalPersona)
+            ? system + message.content.slice(input.originalPersona.length)
+            : message.content;
+          return { ...message, content: base + (enSuffix && !/本次请用英文作答|OUTPUT LANGUAGE: ENGLISH/.test(base) ? enSuffix : '') };
         }
         return { ...message };
       });

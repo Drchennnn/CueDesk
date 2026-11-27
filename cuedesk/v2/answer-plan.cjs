@@ -3,13 +3,13 @@ const {facets,generalKnowledge,noise}=require('./query.cjs');
 // One request may need both technical knowledge and a personal example.
 // This is a local retrieval/depth policy, not a claim to know the user's skills.
 function planQuestion(q,dialogue,persona){
- const concept=generalKnowledge(q)||/是什么|什么是|原理|概念|区别|如何理解|怎么理解|意味着|能做什么|用途|有什么作用/.test(q);
- const judgment=/你觉得|你认为|最难|难点|挑战|取舍|怎么看|如何选|怎么选|如何评估|怎么评估/.test(q);
- const method=/怎么|如何|怎样|排查|实现|处理|优化|设计|架构|方案/.test(q);
- const asksInstance=/哪次|讲一次|讲一遍你的实际|具体.{0,8}事故|那次/.test(q);
- const mixed=dialogue.experience&&(concept||/一般|假设|如果/.test(q)||!asksInstance&&/怎么|如何|怎样|思路/.test(q));
+ const concept=generalKnowledge(q)||/是什么|什么是|原理|概念|区别|如何理解|怎么理解|意味着|能做什么|用途|有什么作用|\b(?:what\s+is|what\s+are|difference\s+between|explain|concept|principle)\b/i.test(q);
+ const judgment=/你觉得|你认为|最难|难点|挑战|取舍|怎么看|如何选|怎么选|如何评估|怎么评估|\b(?:hardest|challenge|trade[\s-]?off|difficult|most\s+challenging|how\s+would\s+you\s+choose|compare)\b/i.test(q);
+ const method=/怎么|如何|怎样|排查|实现|处理|优化|设计|架构|方案|\b(?:how\s+do\s+you|how\s+to|test(?:ing)?|verif\w*|validat\w*|debug|implement|optimize|design|handle)\b/i.test(q);
+ const asksInstance=/哪次|讲一次|讲一遍你的实际|具体.{0,8}事故|那次|\b(?:tell\s+me\s+about\s+a\s+time|specific\s+incident|which\s+time|one\s+example\s+when\s+you)\b/i.test(q);
+ const mixed=dialogue.experience&&(concept||/一般|假设|如果|\b(?:generally|in\s+general|suppose|if)\b/i.test(q)||!asksInstance&&/怎么|如何|怎样|思路|\b(?:how|approach|strategy)\b/i.test(q));
  const strictPersonal=dialogue.confirm_prior_design||dialogue.experience&&!mixed;
- const design=dialogue.design||/架构|系统设计|设计方案/.test(q);
+ const design=dialogue.design||/架构|系统设计|设计方案|\bsystem\s+design\b/i.test(q);
  const demanding=design&&/跨地域|多地域|跨机房|强一致|千万|亿级|两地三中心|容灾|全球/.test(q);
  const bounded=Boolean(demanding&&persona&&!persona.skills.some(s=>s.level==='independent'&&/架构|分布式/.test(s.area)));
  const technical=concept||design||facets(q).length>0||dialogue.intents?.includes('technical');

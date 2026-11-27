@@ -14,10 +14,12 @@ const PROJECT_FALLBACK = `项目问题需要可说出的参考回答。先用本
 
 function fallbackMessages(input, original, reason) {
   const question = String(input.freeQuestion || input.question || '请根据当前内容回答');
-  const project = /项目|模块|特征|融合|AP|Wi[\s-]?Fi|IOD|华为|当时|你.{0,8}(?:负责|做过|用过)/i.test(question);
-  const messages = [...original, { role: 'system', content: PROJECT_FALLBACK + '\n个人材料状态未知，原有通用知识和AI草稿不能证明个人经历。可解释概念与方法，具体事实保留UNKNOWN。本轮口述80—160字、2—4句，选择一条简单链路，不列完整架构，不朗读资料状态。' }, { role: 'user', content: JSON.stringify({ question, transcript: (input.recentTranscript || []).slice(-4), material_status: reason, answer_mode: project ? 'conditional_project_reference' : 'general_reference' }) }];
+  const isEnglish = String(input.answerLang || '').trim().toLowerCase() === 'english';
+  const project = /项目|模块|特征|融合|AP|Wi[\s-]?Fi|IOD|华为|当时|你.{0,8}(?:负责|做过|用过)|\b(?:project|your\s+role|did\s+you)\b/i.test(question);
+  const langRule = isEnglish ? '\n[OUTPUT LANGUAGE: ENGLISH] Respond ONLY in natural spoken English (around 50–100 words, 2–4 sentences); do NOT output Chinese in the spoken answer.' : '';
+  const messages = [...original, { role: 'system', content: PROJECT_FALLBACK + langRule + '\n个人材料状态未知，原有通用知识和AI草稿不能证明个人经历。可解释概念与方法，具体事实保留UNKNOWN。本轮口述80—160字、2—4句，选择一条简单链路，不列完整架构，不朗读资料状态。' }, { role: 'user', content: JSON.stringify({ question, output_language: isEnglish ? 'English' : 'Chinese', transcript: (input.recentTranscript || []).slice(-4), material_status: reason, answer_mode: project ? 'conditional_project_reference' : 'general_reference' }) }];
   if (input.images?.length) messages.at(-1).content = [...input.images.map(url => ({ type: 'image_url', image_url: { url } })), { type: 'text', text: messages.at(-1).content }];
-  const answerPolicy = project ? { projectReference: true, suggestionOnly: true, absenceUnknown: true, requiredUnknown: ['本轮项目材料未载入，口述为条件式参考方案。'] } : { absenceUnknown: true };
+  const answerPolicy = project ? { lang: isEnglish ? 'english' : 'chinese', projectReference: true, suggestionOnly: true, absenceUnknown: true, requiredUnknown: ['本轮项目材料未载入，口述为条件式参考方案。'] } : { lang: isEnglish ? 'english' : 'chinese', absenceUnknown: true };
   for (const [key, value] of Object.entries({ evidence: [], diagnostics: [reason], answerPolicy, suggestionOnly: project, blockedUnknown: null })) Object.defineProperty(messages, key, { value });
   return messages;
 }

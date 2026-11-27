@@ -98,13 +98,15 @@ function createInterviewLibrary({file,parsePdf}){
  if(!effectiveEnabled)return unavailable(input.libraryOverride?.enabled===false?'本场已临时关闭资料库检索':'资料库未启用，个人项目资料未载入');
  let scope;try{scope=await ready(overrideRole);}catch(error){return unavailable('资料库加载失败：'+error.message);}
  const {s,role}=scope;const q=String(input.freeQuestion||input.question||'请根据当前内容回答');const context=(input.recentTranscript||[]).slice(-4).map(x=>typeof x==='string'?{speaker:'unconfirmed',text:x}:x);
+ const isEnglish=String(input.answerLang||'').trim().toLowerCase()==='english';
+ const wantsEnglish=isEnglish||/(?:用|讲|说|来(?:个|一段)?|做(?:个|一段)?)(?:英文|英语)|(?:英文|英语)(?:自我介绍|介绍|回答|版本|口述)|\bin\s+english\b|\benglish\s+(?:intro(?:duction)?|version|answer)\b/i.test(q);
  const allowed=s.manifest.documents.filter(d=>d.status==='active'&&!d.retrieval_excluded&&(!d.role_id||d.role_id===role?.role_id));
  const dialogue=resolveDialogue(input,allowed,hash(s.root)+'#'+(role?.role_id||''));
  const skipTurn=['continuous','segment'].includes(input.mode)&&dialogue.turn.action!=='answer';
  if(skipTurn||dialogue.clarify){
   const messages=[];
   const diagnostics=[dialogue.clarify?'当前指代不明，先确认对象':'对话动作：'+dialogue.turn.action+'；'+dialogue.turn.reason];
-  for(const [key,value] of Object.entries({evidence:[],diagnostics,blockedUnknown:null,directAnswer:skipTurn?'':'你具体指哪个项目或哪一部分？',skipGeneration:skipTurn,dialogueState:dialogue,answerPolicy:{}}))Object.defineProperty(messages,key,{value});
+  for(const [key,value] of Object.entries({evidence:[],diagnostics,blockedUnknown:null,directAnswer:skipTurn?'':(wantsEnglish?'Which specific project or part are you referring to?':'你具体指哪个项目或哪一部分？'),skipGeneration:skipTurn,dialogueState:dialogue,answerPolicy:{lang:wantsEnglish?'english':'chinese'}}))Object.defineProperty(messages,key,{value});
   last={question:q,role:role?.title||'通用',sources:[],characters:0,retrievalMs:performance.now()-started,dialogue_state:dialogue,diagnostics};
   return messages;
  }
@@ -113,14 +115,41 @@ function createInterviewLibrary({file,parsePdf}){
  const plan=planQuestion(q,dialogue,persona);
  if(intents.includes('intro')&&config.intro_script?.enabled){
   const doc=allowed.find(d=>d.document_id===config.intro_script.document_id);if(!doc)throw Error('用户指定的自我介绍稿已缺失或不属于当前资料范围，请重新指定');
-  let heading=config.intro_script.heading;
-  if(/英文|英语|english/i.test(q))heading='English introduction — about 2 minutes';
-  else if(/30秒|半分钟/.test(q))heading='约30秒';else if(/(?:1|一)分钟/.test(q))heading='约1分钟';
-  const chunks=(s.index[doc.document_id]||[]).filter(c=>c.heading.split(' / ').at(-1)===heading);if(!chunks.length)throw Error('指定自我介绍稿找不到章节：'+heading);
-  const evidence=chunks.map((c,i)=>({evidence_id:'E'+(i+1),document_id:doc.document_id,chunk_id:c.chunk_id,document_title:doc.title,project_id:doc.project_id,role_id:doc.role_id,document_type:c.document_type,heading:c.heading,source_location:c.source_location,content_hash:c.content_hash,document_hash:doc.content_hash,version:doc.version,retrieval_score:null,usage:'user_selected_script',excerpt:c.content}));
-  const directAnswer=evidence.map(e=>e.excerpt+'[['+e.evidence_id+']]').join('\n\n');const messages=[];
-  last={question:q,role:role?.title||'通用',sources:evidence.map(e=>e.document_title+'#'+e.heading),fixed:[],characters:directAnswer.length,strategy:'用户指定自我介绍原稿：'+heading,retrievalMs:performance.now()-started,evidence,diagnostics:[],dialogue_state:dialogue};
-  for(const [key,value] of Object.entries({evidence,diagnostics:[],blockedUnknown:null,directAnswer,dialogueState:dialogue,answerPolicy:{intro:false}}))Object.defineProperty(messages,key,{value});return messages;
+  const durFrom=t=>/30\s*(?:秒|s\b|sec|seconds?)|半分钟|half\s*a?\s*minute/i.test(t)?'30s':/(?:^|[^\d])(?:1|一|one)\s*(?:分钟|min(?:ute)?s?)|60\s*(?:秒|s\b|sec|seconds?)/i.test(t)?'1m':/(?:^|[^\d])(?:2|两|二|two)\s*(?:分钟|min(?:ute)?s?)|120\s*(?:秒|s\b|sec|seconds?)/i.test(t)?'2m':'';
+  const qDur=durFrom(q),reqDur=qDur||durFrom(config.intro_script.heading||'');
+  const pickIntro=(targetDoc,english,dur,fallbackHeading)=>{
+   const docChunks=s.index[targetDoc.document_id]||[];
+   const leaf=c=>c.heading.split(' / ').at(-1);
+   if(english){
+    const enHeads=[...new Set(docChunks.map(leaf).filter(h=>/english|英文/i.test(h)&&!/说明|规则|映射|记录|注意/.test(h)))];
+    if(!enHeads.length)return null;
+    const matchDur=d=>d==='30s'?enHeads.find(h=>/30/.test(h)):d==='1m'?enHeads.find(h=>/(?:^|[^\d])(?:1|一|60)\s*(?:min|minute|分钟|秒)/i.test(h)):d==='2m'?enHeads.find(h=>/(?:^|[^\d])(?:2|两|二|120)\s*(?:min|minute|分钟|秒)/i.test(h)):null;
+    const chosen=matchDur(dur)||enHeads.find(h=>h==='English introduction — about 2 minutes')||matchDur('2m')||matchDur('1m')||enHeads[0];
+    const hits=docChunks.filter(c=>leaf(c)===chosen);
+    return hits.length?{doc:targetDoc,heading:chosen,chunks:hits}:null;
+   }
+   let chosen=fallbackHeading;
+   if(qDur==='30s')chosen='约30秒';else if(qDur==='1m')chosen='约1分钟';
+   let hits=docChunks.filter(c=>leaf(c)===chosen);
+   if(!hits.length&&chosen!==fallbackHeading){
+    const zhHeads=[...new Set(docChunks.map(leaf).filter(h=>!/english|英文|说明|规则|映射|记录|注意/i.test(h)))];
+    const alt=qDur==='30s'?zhHeads.find(h=>/30/.test(h)):qDur==='1m'?zhHeads.find(h=>/1分钟|一分钟|60/.test(h)):null;
+    if(alt){chosen=alt;hits=docChunks.filter(c=>leaf(c)===alt);}
+   }
+   return hits.length?{doc:targetDoc,heading:chosen,chunks:hits}:null;
+  };
+  let picked=pickIntro(doc,wantsEnglish,reqDur,config.intro_script.heading);
+  if(!picked&&wantsEnglish&&role?.role_id){
+   const roleIntro=allowed.find(d=>d.role_id===role.role_id&&/自我介绍|intro/i.test(d.file_path+' '+d.title));
+   if(roleIntro)picked=pickIntro(roleIntro,true,reqDur,'');
+  }
+  if(!picked&&!wantsEnglish)throw Error('指定自我介绍稿找不到章节：'+(qDur==='30s'?'约30秒':qDur==='1m'?'约1分钟':config.intro_script.heading));
+  if(picked){
+   const evidence=picked.chunks.map((c,i)=>({evidence_id:'E'+(i+1),document_id:picked.doc.document_id,chunk_id:c.chunk_id,document_title:picked.doc.title,project_id:picked.doc.project_id,role_id:picked.doc.role_id,document_type:c.document_type,heading:c.heading,source_location:c.source_location,content_hash:c.content_hash,document_hash:picked.doc.content_hash,version:picked.doc.version,retrieval_score:null,usage:'user_selected_script',excerpt:c.content}));
+   const directAnswer=evidence.map(e=>e.excerpt+'[['+e.evidence_id+']]').join('\n\n');const messages=[];
+   last={question:q,role:role?.title||'通用',sources:evidence.map(e=>e.document_title+'#'+e.heading),fixed:[],characters:directAnswer.length,strategy:'用户指定自我介绍原稿：'+picked.heading,retrievalMs:performance.now()-started,evidence,diagnostics:[],dialogue_state:dialogue};
+   for(const [key,value] of Object.entries({evidence,diagnostics:[],blockedUnknown:null,directAnswer,dialogueState:dialogue,answerPolicy:{intro:false,lang:wantsEnglish?'english':'chinese'}}))Object.defineProperty(messages,key,{value});return messages;
+  }
  }
  const topicTerms=terms(dialogue.effective_question),currentTerms=terms(q);
  const searchTerms=[...new Set([...currentTerms,...topicTerms])].filter(t=>!['srag','rag','iod','九寨','寨沟','项目'].includes(t));
@@ -145,8 +174,8 @@ function createInterviewLibrary({file,parsePdf}){
  const semanticFacets=facets(q).length?facets(q):dialogue.continuation?facets(dialogue.subject_question||''):[];
  const refs=allowed.filter(d=>d.document_type==='technical_reference').flatMap(d=>s.index[d.document_id]||[]);
  const idf=new Map(referenceTerms.map(t=>[t,1+Math.log(1+refs.length/(1+refs.filter(c=>c.content.toLowerCase().includes(t)).length))]));
- const projectList=/哪些项目|项目有哪些|几个项目|介绍.{0,6}项目经历|介绍.{0,4}你的项目/.test(q);
- const skillLookup=!projects.length&&!dialogue.design&&!/(?:这个|那个|该)项目/.test(q)&&/(?:简历|项目里|项目.{0,6}(?:用|存|写|做)|用过|平时怎么用|怎么用.{0,12}做)/.test(q)&&/(?:flask|fastapi|rest|api|sqlite|sql|pandas|python|pytest|codex|claude|cursor|qdrant|echarts|xgboost|optuna|git|docker)/i.test(q);
+ const projectList=/哪些项目|项目有哪些|几个项目|介绍.{0,6}项目经历|介绍.{0,4}你的项目|\b(?:what\s+projects|which\s+projects|tell\s+me\s+about\s+your\s+projects)\b/i.test(q);
+ const skillLookup=!projects.length&&!dialogue.design&&!/(?:这个|那个|该)项目/.test(q)&&/(?:简历|项目里|项目.{0,6}(?:用|存|写|做)|用过|平时怎么用|怎么用.{0,12}做|\b(?:resume|cv|in\s+your\s+projects?|have\s+you\s+used|how\s+do\s+you\s+use|how\s+did\s+you\s+use)\b)/i.test(q)&&/(?:flask|fastapi|rest|api|sqlite|sql|pandas|python|pytest|codex|claude|cursor|qdrant|echarts|xgboost|optuna|git|docker)/i.test(q);
  const unbound=!projects.length&&(dialogue.design||dialogue.project_reference_unresolved&&!projectList&&!skillLookup);
  const scored=[];for(const d of allowed){if(['candidate_profile','draft','archived','guideline','interview_memory','practice_drill'].includes(d.document_type)||(!['technical_reference','interview_asked_qa','role_prep'].includes(d.document_type)&&/面经|面试题|参考回答|口语问答|复习导学|备考建议|复习计划|练习记录/.test(d.title+' '+d.file_path)))continue;for(const c of s.index[d.document_id]||[]){
  if(unbound&&(d.project_id||!['technical_reference','technical_note','design_proposal','interview_asked_qa','role_prep'].includes(c.document_type)))continue;
@@ -248,12 +277,15 @@ function createInterviewLibrary({file,parsePdf}){
  const own=evidence.filter(e=>e.may_support_personal_action&&!/待确认|不说|没有.{0,8}证据/.test(e.excerpt));
  const confirmed=tools.filter(tool=>own.some(e=>new RegExp('(?:^|[^a-z])'+tool.replace(' ','\\s*')+'(?![a-z])','i').test(e.excerpt)));
  const unfamiliar=persona?.skills.some(skill=>skill.level==='unfamiliar'&&terms(skill.area).some(t=>dialogue.effective_question.toLowerCase().includes(t)));
- const answerPolicy={intro,projectReference:Boolean(!intro&&(projects.length||dialogue.project_reference_unresolved)),unverifiedTools:intro?tools.filter(t=>!confirmed.includes(t)):[],absenceUnknown:Boolean(projects.length||dialogue.project_reference_unresolved||mixedKnowledge&&!supportsAbility(persona,q)||unfamiliar)};
- const messages=[{role:'system',content:SYSTEM+'\nretrieval_query是保守的检索理解，不是确认后的转录或个人事实。按原始问题保留否定、条件与经历边界。若status为ambiguous且词义会改变答案，先简短确认或在NOTE提示歧义，不能把改写猜测当成对方的原话。\nrole_prep是当前岗位提前预演的思路参考，interview_asked_qa是历次真实面试沉淀的通用技术参考，interview_memory是表达偏好与历史踩坑提醒；三者均不得证明本人做过或已上线，涉及假设方案一律用“如果由我设计，我会…”。'+'\n当前日期为'+currentDate+'（香港时间）；已经开始的教育日期区间不能讲成未来入学。自我介绍技能只按confirmed_experience_tools和事实证据描述；未知技能不要代说熟悉、用过、只了解或没做过。\n场景的已给条件见scenario.constraints，每项保留提问原文；unconfirmed只是待确认，不能当成必需功能。总用户数不等于并发数，版本迭代不自动要求服务端；按题目实际运行方式和数据/密钥归属判断。未指明的产品不能擅自认成简历里某个项目，也不把面试官的批评当成本人的事实确认。对方纠正问题时先回应新焦点，不再重复上一轮例子；一轮问同一项目的耗时和困难，只用同一个项目，指代不明先澄清。短追问只推进一步，不照抄历史AI答案。'},{role:'user',content:JSON.stringify({retrieval_query:vectorRetrieval.query_plan,answer_plan:answerPlan,candidate_profile:persona,profile_supports_ability:supportsAbility(persona,q),role:role?.title||'通用',role_context:roleContext,...(interviewMemory?{interview_memory:interviewMemory}:{}),confirmed_experience_tools:confirmed,current_date:currentDate,intent:intents,current_topic:{projects:dialogue.project_titles,question:dialogue.effective_question,subject:dialogue.subject_question,inherited:dialogue.inherited,project_reference_unresolved:dialogue.project_reference_unresolved},dialogue_action:dialogue.turn,scenario:dialogue.scenario,response_profile:profile,unknown_policy:'未提供或不支持的个人事实保持unknown；项目边界和一般方案可以分别解释，通用参考不构成履历',project_knowledge_bridge:bridge,project_feature_status:featureStatus,mixed_knowledge_and_experience:mixedKnowledge,evidence:evidence.map(e=>({id:e.evidence_id,type:e.document_type,title:e.document_title,heading:e.heading,may_support_personal_action:e.may_support_personal_action,text:safeText(e.excerpt)}))})}];
+ const answerPolicy={intro,lang:wantsEnglish?'english':'chinese',projectReference:Boolean(!intro&&(projects.length||dialogue.project_reference_unresolved)),unverifiedTools:intro?tools.filter(t=>!confirmed.includes(t)):[],absenceUnknown:Boolean(projects.length||dialogue.project_reference_unresolved||mixedKnowledge&&!supportsAbility(persona,q)||unfamiliar)};
+ const systemBase=wantsEnglish?SYSTEM.replace('你生成候选人当场能说出的中文回答。','你生成候选人当场能说出的自然英文口语回答（Output MUST be in natural spoken English only; do NOT output Chinese in the spoken answer）。'):SYSTEM;
+ const englishDirective=wantsEnglish?'\n[OUTPUT LANGUAGE: ENGLISH] 本轮最终口述回答必须全部使用自然、地道、简洁的英文口语输出（约 45—90 英文词用于普通题，约 120—180 英文词用于项目深挖/场景题，自我介绍按要求时长控制）。禁止在口述正文输出中文；所有中文证据内容请准确转化为自然英文口语表达，继续严格保留所有事实边界、第一人称边界、隐藏引用标记[[E编号]]、[[UNKNOWN:...]]与[[NOTE:...]]规则。':'';
+ const messages=[{role:'system',content:systemBase+englishDirective+'\nretrieval_query是保守的检索理解，不是确认后的转录或个人事实。按原始问题保留否定、条件与经历边界。若status为ambiguous且词义会改变答案，先简短确认或在NOTE提示歧义，不能把改写猜测当成对方的原话。\nrole_prep是当前岗位提前预演的思路参考，interview_asked_qa是历次真实面试沉淀的通用技术参考，interview_memory是表达偏好与历史踩坑提醒；三者均不得证明本人做过或已上线，涉及假设方案一律用“如果由我设计，我会…”。'+'\n当前日期为'+currentDate+'（香港时间）；已经开始的教育日期区间不能讲成未来入学。自我介绍技能只按confirmed_experience_tools和事实证据描述；未知技能不要代说熟悉、用过、只了解或没做过。\n场景的已给条件见scenario.constraints，每项保留提问原文；unconfirmed只是待确认，不能当成必需功能。总用户数不等于并发数，版本迭代不自动要求服务端；按题目实际运行方式和数据/密钥归属判断。未指明的产品不能擅自认成简历里某个项目，也不把面试官的批评当成本人的事实确认。对方纠正问题时先回应新焦点，不再重复上一轮例子；一轮问同一项目的耗时和困难，只用同一个项目，指代不明先澄清。短追问只推进一步，不照抄历史AI答案。'},{role:'user',content:JSON.stringify({retrieval_query:vectorRetrieval.query_plan,answer_plan:answerPlan,candidate_profile:persona,profile_supports_ability:supportsAbility(persona,q),role:role?.title||'通用',role_context:roleContext,...(interviewMemory?{interview_memory:interviewMemory}:{}),confirmed_experience_tools:confirmed,current_date:currentDate,intent:intents,current_topic:{projects:dialogue.project_titles,question:dialogue.effective_question,subject:dialogue.subject_question,inherited:dialogue.inherited,project_reference_unresolved:dialogue.project_reference_unresolved},dialogue_action:dialogue.turn,scenario:dialogue.scenario,response_profile:profile,output_language:wantsEnglish?'English':'Chinese',unknown_policy:'未提供或不支持的个人事实保持unknown；项目边界和一般方案可以分别解释，通用参考不构成履历',project_knowledge_bridge:bridge,project_feature_status:featureStatus,mixed_knowledge_and_experience:mixedKnowledge,evidence:evidence.map(e=>({id:e.evidence_id,type:e.document_type,title:e.document_title,heading:e.heading,may_support_personal_action:e.may_support_personal_action,text:safeText(e.excerpt)}))})}];
  if(dialogue.turn.correction&&dialogue.project_reference_unresolved)messages.push({role:'user',content:JSON.stringify({correction_context:'项目指代没有确认，不选另一个项目补故事。只回应本轮纠正后的重点，可解释一般判断；不编造本人遇到的具体障碍。'})});
  messages[0].content+='\n能力画像不证明学习路径、课程内容或选择动机。没有直接材料支持时，不编造何时开始学开发、是否上过课程、为什么当时没学；只说明已知的当前能力和今后的打算。若dialogue_action.open_alternative为true，只回答已完整提出的子问题，不补造尚未说完的备选项。按requested_facets覆盖复合问题的各部分；若材料能说明策略，只缺模型名、参数或独立贡献细节，正常讲策略，仅保留缺失细节，不能把整部分退为待确认。对方质疑上一条AI草稿的做法时，可以解释局限和以我会提出改进；草稿不证明本人真实手工或自动化测试经历。';
- messages.push({role:'system',content:'本轮口述要求。'+profile+'。个人学习来源、选择动机、习惯、代码量和token统计，以及具体失败事件，需要对应的直接事实，相关项目或能力画像不能推导这些事实。缺证据的部分仅写[[UNKNOWN:待补充的具体个人事实]]，不代说没有统计、不是课程学的或曾经失败。一般流程用我会表述。'+(dialogue.continuation?'追问仅回答本轮角度。已展示要点为'+JSON.stringify(vectorRetrieval.query_plan?.already_explained||[])+'。建议推进角度为'+(vectorRetrieval.query_plan?.answer_focus||'按原问题补充')+'。原问题优先于建议角度。':'')+(dialogue.turn.correction?'对方正在纠正此前回答的前提，只回应纠正后的焦点。历史中的未确认需求仍是假设。':'')});
+ messages.push({role:'system',content:(wantsEnglish?'Respond ONLY in natural spoken English (no Chinese in the spoken answer). First sentence answers the exact action/point directly, then stop for follow-ups. Keep hidden [[E#]] citations. ':'')+'本轮口述要求。'+profile+'。个人学习来源、选择动机、习惯、代码量和token统计，以及具体失败事件，需要对应的直接事实，相关项目或能力画像不能推导这些事实。缺证据的部分仅写[[UNKNOWN:待补充的具体个人事实]]，不代说没有统计、不是课程学的或曾经失败。一般流程用我会表述。'+(dialogue.continuation?'追问仅回答本轮角度。已展示要点为'+JSON.stringify(vectorRetrieval.query_plan?.already_explained||[])+'。建议推进角度为'+(vectorRetrieval.query_plan?.answer_focus||'按原问题补充')+'。原问题优先于建议角度。':'')+(dialogue.turn.correction?'对方正在纠正此前回答的前提，只回应纠正后的焦点。历史中的未确认需求仍是假设。':'')});
  messages.push({role:'user',content:JSON.stringify({history,transcript:context,question:q,turn_requirements:{
+  output_language:wantsEnglish?'English (natural spoken English only, no Chinese in oral answer)':'Chinese',
   response_profile:profile,
   answer_focus:dialogue.continuation?vectorRetrieval.query_plan?.answer_focus||'':'',
   focus_policy:'answer_focus是检索编辑器提出的回答角度，只用于推进讨论，不证明个人事实；本轮原始问题与纠正优先。历史方案被质疑时先修正被质疑的前提，不因为草稿用过某组件就继续保留它。',
@@ -266,9 +298,9 @@ function createInterviewLibrary({file,parsePdf}){
  const diagnostics=[...s.diagnostics];if(vectorRetrieval.diagnostic)diagnostics.push(vectorRetrieval.diagnostic);if(!evidence.length)diagnostics.push('未检索到直接匹配资料；技术知识可给基础解释，个人经历保持未确认');const oversized=allowed.flatMap(d=>s.index[d.document_id]||[]).filter(c=>c.content.length>6000).length;if(oversized)diagnostics.push(oversized+'个完整块过大未注入，原文仍可检索定位');
  const required=s.manifest.policy?.required_document_ids||[];if(required.some(id=>!s.manifest.documents.some(d=>d.document_id===id&&d.status==='active')))throw Error('缺少配置规定的关键文档：'+required.join('、'));
  last={question:q,answer_plan:answerPlan,persona_document_id:persona?.document_id||null,role:role?.title||'通用',sources:evidence.map(e=>e.document_title+'#'+e.heading),fixed:[],characters:chars,strategy:vectorRetrieval.active?'Qwen Embedding + Qdrant 官方混合检索':'V2.6 已清理来源归档、多意图与子问题覆盖检索',vector_retrieval:{active:vectorRetrieval.active,query_plan:vectorRetrieval.query_plan,model:vectorRetrieval.model,rerank_active:vectorRetrieval.rerank_active,milliseconds:vectorRetrieval.milliseconds,hits:vectorRetrieval.hits.map(h=>({entry_id:h.entry_id,chunk_id:h.chunk_id,score:h.score,rerank_score:h.rerank_score}))},retrievalMs:performance.now()-started,evidence,diagnostics,dialogue_state:dialogue};
- if(blockedUnknown){diagnostics.push('个人事实不可代填'+(suggestionOnly?'；提供条件式一般参考回答':''));if(suggestionOnly){answerPolicy.suggestionOnly=true;answerPolicy.absenceUnknown=true;answerPolicy.requiredUnknown=['本题具体个人经历缺少可用事实，请本人确认'];messages.push({role:'user',content:JSON.stringify({personal_fact_status:'unknown',output_mode:'suggestion_only',instruction:'不要回答本人做过或没做过，不编造某次事故或已完成动作。直接给一般处理思路，不先解释缺少个人经历，不在口述要求本人核实，也不复述其他个人项目履历。把待确认放UNKNOWN，口述仍给80—120字的条件式参考思路，以如果遇到这类问题我会开头。仅讲基础方法，不伪装真实经历；若缺少具体指代，简短澄清。'})});}}
+ if(blockedUnknown){diagnostics.push('个人事实不可代填'+(suggestionOnly?'；提供条件式一般参考回答':''));if(suggestionOnly){answerPolicy.suggestionOnly=true;answerPolicy.absenceUnknown=true;answerPolicy.requiredUnknown=['本题具体个人经历缺少可用事实，请本人确认'];messages.push({role:'user',content:JSON.stringify({personal_fact_status:'unknown',output_mode:'suggestion_only',instruction:wantsEnglish?'Do not claim you have or have not done this, and do not invent an incident. Give a concise 50–90 word conditional general approach in natural spoken English only, starting with "In general, I would..." or "If I encountered this, I would...". Put unconfirmed personal facts inside [[UNKNOWN:...]].':'不要回答本人做过或没做过，不编造某次事故或已完成动作。直接给一般处理思路，不先解释缺少个人经历，不在口述要求本人核实，也不复述其他个人项目履历。把待确认放UNKNOWN，口述仍给80—120字的条件式参考思路，以如果遇到这类问题我会开头。仅讲基础方法，不伪装真实经历；若缺少具体指代，简短澄清。'})});}}
  Object.defineProperty(messages,'suggestionOnly',{value:suggestionOnly});
- Object.defineProperty(messages,'evidence',{value:evidence});Object.defineProperty(messages,'diagnostics',{value:diagnostics});Object.defineProperty(messages,'blockedUnknown',{value:blockedUnknown});Object.defineProperty(messages,'dialogueState',{value:dialogue});Object.defineProperty(messages,'answerPolicy',{value:answerPolicy});Object.defineProperty(messages,'directAnswer',{value:dialogue.clarify?'你具体指哪个项目或哪一部分？':null});return messages;
+ Object.defineProperty(messages,'evidence',{value:evidence});Object.defineProperty(messages,'diagnostics',{value:diagnostics});Object.defineProperty(messages,'blockedUnknown',{value:blockedUnknown});Object.defineProperty(messages,'dialogueState',{value:dialogue});Object.defineProperty(messages,'answerPolicy',{value:answerPolicy});Object.defineProperty(messages,'directAnswer',{value:dialogue.clarify?(wantsEnglish?'Which specific project or part are you referring to?':'你具体指哪个项目或哪一部分？'):null});return messages;
  }
  async function locate(ref){const {s}=await ready();const located=s.locate(ref.document_id,ref.chunk_id,ref.content_hash);if(ref.image_id){const image=located.chunk.image_refs?.find(i=>i.image_id===ref.image_id);if(!image)throw Error('图片不属于当前来源片段');const f=require('./store.cjs').inside(s.root,path.resolve(path.dirname(located.file),image.relative_path));if(!/\.(png|jpe?g|webp|gif)$/i.test(f)||hash(fs.readFileSync(f))!==image.content_hash)throw Error('图片内容已变化或类型不支持');return {...located,file:f};}return located;}
  async function readDocument(ref){
